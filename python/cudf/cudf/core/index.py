@@ -46,6 +46,39 @@ from cudf.utils.utils import cached_property, search_range
 
 
 class Index(SingleColumnFrame, Serializable):
+    """Immutable, ordered and sliceable sequence of integer labels.
+    The basic object storing row labels for all cuDF objects.
+
+    Parameters
+    ----------
+    data : array-like (1-dimensional)/ DataFrame
+        If it is a DataFrame, it will return a MultiIndex
+    dtype : NumPy dtype (default: object)
+        If dtype is None, we find the dtype that best fits the data.
+    copy : bool
+        Make a copy of input data.
+    name : object
+        Name to be stored in the index.
+    tupleize_cols : bool (default: True)
+        When True, attempt to create a MultiIndex if possible.
+        tupleize_cols == False is not yet supported.
+
+    Returns
+    -------
+    Index
+        cudf Index
+
+    Examples
+    --------
+    >>> import cudf
+    >>> cudf.Index([1, 2, 3], dtype="uint64", name="a")
+    UInt64Index([1, 2, 3], dtype='uint64', name='a')
+
+    >>> cudf.Index(cudf.DataFrame({"a":[1, 2], "b":[2, 3]}))
+    MultiIndex([(1, 2),
+                (2, 3)],
+                names=['a', 'b'])
+    """
 
     dtype: DtypeObj
 
@@ -78,50 +111,6 @@ class Index(SingleColumnFrame, Serializable):
             return func(*inputs)
         else:
             return NotImplemented
-
-    def __init__(
-        self,
-        data=None,
-        dtype=None,
-        copy=False,
-        name=None,
-        tupleize_cols=True,
-        **kwargs,
-    ):
-        """Immutable, ordered and sliceable sequence of integer labels.
-        The basic object storing row labels for all cuDF objects.
-
-        Parameters
-        ----------
-        data : array-like (1-dimensional)/ DataFrame
-            If it is a DataFrame, it will return a MultiIndex
-        dtype : NumPy dtype (default: object)
-            If dtype is None, we find the dtype that best fits the data.
-        copy : bool
-            Make a copy of input data.
-        name : object
-            Name to be stored in the index.
-        tupleize_cols : bool (default: True)
-            When True, attempt to create a MultiIndex if possible.
-            tupleize_cols == False is not yet supported.
-
-        Returns
-        -------
-        Index
-            cudf Index
-
-        Examples
-        --------
-        >>> import cudf
-        >>> cudf.Index([1, 2, 3], dtype="uint64", name="a")
-        UInt64Index([1, 2, 3], dtype='uint64', name='a')
-
-        >>> cudf.Index(cudf.DataFrame({"a":[1, 2], "b":[2, 3]}))
-        MultiIndex([(1, 2),
-                    (2, 3)],
-                  names=['a', 'b'])
-        """
-        pass
 
     @cached_property
     def _values(self) -> ColumnBase:
@@ -1822,9 +1811,7 @@ class GenericIndex(Index):
         # normalize the input
         if isinstance(values, cudf.Series):
             values = values._column
-        elif isinstance(values, column.ColumnBase):
-            values = values
-        else:
+        elif not isinstance(values, column.ColumnBase):
             if isinstance(values, (list, tuple)):
                 if len(values) == 0:
                     values = np.asarray([], dtype="int64")
@@ -1834,7 +1821,7 @@ class GenericIndex(Index):
             assert isinstance(values, (NumericalColumn, StringColumn))
 
         name = kwargs.get("name")
-        super(Index, self).__init__({name: values})
+        super().__init__({name: values})
 
     @property
     def _values(self):
@@ -2026,14 +2013,8 @@ class NumericIndex(GenericIndex):
 
     def __init__(self, data=None, dtype=None, copy=False, name=None):
         dtype = _index_to_dtype[self.__class__]
-        if copy:
-            data = column.as_column(data, dtype=dtype).copy()
-
-        kwargs = _setdefault_name(data, name=name)
-
         data = column.as_column(data, dtype=dtype)
-
-        self._initialize(data, **kwargs)
+        self._initialize(data.copy() if copy else data, name=name)
 
 
 class Int8Index(NumericIndex):

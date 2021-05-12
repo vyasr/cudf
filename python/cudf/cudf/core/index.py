@@ -2900,11 +2900,7 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
     if isinstance(arbitrary, cudf.MultiIndex):
         return arbitrary
     elif isinstance(arbitrary, Index):
-        if arbitrary.name == kwargs["name"]:
-            return arbitrary
-        idx = arbitrary.copy(deep=False)
-        idx.rename(kwargs["name"], inplace=True)
-        return idx
+        return arbitrary.__class__.__new__(arbitrary.__class__)
     elif isinstance(arbitrary, NumericalColumn):
         try:
             return _dtype_to_index[arbitrary.dtype.type].__new__(

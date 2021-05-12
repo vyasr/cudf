@@ -17,7 +17,7 @@ import cudf
 from cudf import concat
 from cudf.core._compat import PANDAS_GE_110
 from cudf.core.column.string import StringColumn
-from cudf.core.index import StringIndex, as_index
+from cudf.core.index import StringIndex
 from cudf.tests.test_joining import assert_join_results_equal
 from cudf.tests.utils import (
     DATETIME_TYPES,
@@ -1598,7 +1598,7 @@ def test_strings_partition(data):
     assert_eq(ps.str.partition(","), gs.str.partition(","))
     assert_eq(ps.str.partition("-"), gs.str.partition("-"))
 
-    gi = as_index(data, name="new name")
+    gi = cudf.Index(data, name="new name")
     pi = pd.Index(data, name="new name")
     assert_eq(pi.str.partition(), gi.str.partition())
     assert_eq(pi.str.partition(","), gi.str.partition(","))
@@ -1709,7 +1709,7 @@ def test_strings_strip_tests(data, to_strip):
         ps.str.lstrip(to_strip=to_strip), gs.str.lstrip(to_strip=to_strip)
     )
 
-    gi = as_index(data)
+    gi = cudf.Index(data)
     pi = pd.Index(data)
 
     assert_eq(pi.str.strip(to_strip=to_strip), gi.str.strip(to_strip=to_strip))
@@ -1756,7 +1756,7 @@ def test_strings_filling_tests(data, width, fillchar):
         gs.str.rjust(width=width, fillchar=fillchar),
     )
 
-    gi = as_index(data)
+    gi = cudf.Index(data)
     pi = pd.Index(data)
 
     assert_eq(
@@ -1791,7 +1791,7 @@ def test_strings_zfill_tests(data, width):
 
     assert_eq(ps.str.zfill(width=width), gs.str.zfill(width=width))
 
-    gi = as_index(data)
+    gi = cudf.Index(data)
     pi = pd.Index(data)
 
     assert_eq(pi.str.zfill(width=width), gi.str.zfill(width=width))
@@ -1822,7 +1822,7 @@ def test_strings_pad_tests(data, width, side, fillchar):
         gs.str.pad(width=width, side=side, fillchar=fillchar),
     )
 
-    gi = as_index(data)
+    gi = cudf.Index(data)
     pi = pd.Index(data)
 
     assert_eq(
@@ -1859,7 +1859,7 @@ def test_string_wrap(data, width):
         ),
     )
 
-    gi = as_index(data)
+    gi = cudf.Index(data)
     pi = pd.Index(data)
 
     assert_eq(
@@ -1892,7 +1892,9 @@ def test_string_count(data, pat):
     ps = pd.Series(data)
 
     assert_eq(gs.str.count(pat=pat), ps.str.count(pat=pat), check_dtype=False)
-    assert_eq(as_index(gs).str.count(pat=pat), pd.Index(ps).str.count(pat=pat))
+    assert_eq(
+        cudf.Index(gs).str.count(pat=pat), pd.Index(ps).str.count(pat=pat)
+    )
 
 
 def test_string_findall():
@@ -1963,7 +1965,7 @@ def test_string_replace_with_backrefs(find, replace):
     expected = ps.str.replace(find, replace, regex=True)
     assert_eq(got, expected)
 
-    got = as_index(gs).str.replace_with_backrefs(find, replace)
+    got = cudf.Index(gs).str.replace_with_backrefs(find, replace)
     expected = pd.Index(ps).str.replace(find, replace, regex=True)
     assert_eq(got, expected)
 
@@ -2186,7 +2188,7 @@ def test_string_str_rindex(data, sub, er):
 
     if er is None:
         assert_eq(ps.str.rindex(sub), gs.str.rindex(sub), check_dtype=False)
-        assert_eq(pd.Index(ps).str.rindex(sub), as_index(gs).str.rindex(sub))
+        assert_eq(pd.Index(ps).str.rindex(sub), cudf.Index(gs).str.rindex(sub))
 
     try:
         ps.str.rindex(sub)
@@ -2266,7 +2268,7 @@ def test_string_str_match(data, pat):
 
     assert_eq(ps.str.match(pat), gs.str.match(pat))
     assert_eq(
-        pd.Index(pd.Index(ps).str.match(pat)), as_index(gs).str.match(pat)
+        pd.Index(pd.Index(ps).str.match(pat)), cudf.Index(gs).str.match(pat)
     )
 
 
@@ -2293,7 +2295,7 @@ def test_string_str_translate(data):
     )
     assert_eq(
         pd.Index(ps).str.translate(str.maketrans({"a": "z"})),
-        as_index(gs).str.translate(str.maketrans({"a": "z"})),
+        cudf.Index(gs).str.translate(str.maketrans({"a": "z"})),
     )
     assert_eq(
         ps.str.translate(str.maketrans({"a": "z", "i": "$", "z": "1"})),
@@ -2303,7 +2305,7 @@ def test_string_str_translate(data):
         pd.Index(ps).str.translate(
             str.maketrans({"a": "z", "i": "$", "z": "1"})
         ),
-        as_index(gs).str.translate(
+        cudf.Index(gs).str.translate(
             str.maketrans({"a": "z", "i": "$", "z": "1"})
         ),
     )
@@ -2319,7 +2321,7 @@ def test_string_str_translate(data):
         pd.Index(ps).str.translate(
             str.maketrans({"+": "-", "-": "$", "?": "!", "B": "."})
         ),
-        as_index(gs).str.translate(
+        cudf.Index(gs).str.translate(
             str.maketrans({"+": "-", "-": "$", "?": "!", "B": "."})
         ),
     )
@@ -2698,8 +2700,8 @@ def test_string_str_byte_count(data, expected):
     actual = sr.str.byte_count()
     assert_eq(expected, actual)
 
-    si = as_index(data)
-    expected = as_index(expected, dtype="int32")
+    si = cudf.Index(data)
+    expected = cudf.Index(expected, dtype="int32")
     actual = si.str.byte_count()
     assert_eq(expected, actual)
 
@@ -2747,8 +2749,8 @@ def test_str_isinteger(data, expected):
     actual = sr.str.isinteger()
     assert_eq(expected, actual)
 
-    sr = as_index(data)
-    expected = as_index(expected)
+    sr = cudf.Index(data)
+    expected = cudf.Index(expected)
     actual = sr.str.isinteger()
     assert_eq(expected, actual)
 
@@ -2803,8 +2805,8 @@ def test_str_isfloat(data, expected):
     actual = sr.str.isfloat()
     assert_eq(expected, actual)
 
-    sr = as_index(data)
-    expected = as_index(expected)
+    sr = cudf.Index(data)
+    expected = cudf.Index(expected)
     actual = sr.str.isfloat()
     assert_eq(expected, actual)
 

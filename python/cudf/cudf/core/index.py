@@ -2007,7 +2007,10 @@ class NumericIndex(GenericIndex):
     """
 
     def __init__(self, data=None, dtype=None, copy=False, name=None):
-        data = column.as_column(data, dtype=_index_to_dtype[self.__class__])
+        if not isinstance(data, (SingleColumnFrame, column.ColumnBase)):
+            data = column.as_column(
+                data, dtype=_index_to_dtype[self.__class__]
+            )
         super().__init__(data.copy() if copy else data, name=name)
 
 
@@ -2385,7 +2388,7 @@ class TimedeltaIndex(GenericIndex):
         elif isinstance(data, pd.TimedeltaIndex):
             data = column.as_column(data.values)
         elif isinstance(data, (list, tuple)):
-            data = column.as_column(np.array(data, dtype=dtype))
+            data = column.as_column(data, dtype=dtype)
         super().__init__(data, name=name)
 
     def to_pandas(self):
@@ -2849,6 +2852,9 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
         - DatetimeIndex for Datetime input.
         - GenericIndex for all other inputs.
     """
+    if kwargs.get("name") is None:
+        kwargs["name"] = getattr(arbitrary, "name", None)
+
     if isinstance(arbitrary, cudf.MultiIndex):
         return arbitrary
     elif isinstance(arbitrary, Index):
@@ -2862,7 +2868,8 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
                 f"{arbitrary.__class__} to a cudf Index."
             )
         else:
-            return cls.__new__(cls)
+            # TODO: This is bad and we should find a way to avoid it.
+            return cls(arbitrary, **kwargs)
     elif isinstance(arbitrary, NumericalColumn):
         try:
             return _dtype_to_index[arbitrary.dtype.type].__new__(

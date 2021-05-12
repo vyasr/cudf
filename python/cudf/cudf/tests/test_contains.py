@@ -4,8 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import cudf
 from cudf import Series
-from cudf.core.index import RangeIndex, as_index
+from cudf.core.index import RangeIndex
 from cudf.tests.utils import (
     DATETIME_TYPES,
     NUMERIC_TYPES,
@@ -71,7 +72,7 @@ def test_series_contains(values, item, expected):
 
 @pytest.mark.parametrize("values, item, expected", testdata_all)
 def test_index_contains(values, item, expected):
-    index = as_index(values)
+    index = cudf.Index(values)
     assert_eq(expected, item in index)
 
 

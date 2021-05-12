@@ -406,7 +406,7 @@ def test_character_tokenize_series():
 
 
 def test_character_tokenize_index():
-    sr = cudf.core.index.as_index(
+    sr = cudf.Index(
         [
             "hello world",
             "sdf",
@@ -415,7 +415,7 @@ def test_character_tokenize_index():
             "en#eight^nine heŒŽ‘•™œ$µ¾ŤƠé Ǆ",
         ]
     )
-    expected = cudf.core.index.as_index(
+    expected = cudf.Index(
         [
             "h",
             "e",
@@ -507,14 +507,14 @@ def test_character_tokenize_index():
     actual = sr.str.character_tokenize()
     assert_eq(expected, actual)
 
-    sr = cudf.core.index.as_index([""])
+    sr = cudf.Index([""])
     expected = cudf.core.index.StringIndex([], dtype="object")
 
     actual = sr.str.character_tokenize()
     assert_eq(expected, actual)
 
-    sr = cudf.core.index.as_index(["a"])
-    expected = cudf.core.index.as_index(["a"])
+    sr = cudf.Index(["a"])
+    expected = cudf.Index(["a"])
 
     actual = sr.str.character_tokenize()
     assert_eq(expected, actual)

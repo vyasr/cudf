@@ -56,16 +56,20 @@ class Index(SingleColumnFrame, Serializable):
         copy=False,
         name=None,
         tupleize_cols=True,
+        *args,
         **kwargs,
     ):
-        if tupleize_cols is not True:
-            raise NotImplementedError(
-                "tupleize_cols != True is not yet supported"
-            )
+        if cls is Index:
+            if tupleize_cols is not True:
+                raise NotImplementedError(
+                    "tupleize_cols != True is not yet supported"
+                )
 
-        return _as_index_for_constructor(
-            data, copy=copy, dtype=dtype, name=name, **kwargs
-        )
+            return _as_index_for_constructor(
+                data, copy=copy, dtype=dtype, name=name, **kwargs
+            )
+        else:
+            return super().__new__(cls)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
 
@@ -1808,9 +1812,6 @@ class GenericIndex(Index):
     name: A string
     """
 
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
-
     def __init__(self, values, **kwargs):
         self._initialize(values, **kwargs)
 
@@ -2023,9 +2024,6 @@ class NumericIndex(GenericIndex):
     Index
     """
 
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
-
     def __init__(self, data=None, dtype=None, copy=False, name=None):
         dtype = _index_to_dtype[self.__class__]
         if copy:
@@ -2116,9 +2114,6 @@ class DatetimeIndex(GenericIndex):
                    '1970-01-01 00:00:00.003000', '1970-01-01 00:00:00.004000'],
                   dtype='datetime64[ms]', name='a')
     """
-
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
 
     def __init__(
         self,
@@ -2390,9 +2385,6 @@ class TimedeltaIndex(GenericIndex):
                 dtype='timedelta64[s]', name='delta-index')
     """
 
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
-
     def __init__(
         self,
         data=None,
@@ -2514,9 +2506,6 @@ class CategoricalIndex(GenericIndex):
     ... data=[1, 2, 3, 4], dtype=pd.CategoricalDtype([1, 2, 3]), name="a")
     CategoricalIndex([1, 2, 3, <NA>], categories=[1, 2, 3], ordered=False, name='a', dtype='category', name='a')
     """  # noqa: E501
-
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
 
     def __init__(
         self,
@@ -2747,9 +2736,6 @@ class IntervalIndex(GenericIndex):
     IntervalIndex
     """
 
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
-
     def __init__(self, data, closed=None, dtype=None, copy=False, name=None):
         if copy:
             data = column.as_column(data, dtype=dtype).copy()
@@ -2822,9 +2808,6 @@ class StringIndex(GenericIndex):
     _values: A StringColumn object or NDArray of strings
     name: A string
     """
-
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
 
     def __init__(self, values, copy=False, **kwargs):
         kwargs = _setdefault_name(values, **kwargs)

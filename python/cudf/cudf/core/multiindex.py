@@ -62,9 +62,6 @@ class MultiIndex(Index):
                )
     """
 
-    def __new__(cls, *args, **kwargs):
-        return SingleColumnFrame.__new__(cls)
-
     def __init__(
         self,
         levels=None,

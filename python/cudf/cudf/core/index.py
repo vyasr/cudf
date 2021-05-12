@@ -1801,22 +1801,21 @@ class GenericIndex(Index):
     name: A string
     """
 
-    def __init__(self, values, **kwargs):
-        kwargs = _setdefault_name(values, **kwargs)
+    def __init__(self, values, name=None, **kwargs):
+        if name is None and hasattr(values, "name"):
+            name = values.name
 
         # normalize the input
         if isinstance(values, cudf.Series):
             values = values._column
         elif not isinstance(values, column.ColumnBase):
-            if isinstance(values, (list, tuple)):
-                if len(values) == 0:
-                    values = np.asarray([], dtype="int64")
-                else:
-                    values = np.asarray(values)
-            values = column.as_column(values)
-            assert isinstance(values, (NumericalColumn, StringColumn))
+            dtype = (
+                "int64"
+                if isinstance(values, (list, tuple)) and len(values) == 0
+                else None
+            )
+            values = column.as_column(values, dtype=dtype)
 
-        name = kwargs.get("name")
         super().__init__({name: values})
 
     @property
@@ -2008,8 +2007,7 @@ class NumericIndex(GenericIndex):
     """
 
     def __init__(self, data=None, dtype=None, copy=False, name=None):
-        dtype = _index_to_dtype[self.__class__]
-        data = column.as_column(data, dtype=dtype)
+        data = column.as_column(data, dtype=_index_to_dtype[self.__class__])
         super().__init__(data.copy() if copy else data, name=name)
 
 
@@ -2138,14 +2136,13 @@ class DatetimeIndex(GenericIndex):
 
         if copy:
             data = column.as_column(data).copy()
-        kwargs = _setdefault_name(data, name=name)
         if isinstance(data, np.ndarray) and data.dtype.kind == "M":
             data = column.as_column(data)
         elif isinstance(data, pd.DatetimeIndex):
             data = column.as_column(data.values)
         elif isinstance(data, (list, tuple)):
             data = column.as_column(np.array(data, dtype=dtype))
-        super().__init__(data, **kwargs)
+        super().__init__(data, name=name)
 
     @property
     def year(self):
@@ -2383,14 +2380,13 @@ class TimedeltaIndex(GenericIndex):
 
         if copy:
             data = column.as_column(data).copy()
-        kwargs = _setdefault_name(data, name=name)
         if isinstance(data, np.ndarray) and data.dtype.kind == "m":
             data = column.as_column(data)
         elif isinstance(data, pd.TimedeltaIndex):
             data = column.as_column(data.values)
         elif isinstance(data, (list, tuple)):
             data = column.as_column(np.array(data, dtype=dtype))
-        super().__init__(data, **kwargs)
+        super().__init__(data, name=name)
 
     def to_pandas(self):
         return pd.TimedeltaIndex(
@@ -2501,7 +2497,6 @@ class CategoricalIndex(GenericIndex):
                 )
         if copy:
             data = column.as_column(data, dtype=dtype).copy(deep=True)
-        kwargs = _setdefault_name(data, name=name)
         if not isinstance(data, CategoricalColumn):
             if isinstance(data, pd.Series) and (
                 is_categorical_dtype(data.dtype)
@@ -2534,7 +2529,7 @@ class CategoricalIndex(GenericIndex):
         elif ordered is False and data.ordered is True:
             data.cat().as_unordered(inplace=True)
 
-        super().__init__(data, **kwargs)
+        super().__init__(data, name=name)
 
     @property
     def codes(self):
@@ -2716,7 +2711,6 @@ class IntervalIndex(GenericIndex):
     def __init__(self, data, closed=None, dtype=None, copy=False, name=None):
         if copy:
             data = column.as_column(data, dtype=dtype).copy()
-        kwargs = _setdefault_name(data, name=name)
         if isinstance(data, IntervalColumn):
             data = data
         elif isinstance(data, pd.Series) and (is_interval_dtype(data.dtype)):
@@ -2732,7 +2726,7 @@ class IntervalIndex(GenericIndex):
             data = column.as_column(data)
             data.dtype.closed = closed
 
-        super().__init__(data, **kwargs)
+        super().__init__(data, name=name)
 
     def from_breaks(breaks, closed="right", name=None, copy=False, dtype=None):
         """
@@ -2786,8 +2780,7 @@ class StringIndex(GenericIndex):
     name: A string
     """
 
-    def __init__(self, values, copy=False, **kwargs):
-        kwargs = _setdefault_name(values, **kwargs)
+    def __init__(self, values, dtype=None, copy=False, name=None):
         if isinstance(values, StringColumn):
             values = values.copy(deep=copy)
         elif isinstance(values, StringIndex):
@@ -2799,7 +2792,7 @@ class StringIndex(GenericIndex):
                     "Couldn't create StringIndex from passed in object"
                 )
 
-        super().__init__(values, **kwargs)
+        super().__init__(values, name=name)
 
     def to_pandas(self):
         return pd.Index(self.to_array(), name=self.name, dtype="object")
@@ -2856,7 +2849,6 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
         - DatetimeIndex for Datetime input.
         - GenericIndex for all other inputs.
     """
-    kwargs = _setdefault_name(arbitrary, **kwargs)
     if isinstance(arbitrary, cudf.MultiIndex):
         return arbitrary
     elif isinstance(arbitrary, Index):
@@ -2921,7 +2913,9 @@ def as_index(arbitrary, **kwargs) -> Index:
         - DatetimeIndex for Datetime input.
         - GenericIndex for all other inputs.
     """
-    kwargs = _setdefault_name(arbitrary, **kwargs)
+    if kwargs.get("name") is None:
+        kwargs["name"] = getattr(arbitrary, "name", None)
+
     if isinstance(arbitrary, cudf.MultiIndex):
         return arbitrary
     elif isinstance(arbitrary, Index):
@@ -2983,12 +2977,3 @@ _index_to_dtype = {
     Float32Index: np.float32,
     Float64Index: np.float64,
 }
-
-
-def _setdefault_name(values, **kwargs):
-    if "name" not in kwargs or kwargs["name"] is None:
-        if not hasattr(values, "name"):
-            kwargs.update({"name": None})
-        else:
-            kwargs.update({"name": values.name})
-    return kwargs

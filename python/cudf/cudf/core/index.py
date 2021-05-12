@@ -2924,13 +2924,14 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
         return as_index(arbitrary._column, **kwargs)
     elif isinstance(arbitrary, pd.RangeIndex):
         return RangeIndex.__new__(RangeIndex)
-    elif isinstance(arbitrary, pd.MultiIndex):
-        return cudf.MultiIndex.from_pandas(arbitrary)
-    elif isinstance(arbitrary, cudf.DataFrame):
-        return cudf.MultiIndex(source_data=arbitrary)
     elif isinstance(arbitrary, range):
         return RangeIndex.__new__(RangeIndex)
-    return as_index(
+    # TODO: Construcing a column via as_column is an extremely heavyweight
+    # method for determining what type of index to build. That's probably the
+    # best option we have for now, but long-term we should add a utility that
+    # separates the type determination from the column construction done in
+    # as_column so that we can use that here.
+    return _as_index_for_constructor(
         column.as_column(arbitrary, dtype=kwargs.get("dtype", None)), **kwargs
     )
 

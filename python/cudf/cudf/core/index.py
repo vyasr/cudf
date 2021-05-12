@@ -2901,6 +2901,16 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
         return arbitrary
     elif isinstance(arbitrary, Index):
         return arbitrary.__class__.__new__(arbitrary.__class__)
+    elif isinstance(arbitrary, pd.Index):
+        try:
+            cls = getattr(cudf, arbitrary.__class__.__name__)
+        except AttributeError:
+            raise ValueError(
+                "Don't know how to convert pandas Index of type "
+                f"{arbitrary.__class__} to a cudf Index."
+            )
+        else:
+            return cls.__new__(cls)
     elif isinstance(arbitrary, NumericalColumn):
         try:
             return _dtype_to_index[arbitrary.dtype.type].__new__(
@@ -2917,9 +2927,7 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
     elif isinstance(arbitrary, CategoricalColumn):
         return CategoricalIndex.__new__(CategoricalIndex)
     elif isinstance(arbitrary, cudf.Series):
-        return as_index(arbitrary._column, **kwargs)
-    elif isinstance(arbitrary, pd.RangeIndex):
-        return RangeIndex.__new__(RangeIndex)
+        return _as_index_for_constructor(arbitrary._column, **kwargs)
     elif isinstance(arbitrary, range):
         return RangeIndex.__new__(RangeIndex)
     # TODO: Construcing a column via as_column is an extremely heavyweight

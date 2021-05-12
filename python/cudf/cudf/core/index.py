@@ -1802,10 +1802,6 @@ class GenericIndex(Index):
     """
 
     def __init__(self, values, **kwargs):
-        self._initialize(values, **kwargs)
-
-    def _initialize(self, values, **kwargs):
-
         kwargs = _setdefault_name(values, **kwargs)
 
         # normalize the input
@@ -2014,7 +2010,7 @@ class NumericIndex(GenericIndex):
     def __init__(self, data=None, dtype=None, copy=False, name=None):
         dtype = _index_to_dtype[self.__class__]
         data = column.as_column(data, dtype=dtype)
-        self._initialize(data.copy() if copy else data, name=name)
+        super().__init__(data.copy() if copy else data, name=name)
 
 
 class Int8Index(NumericIndex):
@@ -2149,7 +2145,7 @@ class DatetimeIndex(GenericIndex):
             data = column.as_column(data.values)
         elif isinstance(data, (list, tuple)):
             data = column.as_column(np.array(data, dtype=dtype))
-        self._initialize(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     @property
     def year(self):
@@ -2394,7 +2390,7 @@ class TimedeltaIndex(GenericIndex):
             data = column.as_column(data.values)
         elif isinstance(data, (list, tuple)):
             data = column.as_column(np.array(data, dtype=dtype))
-        self._initialize(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     def to_pandas(self):
         return pd.TimedeltaIndex(
@@ -2538,7 +2534,7 @@ class CategoricalIndex(GenericIndex):
         elif ordered is False and data.ordered is True:
             data.cat().as_unordered(inplace=True)
 
-        self._initialize(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     @property
     def codes(self):
@@ -2736,7 +2732,7 @@ class IntervalIndex(GenericIndex):
             data = column.as_column(data)
             data.dtype.closed = closed
 
-        self._initialize(data, **kwargs)
+        super().__init__(data, **kwargs)
 
     def from_breaks(breaks, closed="right", name=None, copy=False, dtype=None):
         """
@@ -2803,7 +2799,7 @@ class StringIndex(GenericIndex):
                     "Couldn't create StringIndex from passed in object"
                 )
 
-        self._initialize(values, **kwargs)
+        super().__init__(values, **kwargs)
 
     def to_pandas(self):
         return pd.Index(self.to_array(), name=self.name, dtype="object")

@@ -28,8 +28,8 @@ from cudf.core.join import merge
 from cudf.utils.dtypes import (
     is_categorical_dtype,
     is_column_like,
-    is_numerical_dtype,
     is_decimal_dtype,
+    is_numerical_dtype,
     is_scalar,
     min_scalar_type,
 )
@@ -1940,7 +1940,9 @@ class Frame(libcudf.table.Table):
             if isinstance(self, cudf.MultiIndex):
                 # TODO: Need to update this once MultiIndex is refactored,
                 # should be able to treat it similar to other Frame object
-                result = cudf.Index(self._source_data[gather_map])
+                result = cudf.MultiIndex.from_frame(
+                    self._source_data[gather_map]
+                )
             else:
                 result = self[gather_map]
                 if not keep_index:

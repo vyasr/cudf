@@ -19,7 +19,7 @@ from cudf._typing import DataFrameOrSeries
 from cudf.core._compat import PANDAS_GE_120
 from cudf.core.column import column
 from cudf.core.column_accessor import ColumnAccessor
-from cudf.core.frame import Frame, SingleColumnFrame
+from cudf.core.frame import SingleColumnFrame
 from cudf.core.index import Index, as_index
 
 
@@ -62,8 +62,11 @@ class MultiIndex(Index):
                )
     """
 
-    def __new__(
-        cls,
+    def __new__(cls, *args, **kwargs):
+        return SingleColumnFrame.__new__(cls)
+
+    def __init__(
+        self,
         levels=None,
         codes=None,
         sortorder=None,
@@ -73,7 +76,7 @@ class MultiIndex(Index):
         copy=False,
         name=None,
         **kwargs,
-    ) -> "MultiIndex":
+    ):
 
         if sortorder is not None:
             raise NotImplementedError("sortorder is not yet supported")
@@ -83,8 +86,7 @@ class MultiIndex(Index):
                 "Use `names`, `name` is not yet supported"
             )
 
-        out = Frame.__new__(cls)
-        super(Index, out).__init__()
+        super(Index, self).__init__()
 
         if copy:
             if isinstance(codes, cudf.DataFrame):
@@ -92,7 +94,7 @@ class MultiIndex(Index):
             if len(levels) > 0 and isinstance(levels[0], cudf.Series):
                 levels = [level.copy(deep=True) for level in levels]
 
-        out._name = None
+        self._name = None
 
         column_names = []
         if labels:
@@ -118,11 +120,11 @@ class MultiIndex(Index):
             # try using those as the source_data column names:
             if len(dict.fromkeys(names)) == len(names):
                 source_data.columns = names
-            out._data = source_data._data
-            out.names = names
-            out._codes = codes
-            out._levels = levels
-            return out
+            self._data = source_data._data
+            self.names = names
+            self._codes = codes
+            self._levels = levels
+            return
 
         # name setup
         if isinstance(names, (Sequence, pd.core.indexes.frozen.FrozenList,),):
@@ -144,42 +146,40 @@ class MultiIndex(Index):
             raise TypeError("Codes is not a Sequence of sequences")
 
         if isinstance(codes, cudf.DataFrame):
-            out._codes = codes
+            self._codes = codes
         elif len(levels) == len(codes):
-            out._codes = cudf.DataFrame()
+            self._codes = cudf.DataFrame()
             for i, codes in enumerate(codes):
                 name = column_names[i] or i
                 codes = column.as_column(codes)
-                out._codes[name] = codes.astype(np.int64)
+                self._codes[name] = codes.astype(np.int64)
         else:
             raise ValueError(
                 "MultiIndex has unequal number of levels and "
                 "codes and is inconsistent!"
             )
 
-        out._levels = [cudf.Series(level) for level in levels]
-        out._validate_levels_and_codes(out._levels, out._codes)
+        self._levels = [cudf.Series(level) for level in levels]
+        self._validate_levels_and_codes(self._levels, self._codes)
 
         source_data = cudf.DataFrame()
-        for i, name in enumerate(out._codes.columns):
-            codes = as_index(out._codes[name]._column)
-            if -1 in out._codes[name].values:
+        for i, name in enumerate(self._codes.columns):
+            codes = as_index(self._codes[name]._column)
+            if -1 in self._codes[name].values:
                 # Must account for null(s) in _source_data column
                 level = cudf.DataFrame(
-                    {name: [None] + list(out._levels[i])},
-                    index=range(-1, len(out._levels[i])),
+                    {name: [None] + list(self._levels[i])},
+                    index=range(-1, len(self._levels[i])),
                 )
             else:
-                level = cudf.DataFrame({name: out._levels[i]})
+                level = cudf.DataFrame({name: self._levels[i]})
 
             source_data[name] = libcudf.copying.gather(
                 level, codes._data.columns[0]
             )._data[name]
 
-        out._data = source_data._data
-        out.names = names
-
-        return out
+        self._data = source_data._data
+        self.names = names
 
     @property
     def names(self):

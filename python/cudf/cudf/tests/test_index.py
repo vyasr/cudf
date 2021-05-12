@@ -1666,7 +1666,7 @@ def test_multiindex_sample_basic(n, frac, replace, axis):
             "int": [1, 3, 5, 4, 2],
         },
     )
-    mul_index = cudf.Index(cudf.from_pandas(pdf))
+    mul_index = cudf.MultiIndex.from_frame(cudf.from_pandas(pdf))
     random_state = 0
 
     try:
@@ -1910,7 +1910,7 @@ def test_multiindex_to_arrow():
     )
     pdf["a"] = pdf["a"].astype("category")
     df = cudf.from_pandas(pdf)
-    gdi = cudf.Index(df)
+    gdi = cudf.MultiIndex.from_frame(df)
 
     expected = pa.Table.from_pandas(pdf)
     got = gdi.to_arrow()

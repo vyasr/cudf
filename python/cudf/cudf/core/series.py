@@ -39,7 +39,7 @@ from cudf.core.column.struct import StructMethods
 from cudf.core.column_accessor import ColumnAccessor
 from cudf.core.frame import SingleColumnFrame, _drop_rows_by_labels
 from cudf.core.groupby.groupby import SeriesGroupBy
-from cudf.core.index import Index, RangeIndex, as_index
+from cudf.core.index import Index, RangeIndex
 from cudf.core.indexing import _SeriesIlocIndexer, _SeriesLocIndexer
 from cudf.core.window import Rolling
 from cudf.utils import cudautils, docutils, ioutils
@@ -216,7 +216,7 @@ class Series(SingleColumnFrame, Serializable):
             if isinstance(data.index, pd.MultiIndex):
                 index = cudf.from_pandas(data.index)
             else:
-                index = as_index(data.index)
+                index = cudf.Index(data.index)
         elif isinstance(data, pd.Index):
             name = data.name
             data = data.values
@@ -257,7 +257,7 @@ class Series(SingleColumnFrame, Serializable):
                 data = data.astype(dtype)
 
         if index is not None and not isinstance(index, Index):
-            index = as_index(index)
+            index = cudf.Index(index)
 
         assert isinstance(data, column.ColumnBase)
 
@@ -740,7 +740,7 @@ class Series(SingleColumnFrame, Serializable):
         e    14
         dtype: int64
         """
-        index = index if isinstance(index, Index) else as_index(index)
+        index = index if isinstance(index, Index) else cudf.Index(index)
         return self._copy_construct(index=index)
 
     def as_index(self):
@@ -2909,7 +2909,11 @@ class Series(SingleColumnFrame, Serializable):
 
     @index.setter
     def index(self, _index):
-        self._index = as_index(_index)
+        self._index = (
+            _index
+            if isinstance(_index, cudf.MultiIndex)
+            else cudf.Index(_index)
+        )
 
     @property
     def loc(self):
@@ -5989,7 +5993,7 @@ class Series(SingleColumnFrame, Serializable):
         Align to the given Index. See _align_indices below.
         """
 
-        index = as_index(index)
+        index = cudf.Index(index)
         if self.index.equals(index):
             return self
         if not allow_non_unique:
@@ -5998,7 +6002,7 @@ class Series(SingleColumnFrame, Serializable):
             ):
                 raise ValueError("Cannot align indices with non-unique values")
         lhs = self.to_frame(0)
-        rhs = cudf.DataFrame(index=as_index(index))
+        rhs = cudf.DataFrame(index=cudf.Index(index))
         if how == "left":
             tmp_col_id = str(uuid4())
             lhs[tmp_col_id] = column.arange(len(lhs))
@@ -6921,7 +6925,7 @@ def isclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
     if isinstance(a, cudf.Series) and isinstance(b, cudf.Series):
         b = b.reindex(a.index)
-        index = as_index(a.index)
+        index = cudf.Index(a.index)
 
     a_col = column.as_column(a)
     a_array = cupy.asarray(a_col.data_array_view)

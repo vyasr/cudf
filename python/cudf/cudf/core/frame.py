@@ -441,7 +441,7 @@ class Frame(libcudf.table.Table):
         for cols in columns:
             table_index = None
             if 1 == first_data_column_position:
-                table_index = cudf.core.index.as_index(cols[0])
+                table_index = cudf.Index(cols[0])
             elif first_data_column_position > 1:
                 table_index = libcudf.table.Table(
                     data=dict(
@@ -488,9 +488,7 @@ class Frame(libcudf.table.Table):
             if not isinstance(
                 out._index, cudf.MultiIndex
             ) and is_categorical_dtype(out._index._values.dtype):
-                out = out.set_index(
-                    cudf.core.index.as_index(out.index._values)
-                )
+                out = out.set_index(cudf.Index(out.index._values))
 
         # Reassign precision for any decimal cols
         for name, col in out._data.items():
@@ -3266,7 +3264,7 @@ class Frame(libcudf.table.Table):
 
         df = self
         if index is not None:
-            index = cudf.core.index.as_index(index)
+            index = cudf.Index(index)
 
             if isinstance(index, cudf.core.MultiIndex):
                 idx_dtype_match = (

@@ -3981,7 +3981,7 @@ class StringMethods(ColumnMethodsMixin):
         if isinstance(self._parent, cudf.Series):
             return cudf.Series(new_col, name=self._parent.name)
         elif isinstance(self._parent, cudf.Index):
-            return cudf.core.index.as_index(new_col, name=self._parent.name)
+            return cudf.Index(new_col, name=self._parent.name)
         else:
             return new_col
 
@@ -4285,7 +4285,7 @@ class StringMethods(ColumnMethodsMixin):
         if isinstance(self._parent, cudf.Series):
             return cudf.Series(result_col, name=self._parent.name)
         elif isinstance(self._parent, cudf.Index):
-            return cudf.core.index.as_index(result_col, name=self._parent.name)
+            return cudf.Index(result_col, name=self._parent.name)
         else:
             return result_col
 
@@ -5207,7 +5207,7 @@ class StringColumn(column.ColumnBase):
         return pd_series
 
     def serialize(self) -> Tuple[dict, list]:
-        header = {"null_count": self.null_count}  # type: Dict[Any, Any]
+        header: Dict[Any, Any] = {"null_count": self.null_count}
         header["type-serialized"] = pickle.dumps(type(self))
         header["size"] = self.size
 

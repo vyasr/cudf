@@ -324,7 +324,6 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
         from cudf import MultiIndex
         from cudf.core.column import column
         from cudf.core.dataframe import DataFrame
-        from cudf.core.index import as_index
 
         # Step 1: Gather columns
         if isinstance(arg, tuple):
@@ -373,7 +372,7 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
                     tmp_col_name = str(uuid4())
                     other_df = DataFrame(
                         {tmp_col_name: column.arange(len(tmp_arg[0]))},
-                        index=as_index(tmp_arg[0]),
+                        index=cudf.Index(tmp_arg[0]),
                     )
                     df = other_df.join(columns_df, how="inner")
                     # as join is not assigning any names to index,
@@ -391,13 +390,13 @@ class _DataFrameLocIndexer(_DataFrameIndexer):
                 start = arg[0].start
                 if start is None:
                     start = self._df.index[0]
-                df.index = as_index(start)
+                df.index = cudf.Index(start)
             else:
                 row_selection = column.as_column(arg[0])
                 if pd.api.types.is_bool_dtype(row_selection.dtype):
                     df.index = self._df.index.take(row_selection)
                 else:
-                    df.index = as_index(row_selection)
+                    df.index = cudf.Index(row_selection)
         # Step 4: Downcast
         if self._can_downcast_to_series(df, arg):
             return self._downcast_to_series(df, arg)
@@ -458,7 +457,6 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
     def _getitem_tuple_arg(self, arg):
         from cudf import MultiIndex
         from cudf.core.column import column
-        from cudf.core.index import as_index
 
         # Iloc Step 1:
         # Gather the columns specified by the second tuple arg
@@ -498,7 +496,7 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
         # Iloc Step 3:
         # Reindex
         if df.shape[0] == 1:  # we have a single row without an index
-            df.index = as_index(self._df.index[arg[0]])
+            df.index = cudf.Index(self._df.index[arg[0]])
 
         # Iloc Step 4:
         # Downcast
@@ -506,7 +504,7 @@ class _DataFrameIlocIndexer(_DataFrameIndexer):
             return self._downcast_to_series(df, arg)
 
         if df.shape[0] == 0 and df.shape[1] == 0 and isinstance(arg[0], slice):
-            df._index = as_index(self._df.index[arg[0]])
+            df._index = cudf.Index(self._df.index[arg[0]])
         return df
 
     @annotate("ILOC_SETITEM", color="blue", domain="cudf_python")

@@ -101,8 +101,7 @@ class Index(SingleColumnFrame, Serializable):
             return _as_index_for_constructor(
                 data, copy=copy, dtype=dtype, name=name, **kwargs
             )
-        else:
-            return super().__new__(cls)
+        return super().__new__(cls)
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
 
@@ -650,7 +649,7 @@ class Index(SingleColumnFrame, Serializable):
             [name] = names
         else:
             name = None
-        result = as_index(data)
+        result = Index(data)
         result.name = name
         return result
 
@@ -693,7 +692,7 @@ class Index(SingleColumnFrame, Serializable):
                 # short-circuit and return a copy
                 to_concat = [self]
 
-            other = as_index(other)
+            other = Index(other)
 
             if len(self) == 0:
                 to_concat = [other]
@@ -766,7 +765,7 @@ class Index(SingleColumnFrame, Serializable):
                 f"of None or False; {sort} was passed."
             )
 
-        other = as_index(other)
+        other = Index(other)
 
         if is_mixed_with_object_dtype(self, other):
             difference = self.copy()
@@ -916,7 +915,7 @@ class Index(SingleColumnFrame, Serializable):
             raise NotImplementedError("key parameter is not yet implemented.")
 
         indices = self._values.argsort(ascending=ascending)
-        index_sorted = as_index(self.take(indices), name=self.name)
+        index_sorted = Index(self.take(indices), name=self.name)
 
         if return_indexer:
             return index_sorted, cupy.asarray(indices)
@@ -931,7 +930,7 @@ class Index(SingleColumnFrame, Serializable):
         -------
         Index without duplicates
         """
-        return as_index(self._values.unique(), name=self.name)
+        return Index(self._values.unique(), name=self.name)
 
     def join(
         self, other, how="left", level=None, return_indexers=False, sort=False
@@ -1091,7 +1090,7 @@ class Index(SingleColumnFrame, Serializable):
         if pd.api.types.is_dtype_equal(dtype, self.dtype):
             return self.copy(deep=copy)
 
-        return as_index(
+        return Index(
             self.copy(deep=copy)._values.astype(dtype), name=self.name
         )
 
@@ -1361,7 +1360,7 @@ class Index(SingleColumnFrame, Serializable):
         if not isinstance(index, pd.Index):
             raise TypeError("not a pandas.Index")
 
-        ind = as_index(column.as_column(index, nan_as_null=nan_as_null))
+        ind = Index(column.as_column(index, nan_as_null=nan_as_null))
         ind.name = index.name
         return ind
 
@@ -1399,7 +1398,7 @@ class Index(SingleColumnFrame, Serializable):
                     table, names=table._data.names
                 )
         else:
-            return as_index(table)
+            return Index(table)
 
     @property
     def _copy_construct_defaults(self):
@@ -1612,7 +1611,7 @@ class RangeIndex(Index):
                 index = np.min_scalar_type(index).type(index)
             index = column.as_column(index)
 
-        return as_index(self._values[index], name=self.name)
+        return Index(self._values[index], name=self.name)
 
     def equals(self, other):
         if isinstance(other, RangeIndex):
@@ -1789,7 +1788,7 @@ class RangeIndex(Index):
 
 def index_from_range(start, stop=None, step=None):
     vals = column.arange(start, stop, step, dtype=np.int64)
-    return as_index(vals)
+    return Index(vals)
 
 
 class GenericIndex(Index):
@@ -1847,9 +1846,9 @@ class GenericIndex(Index):
         name = self.name if name is None else name
 
         if isinstance(self, (StringIndex, CategoricalIndex)):
-            result = as_index(self._values.astype(dtype), name=name, copy=deep)
+            result = Index(self._values.astype(dtype), name=name, copy=deep)
         else:
-            result = as_index(
+            result = Index(
                 self._values.copy(deep=deep).astype(dtype), name=name
             )
         return result
@@ -1940,7 +1939,7 @@ class GenericIndex(Index):
             )
         res = self._values[index]
         if not isinstance(index, int):
-            res = as_index(res)
+            res = Index(res)
             res.name = self.name
             return res
         else:
@@ -2318,7 +2317,7 @@ class DatetimeIndex(GenericIndex):
             mask=out_column.base_mask,
             offset=out_column.offset,
         )
-        return as_index(out_column, name=self.name)
+        return Index(out_column, name=self.name)
 
 
 class TimedeltaIndex(GenericIndex):
@@ -2403,21 +2402,21 @@ class TimedeltaIndex(GenericIndex):
         """
         Number of days for each element.
         """
-        return as_index(arbitrary=self._values.days, name=self.name)
+        return Index(arbitrary=self._values.days, name=self.name)
 
     @property
     def seconds(self):
         """
         Number of seconds (>= 0 and less than 1 day) for each element.
         """
-        return as_index(arbitrary=self._values.seconds, name=self.name)
+        return Index(arbitrary=self._values.seconds, name=self.name)
 
     @property
     def microseconds(self):
         """
         Number of microseconds (>= 0 and less than 1 second) for each element.
         """
-        return as_index(arbitrary=self._values.microseconds, name=self.name)
+        return Index(arbitrary=self._values.microseconds, name=self.name)
 
     @property
     def nanoseconds(self):
@@ -2425,7 +2424,7 @@ class TimedeltaIndex(GenericIndex):
         Number of nanoseconds (>= 0 and less than 1 microsecond) for each
         element.
         """
-        return as_index(arbitrary=self._values.nanoseconds, name=self.name)
+        return Index(arbitrary=self._values.nanoseconds, name=self.name)
 
     @property
     def components(self):
@@ -2859,17 +2858,8 @@ def _as_index_for_constructor(arbitrary, **kwargs) -> Index:
         return arbitrary
     elif isinstance(arbitrary, Index):
         return arbitrary.__class__.__new__(arbitrary.__class__)
-    elif isinstance(arbitrary, pd.Index):
-        try:
-            cls = getattr(cudf, arbitrary.__class__.__name__)
-        except AttributeError:
-            raise ValueError(
-                "Don't know how to convert pandas Index of type "
-                f"{arbitrary.__class__} to a cudf Index."
-            )
-        else:
-            # TODO: This is bad and we should find a way to avoid it.
-            return cls(arbitrary, **kwargs)
+    elif isinstance(arbitrary, pd.RangeIndex):
+        return RangeIndex(start=arbitrary.start, stop=arbitrary.stop, **kwargs)
     elif isinstance(arbitrary, NumericalColumn):
         try:
             return _dtype_to_index[arbitrary.dtype.type].__new__(
@@ -2945,7 +2935,7 @@ def as_index(arbitrary, **kwargs) -> Index:
     elif isinstance(arbitrary, CategoricalColumn):
         return CategoricalIndex(arbitrary, **kwargs)
     elif isinstance(arbitrary, cudf.Series):
-        return as_index(arbitrary._column, **kwargs)
+        return Index(arbitrary._column, **kwargs)
     elif isinstance(arbitrary, pd.RangeIndex):
         return RangeIndex(start=arbitrary.start, stop=arbitrary.stop, **kwargs)
     elif isinstance(arbitrary, pd.MultiIndex):

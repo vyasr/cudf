@@ -670,6 +670,8 @@ class Frame(libcudf.table.Table):
         output._copy_type_metadata(self, include_index=keep_index)
         return output, offsets
 
+    # TODO: This method should be moved to SingleColumnFrame (if it should
+    # exist at all).
     def _as_column(self):
         """
         _as_column : Converts a single columned Frame to Column
@@ -2515,6 +2517,7 @@ class Frame(libcudf.table.Table):
         result._copy_type_metadata(self)
         return result
 
+    # TODO: This method should be moved to SingleColumnFrame.
     def searchsorted(
         self, values, side="left", ascending=True, na_position="last"
     ):
@@ -2579,11 +2582,14 @@ class Frame(libcudf.table.Table):
         if is_scalar(values):
             scalar_flag = True
 
+        # TODO: Rather than conversion to a Frame, this method should just pass
+        # Columns through to the Cython function, which then translates to
+        # libcudf tables to call the libcudf API.
         if not isinstance(values, Frame):
             values = as_column(values)
             if values.dtype != self.dtype:
                 self = self.astype(values.dtype)
-            values = values.as_frame()
+            values = type(self)._from_data({None: values.copy(deep=False)})
         outcol = libcudf.search.search_sorted(
             self, values, side, ascending=ascending, na_position=na_position
         )

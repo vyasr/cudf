@@ -64,9 +64,34 @@ def drop_nulls(Table source_table, how="any", keys=None, thresh=None):
     elif how == "all":
         c_keep_threshold = 1
 
-    cdef unique_ptr[table] c_result
     cdef table_view source_table_view = source_table.view()
+    return Table.from_unique_ptr(
+        move(_drop_nulls(source_table_view, cpp_keys, c_keep_threshold)),
+        column_names=source_table._column_names,
+        index_names=(
+            None if source_table._index is None
+            else source_table._index_names)
+    )
 
+
+def drop_nulls_column(Column source_column, thresh=None):
+    cdef table_view source_table_view = source_column.table_view()
+    cdef vector[size_type] cpp_keys = [0]
+
+    cdef size_type c_keep_threshold
+    c_keep_threshold = thresh if thresh is not None else 1
+
+    return Table.from_unique_ptr(
+        move(_drop_nulls(source_table_view, cpp_keys, c_keep_threshold)),
+        column_names=None,
+    )
+
+
+cdef unique_ptr[table] _drop_nulls(
+    table_view source_table_view, vector[size_type] cpp_keys,
+    size_type c_keep_threshold
+):
+    cdef unique_ptr[table] c_result
     with nogil:
         c_result = move(
             cpp_drop_nulls(
@@ -76,13 +101,7 @@ def drop_nulls(Table source_table, how="any", keys=None, thresh=None):
             )
         )
 
-    return Table.from_unique_ptr(
-        move(c_result),
-        column_names=source_table._column_names,
-        index_names=(
-            None if source_table._index is None
-            else source_table._index_names)
-    )
+    return move(c_result)
 
 
 def apply_boolean_mask(Table source_table, Column boolean_mask):

@@ -2589,7 +2589,7 @@ class Frame(libcudf.table.Table):
             values = as_column(values)
             if values.dtype != self.dtype:
                 self = self.astype(values.dtype)
-            values = type(self)._from_data({None: values.copy(deep=False)})
+            values = values.as_frame()
         outcol = libcudf.search.search_sorted(
             self, values, side, ascending=ascending, na_position=na_position
         )

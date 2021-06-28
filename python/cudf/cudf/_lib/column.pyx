@@ -46,6 +46,7 @@ from cudf._lib.cpp.column.column_factories cimport (
 from cudf._lib.cpp.lists.lists_column_view cimport lists_column_view
 from cudf._lib.cpp.scalar.scalar cimport scalar
 from cudf._lib.scalar cimport DeviceScalar
+from cudf._lib.cpp.table.table_view cimport table_view
 cimport cudf._lib.cpp.types as libcudf_types
 cimport cudf._lib.cpp.unary as libcudf_unary
 
@@ -370,6 +371,17 @@ cdef class Column:
             null_count = libcudf_types.UNKNOWN_NULL_COUNT
         cdef libcudf_types.size_type c_null_count = null_count
         return self._view(c_null_count)
+
+    cdef table_view table_view(self) except *:
+        """Return a cudf::table_view of this column.
+
+        This function is needed to use libcudf APIs that are designed for
+        tables on individual cuDF columns without constructing unnecessary
+        Frame intermediates.
+        """
+        cdef vector[column_view] column_views
+        column_views.push_back(self.view())
+        return table_view(column_views)
 
     cdef column_view _view(self, libcudf_types.size_type null_count) except *:
         if is_categorical_dtype(self.dtype):

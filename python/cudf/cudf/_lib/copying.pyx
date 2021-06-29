@@ -185,11 +185,11 @@ def gather(
 
 
 def _scatter_table(Table source_table, Column scatter_map,
-                   Table target_table, bool bounds_check=True):
+                   Column target_column, bool bounds_check=True):
 
     cdef table_view source_table_view = source_table.data_view()
     cdef column_view scatter_map_view = scatter_map.view()
-    cdef table_view target_table_view = target_table.data_view()
+    cdef table_view target_table_view = target_column.table_view()
     cdef bool c_bounds_check = bounds_check
 
     cdef unique_ptr[table] c_result
@@ -204,33 +204,23 @@ def _scatter_table(Table source_table, Column scatter_map,
             )
         )
 
-    out_table = Table.from_unique_ptr(
+    return Table.from_unique_ptr(
         move(c_result),
-        column_names=target_table._column_names,
-        index_names=None
-    )
-
-    out_table._index = (
-        None if target_table._index is None else target_table._index.copy(
-            deep=False)
-    )
-
-    return out_table
+        column_names=[None],
+    )._data[None]
 
 
-def _scatter_scalar(scalars, Column scatter_map,
-                    Table target_table, bool bounds_check=True):
+def _scatter_scalar(scalar, Column scatter_map,
+                    Column target_column, bool bounds_check=True):
 
     cdef vector[reference_wrapper[constscalar]] source_scalars
-    source_scalars.reserve(len(scalars))
+    source_scalars.reserve(1)
     cdef bool c_bounds_check = bounds_check
-    cdef DeviceScalar slr
-    for val, col in zip(scalars, target_table._columns):
-        slr = as_device_scalar(val, col.dtype)
-        source_scalars.push_back(reference_wrapper[constscalar](
-            slr.get_raw_ptr()[0]))
+    cdef DeviceScalar slr = as_device_scalar(scalar, target_column.dtype)
+    source_scalars.push_back(reference_wrapper[constscalar](
+        slr.get_raw_ptr()[0]))
     cdef column_view scatter_map_view = scatter_map.view()
-    cdef table_view target_table_view = target_table.data_view()
+    cdef table_view target_table_view = target_column.table_view()
 
     cdef unique_ptr[table] c_result
 
@@ -244,21 +234,13 @@ def _scatter_scalar(scalars, Column scatter_map,
             )
         )
 
-    out_table = Table.from_unique_ptr(
+    return Table.from_unique_ptr(
         move(c_result),
-        column_names=target_table._column_names,
-        index_names=None
-    )
-
-    out_table._index = (
-        None if target_table._index is None else target_table._index.copy(
-            deep=False)
-    )
-
-    return out_table
+        column_names=[None],
+    )._data[None]
 
 
-def scatter(object input, object scatter_map, Table target,
+def scatter(object input, object scatter_map, Column target,
             bool bounds_check=True):
     """
     Scattering input into target as per the scatter map,

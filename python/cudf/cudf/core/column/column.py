@@ -584,15 +584,13 @@ class ColumnBase(Column, Serializable):
         else:
             try:
                 if is_scalar(value):
-                    input = self
-                    out = input.as_frame()._scatter(key, [value])._as_column()
+                    out = self._scatter(key, value)
                 else:
                     if not isinstance(value, Column):
                         value = as_column(value)
                     out = (
-                        self.as_frame()
-                        ._scatter(key, value.as_frame())
-                        ._as_column()
+                        # TODO: Get rid of this as_frame too.
+                        self._scatter(key, value.as_frame())
                     )
             except RuntimeError as e:
                 if "out of bounds" in str(e):
@@ -602,6 +600,9 @@ class ColumnBase(Column, Serializable):
                 raise
 
         self._mimic_inplace(out, inplace=True)
+
+    def _scatter(self, key, value):
+        return libcudf.copying.scatter(value, key, self)
 
     def fillna(
         self: T,

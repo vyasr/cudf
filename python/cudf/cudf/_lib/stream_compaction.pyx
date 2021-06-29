@@ -78,13 +78,12 @@ def drop_nulls_column(Column source_column, thresh=None):
     cdef table_view source_table_view = source_column.table_view()
     cdef vector[size_type] cpp_keys = [0]
 
-    cdef size_type c_keep_threshold
-    c_keep_threshold = thresh if thresh is not None else 1
+    cdef size_type c_keep_threshold = thresh if thresh is not None else 1
 
     return Table.from_unique_ptr(
         move(_drop_nulls(source_table_view, cpp_keys, c_keep_threshold)),
-        column_names=None,
-    )
+        column_names=[None],
+    )._data[None]
 
 
 cdef unique_ptr[table] _drop_nulls(

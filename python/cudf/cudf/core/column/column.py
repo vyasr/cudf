@@ -186,14 +186,12 @@ class ColumnBase(Column, Serializable):
         return n
 
     def dropna(self, drop_nan: bool = False) -> ColumnBase:
+        col = self.nans_to_nulls() if drop_nan else self
+
         if drop_nan:
-            col = self.nans_to_nulls()
-        else:
-            col = self
-        dropped_col = (
-            col.as_frame()._drop_na_rows(drop_nan=drop_nan)._as_column()
-        )
-        return dropped_col
+            col = col.nans_to_nulls()
+
+        return libcudf.stream_compaction.drop_nulls_column(col)
 
     def to_arrow(self) -> pa.Array:
         """Convert to PyArrow Array

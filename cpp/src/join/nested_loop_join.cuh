@@ -34,6 +34,7 @@
 #include <thrust/optional.h>
 
 #include <algorithm>
+#include <limits>
 
 namespace cudf {
 namespace detail {
@@ -88,12 +89,7 @@ get_conditional_join_indices(table_view const& left,
   auto const nullable =
     std::any_of(left.begin(), left.end(), [](column_view c) { return c.nullable(); }) ||
     std::any_of(right.begin(), right.end(), [](column_view c) { return c.nullable(); });
-  auto const has_nulls =
-    nullable &&
-    (std::any_of(
-       left.begin(), left.end(), [](column_view c) { return c.nullable() && c.has_nulls(); }) ||
-     std::any_of(
-       right.begin(), right.end(), [](column_view c) { return c.nullable() && c.has_nulls(); }));
+  auto const has_nulls = nullable && (cudf::has_nulls(left) || cudf::has_nulls(right));
 
   auto const plan = ast::detail::ast_plan{binary_pred, left, right, has_nulls, stream, mr};
   CUDF_EXPECTS(plan.output_type().id() == type_id::BOOL8,
@@ -124,6 +120,7 @@ get_conditional_join_indices(table_view const& left,
   CHECK_CUDA(stream.value());
 
   size_type const join_size = size.value(stream);
+  CUDF_EXPECTS(join_size < std::numeric_limits<size_type>::max(), "The result of this join is too large for a cudf column.");
 
   // If the output size will be zero, we can return immediately.
   if (join_size == 0) {

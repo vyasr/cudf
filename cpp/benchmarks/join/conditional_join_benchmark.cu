@@ -114,6 +114,75 @@ static void BM_join(benchmark::State& state, Join JoinFunc)
   }
 }
 
+template <typename key_type, typename payload_type, bool Nullable, typename Join>
+static void BM_nested_join(benchmark::State& state, Join JoinFunc)
+{
+  const cudf::size_type build_table_size{(cudf::size_type)state.range(0)};
+  const cudf::size_type probe_table_size{(cudf::size_type)state.range(1)};
+  const cudf::size_type rand_max_val{build_table_size * 2};
+  const double selectivity             = 0.3;
+  const bool is_build_table_key_unique = true;
+
+  // Generate build and probe tables
+  cudf::test::UniformRandomGenerator<cudf::size_type> rand_gen(0, build_table_size);
+  auto build_random_null_mask = [&rand_gen](int size) {
+    if (Nullable) {
+      // roughly 25% nulls
+      auto validity = thrust::make_transform_iterator(
+        thrust::make_counting_iterator(0),
+        [&rand_gen](auto i) { return (rand_gen.generate() & 3) == 0; });
+      return cudf::test::detail::make_null_mask(validity, validity + size);
+    } else {
+      return cudf::create_null_mask(size, cudf::mask_state::UNINITIALIZED);
+    }
+  };
+
+  std::unique_ptr<cudf::column> build_key_column = [&]() {
+    return Nullable ? cudf::make_numeric_column(cudf::data_type(cudf::type_to_id<key_type>()),
+                                                build_table_size,
+                                                build_random_null_mask(build_table_size))
+                    : cudf::make_numeric_column(cudf::data_type(cudf::type_to_id<key_type>()),
+                                                build_table_size);
+  }();
+  std::unique_ptr<cudf::column> probe_key_column = [&]() {
+    return Nullable ? cudf::make_numeric_column(cudf::data_type(cudf::type_to_id<key_type>()),
+                                                probe_table_size,
+                                                build_random_null_mask(probe_table_size))
+                    : cudf::make_numeric_column(cudf::data_type(cudf::type_to_id<key_type>()),
+                                                probe_table_size);
+  }();
+
+  generate_input_tables<key_type, cudf::size_type>(
+    build_key_column->mutable_view().data<key_type>(),
+    build_table_size,
+    probe_key_column->mutable_view().data<key_type>(),
+    probe_table_size,
+    selectivity,
+    rand_max_val,
+    is_build_table_key_unique);
+
+  auto payload_data_it = thrust::make_counting_iterator(0);
+  cudf::test::fixed_width_column_wrapper<payload_type> build_payload_column(
+    payload_data_it, payload_data_it + build_table_size);
+
+  cudf::test::fixed_width_column_wrapper<payload_type> probe_payload_column(
+    payload_data_it, payload_data_it + probe_table_size);
+
+  CHECK_CUDA(0);
+
+  cudf::table_view build_table({build_key_column->view()});
+  cudf::table_view probe_table({probe_key_column->view()});
+
+  // Benchmark the inner join operation
+
+  for (auto _ : state) {
+    cuda_event_timer raii(state, true, rmm::cuda_stream_default);
+
+    auto result =
+      JoinFunc(probe_table, build_table, cudf::null_equality::UNEQUAL);
+  }
+}
+
 #define CONDITIONAL_INNER_JOIN_BENCHMARK_DEFINE(name, key_type, payload_type, nullable) \
   BENCHMARK_TEMPLATE_DEFINE_F(ConditionalJoin, name, key_type, payload_type)            \
   (::benchmark::State & st)                                                             \
@@ -211,6 +280,7 @@ CONDITIONAL_LEFT_ANTI_JOIN_BENCHMARK_DEFINE(conditional_left_anti_join_64bit_nul
     BM_join<key_type, payload_type, nullable>(st, join);                                    \
   }
 
+
 CONDITIONAL_LEFT_SEMI_JOIN_BENCHMARK_DEFINE(conditional_left_semi_join_32bit,
                                             int32_t,
                                             int32_t,
@@ -228,6 +298,22 @@ CONDITIONAL_LEFT_SEMI_JOIN_BENCHMARK_DEFINE(conditional_left_semi_join_64bit_nul
                                             int64_t,
                                             true);
 
+
+#define NESTED_INNER_JOIN_BENCHMARK_DEFINE(name, key_type, payload_type, nullable) \
+  BENCHMARK_TEMPLATE_DEFINE_F(ConditionalJoin, name, key_type, payload_type)            \
+  (::benchmark::State & st)                                                             \
+  {                                                                                     \
+    auto join = [](cudf::table_view const& left,                                        \
+                   cudf::table_view const& right,                                       \
+                   cudf::null_equality compare_nulls) {                                 \
+      return cudf::get_base_nested_loop_join_indices(left, right, compare_nulls);     \
+    };                                                                                  \
+    BM_nested_join<key_type, payload_type, nullable>(st, join);                                \
+  }
+
+
+NESTED_INNER_JOIN_BENCHMARK_DEFINE(nested_inner_join_32bit, int32_t, int32_t, false);
+
 // inner join -----------------------------------------------------------------------
 BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit)
   ->Unit(benchmark::kMillisecond)
@@ -239,6 +325,13 @@ BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit)
   // otherwise equivalent nullable benchmark below, which has memory errors for
   // sufficiently large data sets.
   //->Args({1'000'000, 1'000'000})
+  ->UseManualTime();
+
+BENCHMARK_REGISTER_F(ConditionalJoin, nested_inner_join_32bit)
+  ->Unit(benchmark::kMillisecond)
+  ->Args({100'000, 100'000})
+  ->Args({100'000, 400'000})
+  ->Args({100'000, 1'000'000})
   ->UseManualTime();
 
 //BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_64bit)

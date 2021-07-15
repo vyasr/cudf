@@ -850,5 +850,10 @@ std::unique_ptr<rmm::device_uvector<size_type>> conditional_left_anti_join(
   null_equality compare_nulls         = null_equality::EQUAL,
   rmm::mr::device_memory_resource* mr = rmm::mr::get_current_device_resource());
 
+std::pair<rmm::device_uvector<size_type>, rmm::device_uvector<size_type>>
+get_base_nested_loop_join_indices(table_view const& left,
+                                  table_view const& right,
+                                  null_equality compare_nulls,
+                                  rmm::cuda_stream_view stream = rmm::cuda_stream_default);
 /** @} */  // end of group
 }  // namespace cudf

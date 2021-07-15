@@ -456,4 +456,14 @@ std::unique_ptr<rmm::device_uvector<size_type>> conditional_left_anti_join(
                                             mr)
                      .first);
 }
+
+std::pair<rmm::device_uvector<size_type>, rmm::device_uvector<size_type>>
+get_base_nested_loop_join_indices(table_view const& left,
+                                  table_view const& right,
+                                  null_equality compare_nulls,
+                                  rmm::cuda_stream_view stream)
+{
+    return detail::get_base_nested_loop_join_indices(left, right, false, detail::join_kind::INNER_JOIN, compare_nulls, stream);
+}
+
 }  // namespace cudf

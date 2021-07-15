@@ -231,8 +231,8 @@ CONDITIONAL_LEFT_SEMI_JOIN_BENCHMARK_DEFINE(conditional_left_semi_join_64bit_nul
 // inner join -----------------------------------------------------------------------
 BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit)
   ->Unit(benchmark::kMillisecond)
-  //->Args({100'000, 100'000})
-  //->Args({100'000, 400'000})
+  ->Args({100'000, 100'000})
+  ->Args({100'000, 400'000})
   ->Args({100'000, 1'000'000})
   // TODO: The below benchmark is slow, but can be useful to validate that the
   // code works for large data sets. This benchmark was used to compare to the

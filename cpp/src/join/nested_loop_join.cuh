@@ -102,6 +102,23 @@ get_conditional_join_indices(table_view const& left,
   rmm::device_scalar<size_type> size(0, stream, mr);
   CHECK_CUDA(stream.value());
   constexpr int block_size{DEFAULT_JOIN_BLOCK_SIZE};
+
+  int numBlocks{-1};
+  if (has_nulls) {
+      CUDA_TRY(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                  &numBlocks, compute_conditional_join_output_size<block_size, true>, block_size, plan.dev_plan.shmem_per_thread * block_size));
+  } else {
+      CUDA_TRY(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                  &numBlocks, compute_conditional_join_output_size<block_size, false>, block_size, plan.dev_plan.shmem_per_thread * block_size));
+  }
+
+  int dev_id{-1};
+  CUDA_TRY(cudaGetDevice(&dev_id));
+
+  int num_sms{-1};
+  CUDA_TRY(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, dev_id));
+
+
   detail::grid_1d config(left_table->num_rows(), block_size);
   auto const shmem_size_per_block = plan.dev_plan.shmem_per_thread * config.num_threads_per_block;
 
@@ -110,11 +127,11 @@ get_conditional_join_indices(table_view const& left,
   join_kind KernelJoinKind = JoinKind == join_kind::FULL_JOIN ? join_kind::LEFT_JOIN : JoinKind;
   if (has_nulls) {
     compute_conditional_join_output_size<block_size, true>
-      <<<config.num_blocks, config.num_threads_per_block, shmem_size_per_block, stream.value()>>>(
+      <<<numBlocks * num_sms, block_size, plan.dev_plan.shmem_per_thread * block_size, stream.value()>>>(
         *left_table, *right_table, KernelJoinKind, compare_nulls, plan.dev_plan, size.data());
   } else {
     compute_conditional_join_output_size<block_size, false>
-      <<<config.num_blocks, config.num_threads_per_block, shmem_size_per_block, stream.value()>>>(
+      <<<numBlocks * num_sms, block_size, plan.dev_plan.shmem_per_thread * block_size, stream.value()>>>(
         *left_table, *right_table, KernelJoinKind, compare_nulls, plan.dev_plan, size.data());
   }
   CHECK_CUDA(stream.value());

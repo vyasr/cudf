@@ -231,8 +231,8 @@ CONDITIONAL_LEFT_SEMI_JOIN_BENCHMARK_DEFINE(conditional_left_semi_join_64bit_nul
 // inner join -----------------------------------------------------------------------
 BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit)
   ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
+  //->Args({100'000, 100'000})
+  //->Args({100'000, 400'000})
   ->Args({100'000, 1'000'000})
   // TODO: The below benchmark is slow, but can be useful to validate that the
   // code works for large data sets. This benchmark was used to compare to the
@@ -241,139 +241,139 @@ BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit)
   //->Args({1'000'000, 1'000'000})
   ->UseManualTime();
 
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_64bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_64bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-// left join -----------------------------------------------------------------------
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_32bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_64bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_32bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_64bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-// full join -----------------------------------------------------------------------
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_32bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_64bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_32bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_64bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-// left anti-join -------------------------------------------------------------
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_32bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_64bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_32bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_64bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-// left semi-join -------------------------------------------------------------
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_32bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_64bit)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_32bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
-
-BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_64bit_nulls)
-  ->Unit(benchmark::kMillisecond)
-  ->Args({100'000, 100'000})
-  ->Args({100'000, 400'000})
-  ->Args({100'000, 1'000'000})
-  ->UseManualTime();
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_64bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_32bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_inner_join_64bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//// left join -----------------------------------------------------------------------
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_32bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_64bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_32bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_join_64bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//// full join -----------------------------------------------------------------------
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_32bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_64bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_32bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_full_join_64bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//// left anti-join -------------------------------------------------------------
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_32bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_64bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_32bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_anti_join_64bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//// left semi-join -------------------------------------------------------------
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_32bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_64bit)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_32bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();
+//
+//BENCHMARK_REGISTER_F(ConditionalJoin, conditional_left_semi_join_64bit_nulls)
+//  ->Unit(benchmark::kMillisecond)
+//  ->Args({100'000, 100'000})
+//  ->Args({100'000, 400'000})
+//  ->Args({100'000, 1'000'000})
+//  ->UseManualTime();

@@ -28,9 +28,14 @@ from cudf._lib.search import search_sorted
 from cudf._lib.table import Table
 from cudf._typing import DtypeObj
 from cudf.api.types import (
+    _is_non_decimal_numeric_dtype,
     _is_scalar_or_zero_d_array,
+    is_categorical_dtype,
     is_dtype_equal,
     is_integer,
+    is_interval_dtype,
+    is_list_like,
+    is_scalar,
     is_string_dtype,
 )
 from cudf.core.abc import Serializable
@@ -52,13 +57,8 @@ from cudf.core.frame import SingleColumnFrame
 from cudf.utils import ioutils
 from cudf.utils.docutils import copy_docstring
 from cudf.utils.dtypes import (
-    _is_non_decimal_numeric_dtype,
     find_common_type,
-    is_categorical_dtype,
-    is_interval_dtype,
-    is_list_like,
     is_mixed_with_object_dtype,
-    is_scalar,
     numeric_normalize_types,
 )
 from cudf.utils.utils import cached_property, search_range

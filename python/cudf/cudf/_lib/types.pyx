@@ -15,18 +15,18 @@ from cudf._lib.types cimport (
     underlying_type_t_sorted,
 )
 
-from cudf.core.dtypes import (
-    Decimal32Dtype,
-    Decimal64Dtype,
-    ListDtype,
-    StructDtype,
-)
-from cudf.utils.dtypes import (
+from cudf.api.types import (
     is_decimal32_dtype,
     is_decimal64_dtype,
     is_decimal_dtype,
     is_list_dtype,
     is_struct_dtype,
+)
+from cudf.core.dtypes import (
+    Decimal32Dtype,
+    Decimal64Dtype,
+    ListDtype,
+    StructDtype,
 )
 
 cimport cudf._lib.cpp.types as libcudf_types

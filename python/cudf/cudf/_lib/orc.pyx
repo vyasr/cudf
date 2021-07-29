@@ -10,7 +10,7 @@ from libcpp.vector cimport vector
 
 from cudf._lib.cpp.column.column cimport column
 
-from cudf.utils.dtypes import is_struct_dtype
+from cudf.api.types import is_struct_dtype
 
 from cudf._lib.column cimport Column
 from cudf._lib.cpp.io.orc cimport (

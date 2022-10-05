@@ -579,6 +579,10 @@ set_source_files_properties(
   PROPERTIES COMPILE_DEFINITIONS "_FILE_OFFSET_BITS=64"
 )
 
+set_source_files_properties( src/binaryop/compiled/NullLogicalAnd.cu PROPERTIES COMPILE_OPTIONS "-G")
+set_source_files_properties( src/binaryop/compiled/binary_ops.cu PROPERTIES COMPILE_OPTIONS "-G")
+set_source_files_properties( src/binaryop/compiled/equality_ops.cu PROPERTIES COMPILE_OPTIONS "-G")
+
 set_target_properties(
   cudf
   PROPERTIES BUILD_RPATH "\$ORIGIN"

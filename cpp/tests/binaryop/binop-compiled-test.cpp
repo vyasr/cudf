@@ -33,6 +33,8 @@
 #include <thrust/iterator/counting_iterator.h>
 
 #include <type_traits>
+#include <iostream>
+#include <cstdlib>
 
 namespace cudf::test::binop {
 
@@ -103,377 +105,377 @@ struct BinaryOperationCompiledTest : public BinaryOperationTest {
   }
 };
 
-// ADD
-//     n      t     d
-// n n + n
-// t      	     	t + d
-// d      	d + t	d + d
-
-using namespace numeric;
-
-using Add_types = cudf::test::Types<cudf::test::Types<bool, bool, float>,
-                                    cudf::test::Types<int16_t, double, uint8_t>,
-                                    cudf::test::Types<timestamp_s, timestamp_s, duration_s>,
-                                    cudf::test::Types<timestamp_ns, duration_ms, timestamp_us>,
-                                    cudf::test::Types<duration_us, duration_us, duration_D>,
-                                    // cudf::test::Types<duration_s, int16_t, int64_t>, //valid
-                                    cudf::test::Types<decimal32, decimal32, decimal32>,
-                                    cudf::test::Types<decimal64, decimal64, decimal64>,
-                                    cudf::test::Types<decimal128, decimal128, decimal128>,
-                                    cudf::test::Types<int, decimal32, decimal32>,
-                                    cudf::test::Types<int, decimal64, decimal64>,
-                                    cudf::test::Types<int, decimal128, decimal128>,
-                                    // Extras
-                                    cudf::test::Types<duration_D, duration_D, duration_D>,
-                                    cudf::test::Types<timestamp_D, timestamp_D, duration_D>,
-                                    cudf::test::Types<timestamp_s, timestamp_D, duration_s>,
-                                    cudf::test::Types<timestamp_ms, timestamp_ms, duration_s>,
-                                    cudf::test::Types<timestamp_ns, timestamp_ms, duration_ns>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_Add : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Add, Add_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Add, Vector_Vector)
-{
-  this->template test<cudf::library::operation::Add>(cudf::binary_operator::ADD);
-}
-
-// SUB
-//     n      t     d
-// n n - n
-// t      	t - t	t - d
-// d      	     	d - d
-
-using Sub_types =
-  cudf::test::Types<cudf::test::Types<int32_t, bool, float>,                  // n - n
-                    cudf::test::Types<duration_D, timestamp_D, timestamp_D>,  // t - t
-                    cudf::test::Types<timestamp_s, timestamp_D, duration_s>,  // t - d
-                    cudf::test::Types<duration_ns, duration_us, duration_s>,  // d - d
-                    cudf::test::Types<duration_us, duration_us, duration_s>,  // d - d
-                    cudf::test::Types<decimal32, decimal32, decimal32>,
-                    cudf::test::Types<decimal64, decimal64, decimal64>,
-                    cudf::test::Types<decimal128, decimal128, decimal128>,
-                    cudf::test::Types<int, decimal32, decimal32>,
-                    cudf::test::Types<int, decimal64, decimal64>,
-                    cudf::test::Types<int, decimal128, decimal128>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_Sub : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Sub, Sub_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Sub, Vector_Vector)
-{
-  this->template test<cudf::library::operation::Sub>(cudf::binary_operator::SUB);
-}
-
-// MUL
-//     n      t     d
-// n n * n	     	n * d
-// t
-// d d * n
-using Mul_types = cudf::test::Types<cudf::test::Types<int32_t, u_int64_t, float>,
-                                    cudf::test::Types<duration_s, u_int64_t, duration_s>,
-                                    cudf::test::Types<duration_ms, duration_D, int16_t>,
-                                    cudf::test::Types<duration_ns, duration_us, uint8_t>,
-                                    cudf::test::Types<decimal32, decimal32, decimal32>,
-                                    cudf::test::Types<decimal64, decimal64, decimal64>,
-                                    cudf::test::Types<decimal128, decimal128, decimal128>,
-                                    cudf::test::Types<int, decimal32, decimal32>,
-                                    cudf::test::Types<int, decimal64, decimal64>,
-                                    cudf::test::Types<int, decimal128, decimal128>,
-                                    cudf::test::Types<decimal32, int, int>,
-                                    cudf::test::Types<decimal64, int, int>,
-                                    cudf::test::Types<decimal128, int, int>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_Mul : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Mul, Mul_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Mul, Vector_Vector)
-{
-  this->template test<cudf::library::operation::Mul>(cudf::binary_operator::MUL);
-}
-
-// DIV
-//     n      t     d
-// n n / n
-// t
-// d d / n	     	d / d
-using Div_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
-                                    cudf::test::Types<double, int8_t, int64_t>,
-                                    cudf::test::Types<duration_ms, duration_s, u_int32_t>,
-                                    cudf::test::Types<duration_ns, duration_D, int16_t>,
-                                    cudf::test::Types<double, duration_D, duration_ns>,
-                                    cudf::test::Types<float, duration_ms, duration_ns>,
-                                    cudf::test::Types<u_int64_t, duration_us, duration_ns>,
-                                    cudf::test::Types<decimal32, decimal32, decimal32>,
-                                    cudf::test::Types<decimal64, decimal64, decimal64>,
-                                    cudf::test::Types<decimal128, decimal128, decimal128>,
-                                    cudf::test::Types<int, decimal32, decimal32>,
-                                    cudf::test::Types<int, decimal64, decimal64>,
-                                    cudf::test::Types<int, decimal128, decimal128>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_Div : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Div, Div_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Div, Vector_Vector)
-{
-  this->template test<cudf::library::operation::Div>(cudf::binary_operator::DIV);
-}
-
-// TRUE-DIV
-//     n      t     d
-// n n / n
-// t
-// d
-using TrueDiv_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
-                                        cudf::test::Types<double, int8_t, int64_t>,
-                                        cudf::test::Types<int8_t, bool, u_int32_t>,
-                                        cudf::test::Types<u_int64_t, float, int16_t>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_TrueDiv : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_TrueDiv, TrueDiv_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_TrueDiv, Vector_Vector)
-{
-  this->template test<cudf::library::operation::TrueDiv>(cudf::binary_operator::TRUE_DIV);
-}
-// FLOOR_DIV
-//     n      t     d
-// n n / n
-// t
-// d
-TYPED_TEST(BinaryOperationCompiledTest_TrueDiv, FloorDiv_Vector_Vector)
-{
-  this->template test<cudf::library::operation::FloorDiv>(cudf::binary_operator::FLOOR_DIV);
-}
-
-// MOD
-//     n      t     d
-// n n % n
-// t
-// d d % n	     	d % d
-using Mod_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
-                                    cudf::test::Types<double, int8_t, int64_t>,
-                                    cudf::test::Types<duration_ms, duration_s, u_int32_t>,
-                                    cudf::test::Types<duration_D, duration_D, int16_t>,
-                                    cudf::test::Types<duration_ns, duration_D, int16_t>,
-                                    cudf::test::Types<duration_ns, duration_us, duration_ns>>;
-template <typename T>
-struct BinaryOperationCompiledTest_Mod : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Mod, Mod_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Mod, Vector_Vector)
-{
-  this->template test<cudf::library::operation::Mod>(cudf::binary_operator::MOD);
-}
-
-// PYMOD
-//     n      t     d
-// n n % n
-// t
-// d      	     	d % d
-using PyMod_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
-                                      cudf::test::Types<double, int8_t, int64_t>,
-                                      cudf::test::Types<double, double, double>,
-                                      cudf::test::Types<duration_ns, duration_us, duration_ns>>;
-template <typename T>
-struct BinaryOperationCompiledTest_PyMod : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_PyMod, PyMod_types);
-TYPED_TEST(BinaryOperationCompiledTest_PyMod, Vector_Vector)
-{
-  this->template test<cudf::library::operation::PyMod>(cudf::binary_operator::PYMOD);
-}
-
-// POW
-//     n      t     d
-// n n ^ n
-// t
-// d
-
-using Pow_types = cudf::test::Types<cudf::test::Types<double, int64_t, int64_t>,
-                                    cudf::test::Types<float, float, float>,
-                                    cudf::test::Types<int, int32_t, float>,
-                                    cudf::test::Types<float, int, int>,
-                                    cudf::test::Types<double, int64_t, int32_t>,
-                                    cudf::test::Types<double, double, double>,
-                                    cudf::test::Types<double, float, double>,
-                                    cudf::test::Types<double, int32_t, int64_t>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_FloatOps : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_FloatOps, Pow_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_FloatOps, Pow_Vector_Vector)
-{
-  using TypeOut = typename TestFixture::TypeOut;
-  using TypeLhs = typename TestFixture::TypeLhs;
-  using TypeRhs = typename TestFixture::TypeRhs;
-
-  using POW = cudf::library::operation::Pow<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs = []() {
-    // resulting value can not be represented by the target type => behavior is undefined
-    // -2147483648 in host, 2147483647 in device
-    if constexpr (std::is_same_v<TypeOut, int>) {
-      auto elements =
-        cudf::detail::make_counting_transform_iterator(1, [](auto i) { return i % 5; });
-      return fixed_width_column_wrapper<TypeLhs>(elements, elements + 100);
-    }
-    return lhs_random_column<TypeLhs>(100);
-  }();
-  auto rhs = rhs_random_column<TypeRhs>(100);
-
-  auto out =
-    cudf::binary_operation(lhs, rhs, cudf::binary_operator::POW, data_type(type_to_id<TypeOut>()));
-
-  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, POW(), NearEqualComparator<TypeOut>{2});
-}
-
-// LOG_BASE
-//     n      t     d
-// n log(n, n)
-// t
-// d
-TYPED_TEST(BinaryOperationCompiledTest_FloatOps, LogBase_Vector_Vector)
-{
-  using TypeOut = typename TestFixture::TypeOut;
-  using TypeLhs = typename TestFixture::TypeLhs;
-  using TypeRhs = typename TestFixture::TypeRhs;
-
-  using LOG_BASE = cudf::library::operation::LogBase<TypeOut, TypeLhs, TypeRhs>;
-
-  // Make sure there are no zeros
-  auto elements = cudf::detail::make_counting_transform_iterator(
-    1, [](auto i) { return sizeof(TypeLhs) > 4 ? std::pow(2, i) : i + 30; });
-  fixed_width_column_wrapper<TypeLhs> lhs(elements, elements + 50);
-
-  // Find log to the base 7
-  auto rhs_elements = cudf::detail::make_counting_transform_iterator(0, [](auto) { return 7; });
-  fixed_width_column_wrapper<TypeRhs> rhs(rhs_elements, rhs_elements + 50);
-
-  auto out = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::LOG_BASE, data_type(type_to_id<TypeOut>()));
-
-  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, LOG_BASE());
-}
-
-// ATAN2
-//     n      t     d
-// n ATan2(n, n)
-// t
-// d
-TYPED_TEST(BinaryOperationCompiledTest_FloatOps, ATan2_Vector_Vector)
-{
-  using TypeOut = typename TestFixture::TypeOut;
-  using TypeLhs = typename TestFixture::TypeLhs;
-  using TypeRhs = typename TestFixture::TypeRhs;
-
-  using ATAN2 = cudf::library::operation::ATan2<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs = lhs_random_column<TypeLhs>(col_size);
-  auto rhs = rhs_random_column<TypeRhs>(col_size);
-
-  auto out = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::ATAN2, data_type(type_to_id<TypeOut>()));
-
-  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, ATAN2(), NearEqualComparator<TypeOut>{2});
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_FloatOps, PMod_Vector_Vector)
-{
-  this->template test<cudf::library::operation::PMod>(cudf::binary_operator::PMOD);
-}
-
-using IntPow_types = cudf::test::Types<cudf::test::Types<int32_t, int32_t, int32_t>,
-                                       cudf::test::Types<int64_t, int64_t, int64_t>>;
-template <typename T>
-struct BinaryOperationCompiledTest_IntPow : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_IntPow, IntPow_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_IntPow, IntPow_SpecialCases)
-{
-  // This tests special values for which integer powers are required. Casting
-  // to double and casting the result back to int results in floating point
-  // losses, like 3**1 == 2.
-  using TypeOut = typename TestFixture::TypeOut;
-  using TypeLhs = typename TestFixture::TypeLhs;
-  using TypeRhs = typename TestFixture::TypeRhs;
-
-  auto lhs      = fixed_width_column_wrapper<TypeLhs>({3, -3, 8, -8});
-  auto rhs      = fixed_width_column_wrapper<TypeRhs>({1, 1, 7, 7});
-  auto expected = fixed_width_column_wrapper<TypeOut>({3, -3, 2097152, -2097152});
-
-  auto result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::INT_POW, data_type(type_to_id<TypeOut>()));
-
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-// Bit Operations
-//     n      t     d
-// n n . n
-// t
-// d
-
-// i.i, i.u, u.i, u.u -> i
-// i.i, i.u, u.i, u.u -> u
-using Bit_types = cudf::test::Types<cudf::test::Types<int16_t, int8_t, int16_t>,
-                                    cudf::test::Types<int64_t, int32_t, uint16_t>,
-                                    cudf::test::Types<int64_t, uint64_t, int64_t>,
-                                    cudf::test::Types<int16_t, uint32_t, uint8_t>,
-                                    // cudf::test::Types<bool, int8_t, uint8_t>, // valid
-                                    cudf::test::Types<uint16_t, int8_t, int16_t>,
-                                    cudf::test::Types<uint64_t, int32_t, uint16_t>,
-                                    cudf::test::Types<uint64_t, uint64_t, int64_t>,
-                                    cudf::test::Types<uint16_t, uint8_t, uint32_t>>;
-template <typename T>
-struct BinaryOperationCompiledTest_Bit : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Bit, Bit_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseAnd_Vector_Vector)
-{
-  this->template test<cudf::library::operation::BitwiseAnd>(cudf::binary_operator::BITWISE_AND);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseOr_Vector_Vector)
-{
-  this->template test<cudf::library::operation::BitwiseOr>(cudf::binary_operator::BITWISE_OR);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseXor_Vector_Vector)
-{
-  this->template test<cudf::library::operation::BitwiseXor>(cudf::binary_operator::BITWISE_XOR);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftLeft_Vector_Vector)
-{
-  this->template test<cudf::library::operation::ShiftLeft>(cudf::binary_operator::SHIFT_LEFT);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftRight_Vector_Vector)
-{
-  this->template test<cudf::library::operation::ShiftRight>(cudf::binary_operator::SHIFT_RIGHT);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftRightUnsigned_Vector_Vector)
-{
-  this->template test<cudf::library::operation::ShiftRightUnsigned>(
-    cudf::binary_operator::SHIFT_RIGHT_UNSIGNED);
-}
+//// ADD
+////     n      t     d
+//// n n + n
+//// t      	     	t + d
+//// d      	d + t	d + d
+//
+//using namespace numeric;
+//
+//using Add_types = cudf::test::Types<cudf::test::Types<bool, bool, float>,
+//                                    cudf::test::Types<int16_t, double, uint8_t>,
+//                                    cudf::test::Types<timestamp_s, timestamp_s, duration_s>,
+//                                    cudf::test::Types<timestamp_ns, duration_ms, timestamp_us>,
+//                                    cudf::test::Types<duration_us, duration_us, duration_D>,
+//                                    // cudf::test::Types<duration_s, int16_t, int64_t>, //valid
+//                                    cudf::test::Types<decimal32, decimal32, decimal32>,
+//                                    cudf::test::Types<decimal64, decimal64, decimal64>,
+//                                    cudf::test::Types<decimal128, decimal128, decimal128>,
+//                                    cudf::test::Types<int, decimal32, decimal32>,
+//                                    cudf::test::Types<int, decimal64, decimal64>,
+//                                    cudf::test::Types<int, decimal128, decimal128>,
+//                                    // Extras
+//                                    cudf::test::Types<duration_D, duration_D, duration_D>,
+//                                    cudf::test::Types<timestamp_D, timestamp_D, duration_D>,
+//                                    cudf::test::Types<timestamp_s, timestamp_D, duration_s>,
+//                                    cudf::test::Types<timestamp_ms, timestamp_ms, duration_s>,
+//                                    cudf::test::Types<timestamp_ns, timestamp_ms, duration_ns>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_Add : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Add, Add_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Add, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Add>(cudf::binary_operator::ADD);
+//}
+//
+//// SUB
+////     n      t     d
+//// n n - n
+//// t      	t - t	t - d
+//// d      	     	d - d
+//
+//using Sub_types =
+//  cudf::test::Types<cudf::test::Types<int32_t, bool, float>,                  // n - n
+//                    cudf::test::Types<duration_D, timestamp_D, timestamp_D>,  // t - t
+//                    cudf::test::Types<timestamp_s, timestamp_D, duration_s>,  // t - d
+//                    cudf::test::Types<duration_ns, duration_us, duration_s>,  // d - d
+//                    cudf::test::Types<duration_us, duration_us, duration_s>,  // d - d
+//                    cudf::test::Types<decimal32, decimal32, decimal32>,
+//                    cudf::test::Types<decimal64, decimal64, decimal64>,
+//                    cudf::test::Types<decimal128, decimal128, decimal128>,
+//                    cudf::test::Types<int, decimal32, decimal32>,
+//                    cudf::test::Types<int, decimal64, decimal64>,
+//                    cudf::test::Types<int, decimal128, decimal128>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_Sub : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Sub, Sub_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Sub, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Sub>(cudf::binary_operator::SUB);
+//}
+//
+//// MUL
+////     n      t     d
+//// n n * n	     	n * d
+//// t
+//// d d * n
+//using Mul_types = cudf::test::Types<cudf::test::Types<int32_t, u_int64_t, float>,
+//                                    cudf::test::Types<duration_s, u_int64_t, duration_s>,
+//                                    cudf::test::Types<duration_ms, duration_D, int16_t>,
+//                                    cudf::test::Types<duration_ns, duration_us, uint8_t>,
+//                                    cudf::test::Types<decimal32, decimal32, decimal32>,
+//                                    cudf::test::Types<decimal64, decimal64, decimal64>,
+//                                    cudf::test::Types<decimal128, decimal128, decimal128>,
+//                                    cudf::test::Types<int, decimal32, decimal32>,
+//                                    cudf::test::Types<int, decimal64, decimal64>,
+//                                    cudf::test::Types<int, decimal128, decimal128>,
+//                                    cudf::test::Types<decimal32, int, int>,
+//                                    cudf::test::Types<decimal64, int, int>,
+//                                    cudf::test::Types<decimal128, int, int>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_Mul : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Mul, Mul_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Mul, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Mul>(cudf::binary_operator::MUL);
+//}
+//
+//// DIV
+////     n      t     d
+//// n n / n
+//// t
+//// d d / n	     	d / d
+//using Div_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
+//                                    cudf::test::Types<double, int8_t, int64_t>,
+//                                    cudf::test::Types<duration_ms, duration_s, u_int32_t>,
+//                                    cudf::test::Types<duration_ns, duration_D, int16_t>,
+//                                    cudf::test::Types<double, duration_D, duration_ns>,
+//                                    cudf::test::Types<float, duration_ms, duration_ns>,
+//                                    cudf::test::Types<u_int64_t, duration_us, duration_ns>,
+//                                    cudf::test::Types<decimal32, decimal32, decimal32>,
+//                                    cudf::test::Types<decimal64, decimal64, decimal64>,
+//                                    cudf::test::Types<decimal128, decimal128, decimal128>,
+//                                    cudf::test::Types<int, decimal32, decimal32>,
+//                                    cudf::test::Types<int, decimal64, decimal64>,
+//                                    cudf::test::Types<int, decimal128, decimal128>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_Div : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Div, Div_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Div, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Div>(cudf::binary_operator::DIV);
+//}
+//
+//// TRUE-DIV
+////     n      t     d
+//// n n / n
+//// t
+//// d
+//using TrueDiv_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
+//                                        cudf::test::Types<double, int8_t, int64_t>,
+//                                        cudf::test::Types<int8_t, bool, u_int32_t>,
+//                                        cudf::test::Types<u_int64_t, float, int16_t>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_TrueDiv : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_TrueDiv, TrueDiv_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_TrueDiv, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::TrueDiv>(cudf::binary_operator::TRUE_DIV);
+//}
+//// FLOOR_DIV
+////     n      t     d
+//// n n / n
+//// t
+//// d
+//TYPED_TEST(BinaryOperationCompiledTest_TrueDiv, FloorDiv_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::FloorDiv>(cudf::binary_operator::FLOOR_DIV);
+//}
+//
+//// MOD
+////     n      t     d
+//// n n % n
+//// t
+//// d d % n	     	d % d
+//using Mod_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
+//                                    cudf::test::Types<double, int8_t, int64_t>,
+//                                    cudf::test::Types<duration_ms, duration_s, u_int32_t>,
+//                                    cudf::test::Types<duration_D, duration_D, int16_t>,
+//                                    cudf::test::Types<duration_ns, duration_D, int16_t>,
+//                                    cudf::test::Types<duration_ns, duration_us, duration_ns>>;
+//template <typename T>
+//struct BinaryOperationCompiledTest_Mod : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Mod, Mod_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Mod, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Mod>(cudf::binary_operator::MOD);
+//}
+//
+//// PYMOD
+////     n      t     d
+//// n n % n
+//// t
+//// d      	     	d % d
+//using PyMod_types = cudf::test::Types<cudf::test::Types<int16_t, u_int64_t, u_int64_t>,
+//                                      cudf::test::Types<double, int8_t, int64_t>,
+//                                      cudf::test::Types<double, double, double>,
+//                                      cudf::test::Types<duration_ns, duration_us, duration_ns>>;
+//template <typename T>
+//struct BinaryOperationCompiledTest_PyMod : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_PyMod, PyMod_types);
+//TYPED_TEST(BinaryOperationCompiledTest_PyMod, Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::PyMod>(cudf::binary_operator::PYMOD);
+//}
+//
+//// POW
+////     n      t     d
+//// n n ^ n
+//// t
+//// d
+//
+//using Pow_types = cudf::test::Types<cudf::test::Types<double, int64_t, int64_t>,
+//                                    cudf::test::Types<float, float, float>,
+//                                    cudf::test::Types<int, int32_t, float>,
+//                                    cudf::test::Types<float, int, int>,
+//                                    cudf::test::Types<double, int64_t, int32_t>,
+//                                    cudf::test::Types<double, double, double>,
+//                                    cudf::test::Types<double, float, double>,
+//                                    cudf::test::Types<double, int32_t, int64_t>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_FloatOps : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_FloatOps, Pow_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_FloatOps, Pow_Vector_Vector)
+//{
+//  using TypeOut = typename TestFixture::TypeOut;
+//  using TypeLhs = typename TestFixture::TypeLhs;
+//  using TypeRhs = typename TestFixture::TypeRhs;
+//
+//  using POW = cudf::library::operation::Pow<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs = []() {
+//    // resulting value can not be represented by the target type => behavior is undefined
+//    // -2147483648 in host, 2147483647 in device
+//    if constexpr (std::is_same_v<TypeOut, int>) {
+//      auto elements =
+//        cudf::detail::make_counting_transform_iterator(1, [](auto i) { return i % 5; });
+//      return fixed_width_column_wrapper<TypeLhs>(elements, elements + 100);
+//    }
+//    return lhs_random_column<TypeLhs>(100);
+//  }();
+//  auto rhs = rhs_random_column<TypeRhs>(100);
+//
+//  auto out =
+//    cudf::binary_operation(lhs, rhs, cudf::binary_operator::POW, data_type(type_to_id<TypeOut>()));
+//
+//  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, POW(), NearEqualComparator<TypeOut>{2});
+//}
+//
+//// LOG_BASE
+////     n      t     d
+//// n log(n, n)
+//// t
+//// d
+//TYPED_TEST(BinaryOperationCompiledTest_FloatOps, LogBase_Vector_Vector)
+//{
+//  using TypeOut = typename TestFixture::TypeOut;
+//  using TypeLhs = typename TestFixture::TypeLhs;
+//  using TypeRhs = typename TestFixture::TypeRhs;
+//
+//  using LOG_BASE = cudf::library::operation::LogBase<TypeOut, TypeLhs, TypeRhs>;
+//
+//  // Make sure there are no zeros
+//  auto elements = cudf::detail::make_counting_transform_iterator(
+//    1, [](auto i) { return sizeof(TypeLhs) > 4 ? std::pow(2, i) : i + 30; });
+//  fixed_width_column_wrapper<TypeLhs> lhs(elements, elements + 50);
+//
+//  // Find log to the base 7
+//  auto rhs_elements = cudf::detail::make_counting_transform_iterator(0, [](auto) { return 7; });
+//  fixed_width_column_wrapper<TypeRhs> rhs(rhs_elements, rhs_elements + 50);
+//
+//  auto out = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::LOG_BASE, data_type(type_to_id<TypeOut>()));
+//
+//  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, LOG_BASE());
+//}
+//
+//// ATAN2
+////     n      t     d
+//// n ATan2(n, n)
+//// t
+//// d
+//TYPED_TEST(BinaryOperationCompiledTest_FloatOps, ATan2_Vector_Vector)
+//{
+//  using TypeOut = typename TestFixture::TypeOut;
+//  using TypeLhs = typename TestFixture::TypeLhs;
+//  using TypeRhs = typename TestFixture::TypeRhs;
+//
+//  using ATAN2 = cudf::library::operation::ATan2<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs = rhs_random_column<TypeRhs>(col_size);
+//
+//  auto out = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::ATAN2, data_type(type_to_id<TypeOut>()));
+//
+//  ASSERT_BINOP<TypeOut, TypeLhs, TypeRhs>(*out, lhs, rhs, ATAN2(), NearEqualComparator<TypeOut>{2});
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_FloatOps, PMod_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::PMod>(cudf::binary_operator::PMOD);
+//}
+//
+//using IntPow_types = cudf::test::Types<cudf::test::Types<int32_t, int32_t, int32_t>,
+//                                       cudf::test::Types<int64_t, int64_t, int64_t>>;
+//template <typename T>
+//struct BinaryOperationCompiledTest_IntPow : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_IntPow, IntPow_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_IntPow, IntPow_SpecialCases)
+//{
+//  // This tests special values for which integer powers are required. Casting
+//  // to double and casting the result back to int results in floating point
+//  // losses, like 3**1 == 2.
+//  using TypeOut = typename TestFixture::TypeOut;
+//  using TypeLhs = typename TestFixture::TypeLhs;
+//  using TypeRhs = typename TestFixture::TypeRhs;
+//
+//  auto lhs      = fixed_width_column_wrapper<TypeLhs>({3, -3, 8, -8});
+//  auto rhs      = fixed_width_column_wrapper<TypeRhs>({1, 1, 7, 7});
+//  auto expected = fixed_width_column_wrapper<TypeOut>({3, -3, 2097152, -2097152});
+//
+//  auto result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::INT_POW, data_type(type_to_id<TypeOut>()));
+//
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//// Bit Operations
+////     n      t     d
+//// n n . n
+//// t
+//// d
+//
+//// i.i, i.u, u.i, u.u -> i
+//// i.i, i.u, u.i, u.u -> u
+//using Bit_types = cudf::test::Types<cudf::test::Types<int16_t, int8_t, int16_t>,
+//                                    cudf::test::Types<int64_t, int32_t, uint16_t>,
+//                                    cudf::test::Types<int64_t, uint64_t, int64_t>,
+//                                    cudf::test::Types<int16_t, uint32_t, uint8_t>,
+//                                    // cudf::test::Types<bool, int8_t, uint8_t>, // valid
+//                                    cudf::test::Types<uint16_t, int8_t, int16_t>,
+//                                    cudf::test::Types<uint64_t, int32_t, uint16_t>,
+//                                    cudf::test::Types<uint64_t, uint64_t, int64_t>,
+//                                    cudf::test::Types<uint16_t, uint8_t, uint32_t>>;
+//template <typename T>
+//struct BinaryOperationCompiledTest_Bit : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Bit, Bit_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseAnd_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::BitwiseAnd>(cudf::binary_operator::BITWISE_AND);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseOr_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::BitwiseOr>(cudf::binary_operator::BITWISE_OR);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, BitwiseXor_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::BitwiseXor>(cudf::binary_operator::BITWISE_XOR);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftLeft_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::ShiftLeft>(cudf::binary_operator::SHIFT_LEFT);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftRight_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::ShiftRight>(cudf::binary_operator::SHIFT_RIGHT);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Bit, ShiftRightUnsigned_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::ShiftRightUnsigned>(
+//    cudf::binary_operator::SHIFT_RIGHT_UNSIGNED);
+//}
 
 // Logical Operations
 //     n      t     d
@@ -493,15 +495,15 @@ struct BinaryOperationCompiledTest_Logical : public BinaryOperationCompiledTest<
 };
 TYPED_TEST_SUITE(BinaryOperationCompiledTest_Logical, Logical_types);
 
-TYPED_TEST(BinaryOperationCompiledTest_Logical, LogicalAnd_Vector_Vector)
-{
-  this->template test<cudf::library::operation::LogicalAnd>(cudf::binary_operator::LOGICAL_AND);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Logical, LogicalOr_Vector_Vector)
-{
-  this->template test<cudf::library::operation::LogicalOr>(cudf::binary_operator::LOGICAL_OR);
-}
+//TYPED_TEST(BinaryOperationCompiledTest_Logical, LogicalAnd_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::LogicalAnd>(cudf::binary_operator::LOGICAL_AND);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Logical, LogicalOr_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::LogicalOr>(cudf::binary_operator::LOGICAL_OR);
+//}
 
 template <typename T>
 using column_wrapper = std::conditional_t<std::is_same_v<T, std::string>,
@@ -536,208 +538,229 @@ TYPED_TEST(BinaryOperationCompiledTest_Logical, NullLogicalAnd_Vector_Vector)
   using TypeRhs  = typename TestFixture::TypeRhs;
   using NULL_AND = cudf::library::operation::NullLogicalAnd<TypeOut, TypeLhs, TypeRhs>;
 
+  const char* env_p = std::getenv("colsize");
+  size_type col_size = atoi(env_p);
+
   auto lhs            = lhs_random_column<TypeLhs>(col_size);
   auto rhs            = rhs_random_column<TypeRhs>(col_size);
   auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_AND>(lhs, rhs);
+  std::cout << "The lhs null count is " << static_cast<column_view>(lhs).null_count() << std::endl;;
+  std::cout << "The rhs null count is " << static_cast<column_view>(rhs).null_count() << std::endl;;
 
   auto const result = cudf::binary_operation(
     lhs, rhs, cudf::binary_operator::NULL_LOGICAL_AND, data_type(type_to_id<TypeOut>()));
+
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+  std::cout << "The expected null count is " << static_cast<column_view>(expected).null_count() << std::endl;
+  std::cout << "The result null count is " << result->view().null_count() << std::endl;
+
+  auto [lhs_data, lhs_mask] = cudf::test::to_host<TypeLhs>(lhs);
+  auto [rhs_data, rhs_mask] = cudf::test::to_host<TypeRhs>(rhs);
+  auto max = static_cast<column_view>(lhs).size();
+  auto total = std::accumulate(thrust::make_counting_iterator(0),
+                 thrust::make_counting_iterator(max),
+                 (int) 0,
+                 [&lhs_mask, &rhs_mask](int cur_total, int i) {
+                   auto lhs_valid    = lhs_mask.data() and cudf::bit_is_set(lhs_mask.data(), i);
+                   auto rhs_valid    = rhs_mask.data() and cudf::bit_is_set(rhs_mask.data(), i);
+                   return cur_total + static_cast<int>(lhs_valid and rhs_valid);
+                 });
+  std::cout << "The manually computed valid total is " << total << std::endl;
 }
 
-TYPED_TEST(BinaryOperationCompiledTest_Logical, NullLogicalOr_Vector_Vector)
-{
-  using TypeOut = bool;
-  using TypeLhs = typename TestFixture::TypeLhs;
-  using TypeRhs = typename TestFixture::TypeRhs;
-  using NULL_OR = cudf::library::operation::NullLogicalOr<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_OR>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_LOGICAL_OR, data_type(type_to_id<TypeOut>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-// Comparison Operations ==, !=, <, >, <=, >=
-// n<!=>n, t<!=>t, d<!=>d, s<!=>s, dc<!=>dc
-using Comparison_types = cudf::test::Types<cudf::test::Types<bool, int8_t, int16_t>,
-                                           cudf::test::Types<bool, uint32_t, uint16_t>,
-                                           cudf::test::Types<bool, uint64_t, double>,
-                                           cudf::test::Types<bool, timestamp_D, timestamp_s>,
-                                           cudf::test::Types<bool, timestamp_ns, timestamp_us>,
-                                           cudf::test::Types<bool, duration_ns, duration_ns>,
-                                           cudf::test::Types<bool, duration_us, duration_s>,
-                                           cudf::test::Types<bool, std::string, std::string>,
-                                           cudf::test::Types<bool, decimal32, decimal32>,
-                                           cudf::test::Types<bool, decimal64, decimal64>,
-                                           cudf::test::Types<bool, decimal128, decimal128>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_Comparison : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_Comparison, Comparison_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, Equal_Vector_Vector)
-{
-  this->template test<cudf::library::operation::Equal>(cudf::binary_operator::EQUAL);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, NotEqual_Vector_Vector)
-{
-  this->template test<cudf::library::operation::NotEqual>(cudf::binary_operator::NOT_EQUAL);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, Less_Vector_Vector)
-{
-  this->template test<cudf::library::operation::Less>(cudf::binary_operator::LESS);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, Greater_Vector_Vector)
-{
-  this->template test<cudf::library::operation::Greater>(cudf::binary_operator::GREATER);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, LessEqual_Vector_Vector)
-{
-  this->template test<cudf::library::operation::LessEqual>(cudf::binary_operator::LESS_EQUAL);
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_Comparison, GreaterEqual_Vector_Vector)
-{
-  this->template test<cudf::library::operation::GreaterEqual>(cudf::binary_operator::GREATER_EQUAL);
-}
-
-// Null Operations NullMax, NullMin
-// Min(n,n) , Min(t,t), Min(d, d), Min(s, s), Min(dc, dc), Min(n,dc), Min(dc, n)
-//    n   t   d  s  dc
-// n  .             .
-// t      .
-// d          .
-// s             .
-// dc .             .
-using Null_types =
-  cudf::test::Types<cudf::test::Types<int16_t, int8_t, int16_t>,
-                    cudf::test::Types<uint16_t, uint32_t, uint16_t>,
-                    cudf::test::Types<double, uint64_t, double>,
-                    cudf::test::Types<timestamp_s, timestamp_D, timestamp_s>,
-                    cudf::test::Types<duration_ns, duration_us, duration_s>,
-                    // cudf::test::Types<std::string, std::string, std::string>, // only fixed-width
-                    cudf::test::Types<decimal32, decimal32, decimal32>,
-                    cudf::test::Types<decimal64, decimal64, decimal64>,
-                    cudf::test::Types<decimal128, decimal128, decimal128>,
-                    cudf::test::Types<decimal32, uint32_t, decimal32>,
-                    cudf::test::Types<decimal64, uint32_t, decimal64>,
-                    cudf::test::Types<decimal128, uint32_t, decimal128>,
-                    cudf::test::Types<int64_t, decimal32, decimal32>,
-                    cudf::test::Types<int64_t, decimal64, decimal64>,
-                    cudf::test::Types<int64_t, decimal128, decimal128>>;
-
-template <typename T>
-struct BinaryOperationCompiledTest_NullOps : public BinaryOperationCompiledTest<T> {
-};
-TYPED_TEST_SUITE(BinaryOperationCompiledTest_NullOps, Null_types);
-
-TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullEquals_Vector_Vector)
-{
-  using TypeOut     = bool;
-  using TypeLhs     = typename TestFixture::TypeLhs;
-  using TypeRhs     = typename TestFixture::TypeRhs;
-  using NULL_EQUALS = cudf::library::operation::NullEquals<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_EQUALS>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_EQUALS, data_type(type_to_id<TypeOut>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-using BinaryOperationCompiledTest_NullOpsString =
-  BinaryOperationCompiledTest_NullOps<cudf::test::Types<std::string, std::string, std::string>>;
-TEST_F(BinaryOperationCompiledTest_NullOpsString, NullEquals_Vector_Vector)
-{
-  using TypeOut     = bool;
-  using TypeLhs     = std::string;
-  using TypeRhs     = std::string;
-  using NULL_EQUALS = cudf::library::operation::NullEquals<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_EQUALS>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_EQUALS, data_type(type_to_id<TypeOut>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullMax_Vector_Vector)
-{
-  using TypeOut  = typename TestFixture::TypeOut;
-  using TypeLhs  = typename TestFixture::TypeLhs;
-  using TypeRhs  = typename TestFixture::TypeRhs;
-  using NULL_MAX = cudf::library::operation::NullMax<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MAX>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_MAX, data_type(type_to_id<TypeOut>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullMin_Vector_Vector)
-{
-  using TypeOut  = typename TestFixture::TypeOut;
-  using TypeLhs  = typename TestFixture::TypeLhs;
-  using TypeRhs  = typename TestFixture::TypeRhs;
-  using NULL_MIN = cudf::library::operation::NullMin<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MIN>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_MIN, data_type(type_to_id<TypeOut>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
-}
-
-TEST_F(BinaryOperationCompiledTest_NullOpsString, NullMax_Vector_Vector)
-{
-  using TypeOut  = std::string;
-  using TypeLhs  = std::string;
-  using TypeRhs  = std::string;
-  using NULL_MAX = cudf::library::operation::NullMax<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MAX>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_MAX, data_type(type_to_id<cudf::string_view>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view());
-}
-
-TEST_F(BinaryOperationCompiledTest_NullOpsString, NullMin_Vector_Vector)
-{
-  using TypeOut  = std::string;
-  using TypeLhs  = std::string;
-  using TypeRhs  = std::string;
-  using NULL_MIN = cudf::library::operation::NullMin<TypeOut, TypeLhs, TypeRhs>;
-
-  auto lhs            = lhs_random_column<TypeLhs>(col_size);
-  auto rhs            = rhs_random_column<TypeRhs>(col_size);
-  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MIN>(lhs, rhs);
-
-  auto const result = cudf::binary_operation(
-    lhs, rhs, cudf::binary_operator::NULL_MIN, data_type(type_to_id<cudf::string_view>()));
-  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view());
-}
-
+//TYPED_TEST(BinaryOperationCompiledTest_Logical, NullLogicalOr_Vector_Vector)
+//{
+//  using TypeOut = bool;
+//  using TypeLhs = typename TestFixture::TypeLhs;
+//  using TypeRhs = typename TestFixture::TypeRhs;
+//  using NULL_OR = cudf::library::operation::NullLogicalOr<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_OR>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_LOGICAL_OR, data_type(type_to_id<TypeOut>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//// Comparison Operations ==, !=, <, >, <=, >=
+//// n<!=>n, t<!=>t, d<!=>d, s<!=>s, dc<!=>dc
+//using Comparison_types = cudf::test::Types<cudf::test::Types<bool, int8_t, int16_t>,
+//                                           cudf::test::Types<bool, uint32_t, uint16_t>,
+//                                           cudf::test::Types<bool, uint64_t, double>,
+//                                           cudf::test::Types<bool, timestamp_D, timestamp_s>,
+//                                           cudf::test::Types<bool, timestamp_ns, timestamp_us>,
+//                                           cudf::test::Types<bool, duration_ns, duration_ns>,
+//                                           cudf::test::Types<bool, duration_us, duration_s>,
+//                                           cudf::test::Types<bool, std::string, std::string>,
+//                                           cudf::test::Types<bool, decimal32, decimal32>,
+//                                           cudf::test::Types<bool, decimal64, decimal64>,
+//                                           cudf::test::Types<bool, decimal128, decimal128>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_Comparison : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_Comparison, Comparison_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, Equal_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Equal>(cudf::binary_operator::EQUAL);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, NotEqual_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::NotEqual>(cudf::binary_operator::NOT_EQUAL);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, Less_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Less>(cudf::binary_operator::LESS);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, Greater_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::Greater>(cudf::binary_operator::GREATER);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, LessEqual_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::LessEqual>(cudf::binary_operator::LESS_EQUAL);
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_Comparison, GreaterEqual_Vector_Vector)
+//{
+//  this->template test<cudf::library::operation::GreaterEqual>(cudf::binary_operator::GREATER_EQUAL);
+//}
+//
+//// Null Operations NullMax, NullMin
+//// Min(n,n) , Min(t,t), Min(d, d), Min(s, s), Min(dc, dc), Min(n,dc), Min(dc, n)
+////    n   t   d  s  dc
+//// n  .             .
+//// t      .
+//// d          .
+//// s             .
+//// dc .             .
+//using Null_types =
+//  cudf::test::Types<cudf::test::Types<int16_t, int8_t, int16_t>,
+//                    cudf::test::Types<uint16_t, uint32_t, uint16_t>,
+//                    cudf::test::Types<double, uint64_t, double>,
+//                    cudf::test::Types<timestamp_s, timestamp_D, timestamp_s>,
+//                    cudf::test::Types<duration_ns, duration_us, duration_s>,
+//                    // cudf::test::Types<std::string, std::string, std::string>, // only fixed-width
+//                    cudf::test::Types<decimal32, decimal32, decimal32>,
+//                    cudf::test::Types<decimal64, decimal64, decimal64>,
+//                    cudf::test::Types<decimal128, decimal128, decimal128>,
+//                    cudf::test::Types<decimal32, uint32_t, decimal32>,
+//                    cudf::test::Types<decimal64, uint32_t, decimal64>,
+//                    cudf::test::Types<decimal128, uint32_t, decimal128>,
+//                    cudf::test::Types<int64_t, decimal32, decimal32>,
+//                    cudf::test::Types<int64_t, decimal64, decimal64>,
+//                    cudf::test::Types<int64_t, decimal128, decimal128>>;
+//
+//template <typename T>
+//struct BinaryOperationCompiledTest_NullOps : public BinaryOperationCompiledTest<T> {
+//};
+//TYPED_TEST_SUITE(BinaryOperationCompiledTest_NullOps, Null_types);
+//
+//TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullEquals_Vector_Vector)
+//{
+//  using TypeOut     = bool;
+//  using TypeLhs     = typename TestFixture::TypeLhs;
+//  using TypeRhs     = typename TestFixture::TypeRhs;
+//  using NULL_EQUALS = cudf::library::operation::NullEquals<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_EQUALS>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_EQUALS, data_type(type_to_id<TypeOut>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//using BinaryOperationCompiledTest_NullOpsString =
+//  BinaryOperationCompiledTest_NullOps<cudf::test::Types<std::string, std::string, std::string>>;
+//TEST_F(BinaryOperationCompiledTest_NullOpsString, NullEquals_Vector_Vector)
+//{
+//  using TypeOut     = bool;
+//  using TypeLhs     = std::string;
+//  using TypeRhs     = std::string;
+//  using NULL_EQUALS = cudf::library::operation::NullEquals<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_EQUALS>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_EQUALS, data_type(type_to_id<TypeOut>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullMax_Vector_Vector)
+//{
+//  using TypeOut  = typename TestFixture::TypeOut;
+//  using TypeLhs  = typename TestFixture::TypeLhs;
+//  using TypeRhs  = typename TestFixture::TypeRhs;
+//  using NULL_MAX = cudf::library::operation::NullMax<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MAX>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_MAX, data_type(type_to_id<TypeOut>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//TYPED_TEST(BinaryOperationCompiledTest_NullOps, NullMin_Vector_Vector)
+//{
+//  using TypeOut  = typename TestFixture::TypeOut;
+//  using TypeLhs  = typename TestFixture::TypeLhs;
+//  using TypeRhs  = typename TestFixture::TypeRhs;
+//  using NULL_MIN = cudf::library::operation::NullMin<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MIN>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_MIN, data_type(type_to_id<TypeOut>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+//}
+//
+//TEST_F(BinaryOperationCompiledTest_NullOpsString, NullMax_Vector_Vector)
+//{
+//  using TypeOut  = std::string;
+//  using TypeLhs  = std::string;
+//  using TypeRhs  = std::string;
+//  using NULL_MAX = cudf::library::operation::NullMax<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MAX>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_MAX, data_type(type_to_id<cudf::string_view>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view());
+//}
+//
+//TEST_F(BinaryOperationCompiledTest_NullOpsString, NullMin_Vector_Vector)
+//{
+//  using TypeOut  = std::string;
+//  using TypeLhs  = std::string;
+//  using TypeRhs  = std::string;
+//  using NULL_MIN = cudf::library::operation::NullMin<TypeOut, TypeLhs, TypeRhs>;
+//
+//  auto lhs            = lhs_random_column<TypeLhs>(col_size);
+//  auto rhs            = rhs_random_column<TypeRhs>(col_size);
+//  auto const expected = NullOp_Result<TypeOut, TypeLhs, TypeRhs, NULL_MIN>(lhs, rhs);
+//
+//  auto const result = cudf::binary_operation(
+//    lhs, rhs, cudf::binary_operator::NULL_MIN, data_type(type_to_id<cudf::string_view>()));
+//  CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(expected, result->view());
+//}
+//
 }  // namespace cudf::test::binop
 
 CUDF_TEST_PROGRAM_MAIN()

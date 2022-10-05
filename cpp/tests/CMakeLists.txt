@@ -44,6 +44,34 @@ function(ConfigureTest CMAKE_TEST_NAME)
   )
 endfunction()
 
+function(ConfigureTest2 CMAKE_TEST_NAME)
+  add_executable(${CMAKE_TEST_NAME} ${ARGN})
+  set_target_properties(
+    ${CMAKE_TEST_NAME}
+    PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<BUILD_INTERFACE:${CUDF_BINARY_DIR}/gtests>"
+               INSTALL_RPATH "\$ORIGIN/../../../lib"
+               CXX_STANDARD 17
+               CXX_STANDARD_REQUIRED ON
+               # For std:: support of __int128_t. Can be removed once using cuda::std
+               CXX_EXTENSIONS ON
+               CUDA_STANDARD 17
+               CUDA_STANDARD_REQUIRED ON
+  )
+
+  target_link_libraries(
+    ${CMAKE_TEST_NAME} PRIVATE cudftestutil GTest::gmock_main GTest::gtest_main
+                               $<TARGET_NAME_IF_EXISTS:conda_env>
+  )
+  target_compile_options(${CMAKE_TEST_NAME} PRIVATE -g -O0)
+  add_test(NAME ${CMAKE_TEST_NAME} COMMAND ${CMAKE_TEST_NAME})
+  install(
+    TARGETS ${CMAKE_TEST_NAME}
+    COMPONENT testing
+    DESTINATION bin/gtests/libcudf
+    EXCLUDE_FROM_ALL
+  )
+endfunction()
+
 # ##################################################################################################
 # test sources ##################################################################################
 # ##################################################################################################
@@ -189,7 +217,7 @@ ConfigureTest(ROUND_TEST round/round_tests.cpp)
 
 # ##################################################################################################
 # * binary tests ----------------------------------------------------------------------------------
-ConfigureTest(
+ConfigureTest2(
   BINARY_TEST
   binaryop/binop-verify-input-test.cpp
   binaryop/binop-null-test.cpp

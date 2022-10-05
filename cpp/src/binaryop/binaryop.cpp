@@ -193,28 +193,7 @@ std::unique_ptr<column> binary_operation(LhsType const& lhs,
                                          rmm::cuda_stream_view stream,
                                          rmm::mr::device_memory_resource* mr)
 {
-  if constexpr (std::is_same_v<LhsType, column_view> and std::is_same_v<RhsType, column_view>)
-    CUDF_EXPECTS(lhs.size() == rhs.size(), "Column sizes don't match");
-
-  if (lhs.type().id() == type_id::STRING and rhs.type().id() == type_id::STRING and
-      output_type.id() == type_id::STRING and
-      (op == binary_operator::NULL_MAX or op == binary_operator::NULL_MIN))
-    return cudf::binops::compiled::string_null_min_max(lhs, rhs, op, output_type, stream, mr);
-
-  if (not cudf::binops::compiled::is_supported_operation(output_type, lhs.type(), rhs.type(), op))
-    CUDF_FAIL("Unsupported operator for these types");
-
-  if (cudf::is_fixed_point(lhs.type()) or cudf::is_fixed_point(rhs.type())) {
-    cudf::binops::compiled::fixed_point_binary_operation_validation(
-      op, lhs.type(), rhs.type(), output_type);
-  }
-
-  auto out = make_fixed_width_column_for_output(lhs, rhs, op, output_type, stream, mr);
-
-  if constexpr (std::is_same_v<LhsType, column_view>)
-    if (lhs.is_empty()) return out;
-  if constexpr (std::is_same_v<RhsType, column_view>)
-    if (rhs.is_empty()) return out;
+  auto out = make_fixed_width_column(output_type, rhs.size(), mask_state::ALL_VALID, stream, mr);
 
   auto out_view = out->mutable_view();
   cudf::binops::compiled::binary_operation(out_view, lhs, rhs, op, stream);
@@ -322,8 +301,7 @@ std::unique_ptr<column> binary_operation(scalar const& lhs,
                                          rmm::cuda_stream_view stream,
                                          rmm::mr::device_memory_resource* mr)
 {
-  return binops::compiled::binary_operation<scalar, column_view>(
-    lhs, rhs, op, output_type, stream, mr);
+  return make_fixed_width_column(output_type, rhs.size(), mask_state::ALL_VALID, stream, mr);
 }
 std::unique_ptr<column> binary_operation(column_view const& lhs,
                                          scalar const& rhs,
@@ -332,8 +310,7 @@ std::unique_ptr<column> binary_operation(column_view const& lhs,
                                          rmm::cuda_stream_view stream,
                                          rmm::mr::device_memory_resource* mr)
 {
-  return binops::compiled::binary_operation<column_view, scalar>(
-    lhs, rhs, op, output_type, stream, mr);
+  return make_fixed_width_column(output_type, lhs.size(), mask_state::ALL_VALID, stream, mr);
 }
 std::unique_ptr<column> binary_operation(column_view const& lhs,
                                          column_view const& rhs,

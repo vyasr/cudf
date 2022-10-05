@@ -247,7 +247,6 @@ __global__ void for_each_kernel(cudf::size_type size, Functor f)
   int start = tid + blkid * blksz;
   int step  = blksz * gridsz;
 
-#pragma unroll
   for (cudf::size_type i = start; i < size; i += step) {
     f(i);
   }
@@ -289,12 +288,14 @@ void apply_binary_op(mutable_column_view& out,
   // Create binop functor instance
   if (common_dtype) {
     // Execute it on every element
+      printf("First branch.\n");
     for_each(stream,
              out.size(),
              binary_op_device_dispatcher<BinaryOperator>{
                *common_dtype, *outd, *lhsd, *rhsd, is_lhs_scalar, is_rhs_scalar});
   } else {
     // Execute it on every element
+      printf("This branch.\n");
     for_each(stream,
              out.size(),
              binary_op_double_device_dispatcher<BinaryOperator>{

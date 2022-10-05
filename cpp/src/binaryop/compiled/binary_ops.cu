@@ -365,7 +365,7 @@ void binary_operation(mutable_column_view& out,
                       binary_operator op,
                       rmm::cuda_stream_view stream)
 {
-  operator_dispatcher(out, lhs, rhs, false, false, op, stream);
+  apply_binary_op<ops::NullLogicalAnd>(out, lhs, rhs, false, false, stream);
 }
 // scalar_vector
 void binary_operation(mutable_column_view& out,

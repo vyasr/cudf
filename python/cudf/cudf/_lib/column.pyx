@@ -551,7 +551,7 @@ cdef class Column:
 
     @staticmethod
     def from_Column(
-        pylibcudf.libcudf_types.Column col, bint data_ptr_exposed=False
+        pylibcudf.libcudf_classes.Column col, bint data_ptr_exposed=False
     ):
         """Create a Column from a column
 
@@ -560,7 +560,7 @@ cdef class Column:
         `data_ptr_exposed=True` to expose the memory of the returned Column
         as well.
         """
-        cdef pylibcudf.libcudf_types.ColumnView view = col.view()
+        cdef pylibcudf.libcudf_classes.ColumnView view = col.view()
         cdef size_type size = view.size()
         cdef size_type null_count = view.null_count()
 
@@ -582,7 +582,7 @@ cdef class Column:
         #     with nogil:
         #         c_col = move(make_numeric_column(c_dtype, size, mask_state))
 
-        cdef pylibcudf.libcudf_types.ColumnContents contents = col.release()
+        cdef pylibcudf.libcudf_classes.ColumnContents contents = col.release()
 
         data = as_buffer(contents.data, exposed=data_ptr_exposed)
 
@@ -593,7 +593,7 @@ cdef class Column:
         # Because of a bug in Cython, we cannot set the optional
         # `data_ptr_exposed` argument within a comprehension.
         children = []
-        cdef pylibcudf.libcudf_types.Column child
+        cdef pylibcudf.libcudf_classes.Column child
         for child in contents.children:
             children.append(Column.from_Column(child, data_ptr_exposed))
 

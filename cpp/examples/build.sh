@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2021-2023, NVIDIA CORPORATION.
+# Copyright (c) 2021-2024, NVIDIA CORPORATION.
 
 # libcudf examples build script
 
@@ -20,11 +20,12 @@ build_example() {
   build_dir="${example_dir}/build"
 
   # Configure
-  cmake -S ${example_dir} -B ${build_dir} -Dcudf_ROOT="${LIB_BUILD_DIR}"
+  cmake -S ${example_dir} -B ${build_dir} -Dcudf_ROOT="${LIB_BUILD_DIR}" -GNinja
   # Build
   cmake --build ${build_dir} -j${PARALLEL_LEVEL}
 }
 
-build_example basic
-build_example strings
-build_example nested_types
+#build_example basic
+#build_example strings
+#build_example nested_types
+build_example streams

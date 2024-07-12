@@ -19,6 +19,7 @@
 #include <cudf/utilities/prefetch.hpp>
 
 #include <rmm/cuda_device.hpp>
+#include <rmm/prefetch.hpp>
 
 #include <iostream>
 
@@ -49,14 +50,8 @@ void prefetch(std::string_view key, void const* ptr, std::size_t size)
       std::cerr << "Prefetching " << size << " bytes for key " << key << " at location " << ptr
                 << std::endl;
     }
-    auto result = cudaMemPrefetchAsync(
-      ptr, size, rmm::get_current_cuda_device().value(), cudf::get_default_stream().value());
-    // Ignore cudaErrorInvalidValue because that will be raised if
-    // prefetching is attempted on unmanaged memory.
-    if ((result != cudaErrorInvalidValue) && (result != cudaSuccess)) {
-      std::cerr << "Prefetch failed" << std::endl;
-      CUDF_CUDA_TRY(result);
-    }
+
+    rmm::prefetch(ptr, size, rmm::get_current_cuda_device(), cudf::get_default_stream());
   }
 }
 

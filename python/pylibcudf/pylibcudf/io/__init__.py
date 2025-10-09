@@ -1,9 +1,10 @@
-# Copyright (c) 2024, NVIDIA CORPORATION.
+# Copyright (c) 2024-2025, NVIDIA CORPORATION.
 
 from . import (
     avro,
     csv,
     datasource,
+    hybrid_scan,
     json,
     orc,
     parquet,
@@ -21,6 +22,7 @@ __all__ = [
     "avro",
     "csv",
     "datasource",
+    "hybrid_scan",
     "json",
     "orc",
     "parquet",

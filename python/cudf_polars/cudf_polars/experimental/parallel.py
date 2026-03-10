@@ -463,6 +463,16 @@ def _(
     if not all(
         expr.is_pointwise for expr in traversal([e.value for e in ir.columns])
     ):  # pragma: no cover
+        # The rapidsmpf streaming executor assumes that do_evalute results can be
+        # serialized into a TableChunk, which requires uniform column sizes. HStack
+        # nodes with should_broadcast=False (produced by Polars' CSE optimizer) can
+        # return DataFrames with mismatched column sizes (N-row original + 1-row
+        # aggregation results), violating this expectation. Forcing
+        # should_broadcast=True here ensures that 1-row aggregation columns to match the
+        # input chunk size.
+        config_options = rec.state["config_options"]
+        if not ir.should_broadcast and config_options.executor.runtime == "rapidsmpf":
+            ir = HStack(ir.schema, ir.columns, should_broadcast=True, df=ir.children[0])
         # TODO: Avoid fallback if/when possible
         return _lower_ir_fallback(
             ir, rec, msg="This HStack not supported for multiple partitions."

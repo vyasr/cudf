@@ -70,6 +70,14 @@ cdef class Table:
     def __init__(self, list columns):
         if not all(isinstance(c, Column) for c in columns):
             raise ValueError("All columns must be pylibcudf Column objects")
+        if len(columns) > 1:
+            expected_size = columns[0].size()
+            for i, c in enumerate(columns[1:], 1):
+                if c.size() != expected_size:
+                    raise ValueError(
+                        f"Column size mismatch: column {i} has size "
+                        f"{c.size()} != {expected_size}"
+                    )
         self._columns = columns
 
     def to_arrow(

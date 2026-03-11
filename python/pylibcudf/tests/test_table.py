@@ -53,3 +53,27 @@ def test_table_copy(table_data):
         assert orig_col is not copy_col
 
     assert_table_eq(original.to_arrow(), copied)
+
+
+def test_table_column_size_mismatch():
+    """Test that Table.__init__ validates column sizes."""
+    col_3 = plc.Column.from_arrow(pa.array([1, 2, 3]))
+    col_5 = plc.Column.from_arrow(pa.array([1, 2, 3, 4, 5]))
+
+    # Valid: empty table
+    plc.Table([])
+
+    # Valid: single column
+    plc.Table([col_3])
+
+    # Valid: matching sizes
+    col_3b = plc.Column.from_arrow(pa.array([4, 5, 6]))
+    plc.Table([col_3, col_3b])
+
+    # Invalid: 2 columns mismatched
+    with pytest.raises(ValueError, match="Column size mismatch"):
+        plc.Table([col_3, col_5])
+
+    # Invalid: 3 columns, mismatch in last position
+    with pytest.raises(ValueError, match="Column size mismatch"):
+        plc.Table([col_3, col_3b, col_5])

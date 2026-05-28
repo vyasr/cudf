@@ -20,7 +20,7 @@ rapids_cuda_init_architectures(CUDF)
 project(
   CUDF
   VERSION "${RAPIDS_VERSION}"
-  LANGUAGES C CXX CUDA
+  LANGUAGES C CXX CUDA ASM
 )
 
 if(CMAKE_CUDA_COMPILER_ID STREQUAL "NVIDIA" AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.2)
@@ -392,6 +392,21 @@ include(cmake/thirdparty/get_thread_pool.cmake)
 # find zstd
 include(cmake/thirdparty/get_zstd.cmake)
 
+# JIT Embedding helper functions
+include(librtcx/embed.cmake)
+include(librtcx/fragments.cmake)
+
+# Hash fragment embed target
+add_embed(cudf_hash_fragments)
+
+# Hash fragment macro and registrations
+include(src/hash/jit_lto_fragments.cmake)
+
+# Finalize JIT embed with zstd compression
+embed(cudf_hash_fragments COMPRESSION zstd OUTPUT_DIRECTORY
+      "${CUDF_GENERATED_INCLUDE_DIR}/rtcx_embed"
+)
+
 # Workaround until https://github.com/rapidsai/rapids-cmake/issues/176 is resolved
 if(NOT BUILD_SHARED_LIBS)
   include("${rapids-cmake-dir}/export/find_package_file.cmake")
@@ -551,6 +566,7 @@ add_library(
   src/groupby/streaming_groupby/insert_subsequent_nested.cu
   src/groupby/streaming_groupby/merge.cu
   src/hash/md5_hash.cu
+  src/hash/murmurhash_jit_planner.cpp
   src/hash/murmurhash3_x86_32.cu
   src/hash/murmurhash3_x64_128.cu
   src/hash/sha1_hash.cu
@@ -672,6 +688,7 @@ add_library(
   src/jit/parser.cpp
   src/jit/row_ir.cpp
   src/jit/util.cpp
+  librtcx/rtcx.cpp
   src/join/conditional_join.cu
   src/join/cross_join.cu
   src/join/distinct_hash_join.cu
@@ -1048,8 +1065,13 @@ target_include_directories(
           "$<BUILD_INTERFACE:${nanoarrow_SOURCE_DIR}/src>"
           "$<BUILD_INTERFACE:${FlatBuffers_SOURCE_DIR}/include>"
           "$<BUILD_INTERFACE:${ZSTD_INCLUDE_DIR}>"
+          "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/librtcx>"
+          "$<BUILD_INTERFACE:${cudf_hash_fragments_INCLUDE_DIRS}>"
   INTERFACE "$<INSTALL_INTERFACE:include>"
 )
+
+# Wire generated JIT embed sources into cudf
+target_sources(cudf PRIVATE "${cudf_hash_fragments_SOURCE_DIR}/cudf_hash_fragments.s")
 
 target_compile_definitions(
   cudf PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:${CUDF_CXX_DEFINITIONS}>"
@@ -1099,8 +1121,8 @@ target_compile_definitions(cudf PRIVATE $<$<BOOL:${CUDF_KVIKIO_REMOTE_IO}>:CUDF_
 # https://github.com/NVIDIA/cccl/pull/2844
 target_compile_definitions(cudf PRIVATE THRUST_FORCE_32_BIT_OFFSET_TYPE=1 CCCL_AVOID_SORT_UNROLL=1)
 
-# Compile stringified JIT sources first
-add_dependencies(cudf jitify_preprocess_run)
+# Compile stringified JIT sources and LTO fragment embeds first
+add_dependencies(cudf jitify_preprocess_run cudf_hash_fragments)
 
 # Specify the target module library dependencies
 target_link_libraries(

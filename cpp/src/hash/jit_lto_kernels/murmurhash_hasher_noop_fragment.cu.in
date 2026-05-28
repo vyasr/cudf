@@ -1,0 +1,25 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <cudf/column/column_device_view.cuh>
+
+#include "hash/jit_lto_kernels/murmurhash3_x86_32_jit_hasher_decl.cuh"
+
+namespace cudf::hashing::detail {
+
+template <>
+__device__ hash_value_type murmur_jit_hasher<@storage_cpp@>(column_device_view col,
+                                                            uint32_t seed,
+                                                            bool nullable,
+                                                            size_type row_index)
+{
+  (void)col;
+  (void)seed;
+  (void)nullable;
+  (void)row_index;
+  return hash_value_type{0};
+}
+
+}  // namespace cudf::hashing::detail

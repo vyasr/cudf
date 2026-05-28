@@ -17,7 +17,11 @@
 namespace cudf {
 
 context::context(context_config const& cfg, init_flags flags)
-  : _config{cfg}, _program_cache_init_flag{}, _program_cache{nullptr}
+  : _config{cfg},
+    _program_cache_init_flag{},
+    _program_cache{nullptr},
+    _rtcx_cache_init_flag{},
+    _rtcx_cache{nullptr}
 {
   initialize_components(flags);
 }
@@ -36,9 +40,31 @@ jit::program_cache& context::program_cache()
   return *_program_cache;
 }
 
+void context::ensure_rtcx_cache_initialized()
+{
+  std::call_once(_rtcx_cache_init_flag, [&]() {
+    rtcx::initialize();
+    auto limits = rtcx::cache_limits{.num_mem_blobs = 128, .num_mem_libraries = 128};
+    _rtcx_cache = std::make_unique<rtcx::cache_t>(
+      /*cache_dir=*/"/tmp",
+      /*tmp_dir=*/"/tmp",
+      limits,
+      /*preload=*/false,
+      /*disable=*/false);
+  });
+}
+
+rtcx::cache_t& context::rtcx_cache()
+{
+  ensure_rtcx_cache_initialized();
+  return *_rtcx_cache;
+}
+
 bool context::dump_codegen() const { return _config.dump_codegen; }
 
 bool context::use_jit() const { return _config.use_jit; }
+
+context::~context() = default;
 
 void context::initialize_components(init_flags flags)
 {

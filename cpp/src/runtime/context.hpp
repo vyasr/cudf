@@ -8,6 +8,8 @@
 #include <cudf/context.hpp>
 #include <cudf/utilities/export.hpp>
 
+#include <rtcx.hpp>
+
 #include <memory>
 #include <mutex>
 
@@ -32,20 +34,27 @@ class context {
   std::once_flag _program_cache_init_flag;
   std::unique_ptr<jit::program_cache> _program_cache;
 
+  std::once_flag _rtcx_cache_init_flag;
+  std::unique_ptr<rtcx::cache_t> _rtcx_cache;
+
  private:
   void ensure_nvcomp_loaded();
 
   void ensure_jit_cache_initialized();
 
+  void ensure_rtcx_cache_initialized();
+
  public:
-  context(context_config const& cfg = {}, init_flags flags = init_flags::DEFAULT);
+  context(context_config const& cfg = {}, init_flags flags = init_flags::INIT_JIT_CACHE);
   context(context const&)            = delete;
   context& operator=(context const&) = delete;
   context(context&&)                 = delete;
   context& operator=(context&&)      = delete;
-  ~context()                         = default;
+  ~context();
 
   jit::program_cache& program_cache();
+
+  CUDF_EXPORT rtcx::cache_t& rtcx_cache();
 
   [[nodiscard]] bool dump_codegen() const;
 
@@ -57,6 +66,6 @@ class context {
 };
 
 /// @brief Get the cuDF global context
-context& get_context();
+CUDF_EXPORT context& get_context();
 
 }  // namespace cudf

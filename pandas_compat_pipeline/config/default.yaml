@@ -1,0 +1,33 @@
+gpus: 8
+
+max_fix_attempts: 5
+flakiness_reruns: 3
+
+integration_trigger_every_n: 10
+pytest_parallelism: 16
+pytest_parallelism_fallback: 12
+
+branch_prefix: "pandas-compat/"
+
+pilot_max_groups: 200
+
+fixer_model: "openai/aws/anthropic/bedrock-claude-opus-4-6"
+reviewer_model: "openai/openai/openai/gpt-5.5"
+inference_hub_url: "https://inference-api.nvidia.com/v1"
+
+fixer_timeout_minutes: 30
+reviewer_timeout_minutes: 10
+integration_timeout_minutes: 120
+single_test_timeout_minutes: 30
+
+postgres_url: "postgresql://cudf:cudf@localhost:5432/langgraph"
+
+worktree_base_path: "/raid/vyasr/local/worktrees/pandas-fix"
+cuda_env_file: "conda/environments/all_cuda-129_arch-x86_64.yaml"
+plugin_path: "python/cudf/cudf/pandas/scripts/pandas-testing-plugin.py"
+test_runner_script: "python/cudf/cudf/pandas/scripts/run-pandas-tests.sh"
+
+max_concurrent_llm_calls: 4
+
+log_level: "INFO"
+evidence_dir: ".sisyphus/evidence"

@@ -102,7 +102,7 @@ PANDAS_CI="1" python -m pytest \
     --disable-warnings \
     "$@"
 
-mv ./*.json ..
+mv ./*.json .. 2>/dev/null || true
 cd ..
 echo "Test script exiting with value: $EXITCODE"
 exit ${EXITCODE}

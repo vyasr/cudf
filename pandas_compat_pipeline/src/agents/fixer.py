@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import shlex
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -84,6 +85,14 @@ class FixerAgent:
             max_concurrent=self.config.max_concurrent_llm_calls,
         )
 
+        # Diagnostic state (initialized per fix() call)
+        self._diag_cycles: list[dict[str, Any]] = []
+        self._diag_verify: list[dict[str, Any]] = []
+        self._diag_start_time: float = 0.0
+        self._diag_xfail_removed: bool = False
+        self._diag_baseline_passed: bool = False
+        self._diag_test_group: TestGroup | None = None
+
     async def fix(
         self, test_group: TestGroup, worktree_path: str, gpu_id: int
     ) -> FixResult:
@@ -93,6 +102,15 @@ class FixerAgent:
         test_results: list[dict[str, Any]] = []
         diagnosis = ""
 
+        # Diagnostic accumulators
+        self._diag_cycles = []
+        self._diag_verify = []
+        self._diag_start_time = time.time()
+        self._diag_xfail_removed = False
+        self._diag_baseline_passed = False
+        self._diag_test_group = test_group
+
+        result: FixResult | None = None
         try:
             await self._checkout_fix_branch(worktree_path, branch_name)
 
@@ -101,6 +119,7 @@ class FixerAgent:
             )
             if removed:
                 modified_files.append(PLUGIN_PATH)
+                self._diag_xfail_removed = True
 
             baseline_results = await self._run_group_tests(
                 worktree_path,
@@ -110,7 +129,7 @@ class FixerAgent:
                 fail_on_fallback=False,
             )
             test_results.extend(
-                self._result_to_dict(result) for result in baseline_results
+                self._result_to_dict(result_item) for result_item in baseline_results
             )
 
             blocker_reason = self._human_review_blocker_reason(
@@ -120,7 +139,7 @@ class FixerAgent:
                 await self._restore_removed_xfails(
                     worktree_path, modified_files
                 )
-                return FixResult(
+                result = FixResult(
                     status="flagged_for_human",
                     branch_name=branch_name,
                     modified_files=modified_files,
@@ -129,8 +148,10 @@ class FixerAgent:
                     attempts=attempts,
                     rejection_reason=blocker_reason,
                 )
+                return result
 
             if self._all_passed(baseline_results):
+                self._diag_baseline_passed = True
                 diagnosis = "Removed stale xfail entry; target tests now pass."
             else:
                 messages = await self._initial_messages(
@@ -158,8 +179,23 @@ class FixerAgent:
                 worktree_path, test_group, gpu_id
             )
             test_results.extend(
-                self._result_to_dict(result) for result in verification_results
+                self._result_to_dict(result_item) for result_item in verification_results
             )
+
+            # Capture verification diagnostics
+            try:
+                for vr in verification_results:
+                    self._diag_verify.append({
+                        "node_id": vr.node_id,
+                        "outcome": vr.outcome.value if hasattr(vr.outcome, 'value') else str(vr.outcome),
+                        "longrepr": vr.longrepr or "",
+                        "stdout": vr.stdout or "",
+                        "duration": vr.duration,
+                        "run_mode": "verification",
+                    })
+            except Exception:
+                pass
+
             if not self._all_passed(verification_results):
                 reason = (
                     "Verification failed; no commit created. "
@@ -172,7 +208,7 @@ class FixerAgent:
                     await self._restore_removed_xfails(
                         worktree_path, modified_files
                     )
-                    return FixResult(
+                    result = FixResult(
                         status="flagged_for_human",
                         branch_name=branch_name,
                         modified_files=modified_files,
@@ -181,7 +217,8 @@ class FixerAgent:
                         attempts=attempts,
                         rejection_reason=blocker_reason,
                     )
-                return FixResult(
+                    return result
+                result = FixResult(
                     status="failed",
                     branch_name=branch_name,
                     modified_files=modified_files,
@@ -190,11 +227,12 @@ class FixerAgent:
                     attempts=attempts,
                     rejection_reason=reason,
                 )
+                return result
 
             await self._commit_success(
                 worktree_path, branch_name, modified_files, test_group
             )
-            return FixResult(
+            result = FixResult(
                 status="success",
                 branch_name=branch_name,
                 modified_files=modified_files,
@@ -203,8 +241,9 @@ class FixerAgent:
                 attempts=attempts,
                 rejection_reason="",
             )
+            return result
         except HumanReviewRequired as exc:
-            return FixResult(
+            result = FixResult(
                 status="flagged_for_human",
                 branch_name=branch_name,
                 modified_files=modified_files,
@@ -213,9 +252,10 @@ class FixerAgent:
                 attempts=attempts,
                 rejection_reason=str(exc),
             )
+            return result
         except Exception as exc:  # pragma: no cover - failure payload path
             LOGGER.exception("Fixer failed for %s", test_group.base_name)
-            return FixResult(
+            result = FixResult(
                 status="failed",
                 branch_name=branch_name,
                 modified_files=modified_files,
@@ -224,6 +264,9 @@ class FixerAgent:
                 attempts=attempts,
                 rejection_reason=str(exc),
             )
+            return result
+        finally:
+            self._write_diagnostic(test_group, result, worktree_path)
 
     async def _initial_messages(
         self,
@@ -330,6 +373,13 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
 
         while attempts < self.config.max_fix_attempts:
             attempts += 1
+
+            # Diagnostic: snapshot messages before LLM call
+            try:
+                diag_messages_before = list(messages)
+            except Exception:
+                diag_messages_before = []
+
             response = await self.llm_client.call_fixer(
                 messages, tools=get_tools()
             )
@@ -341,6 +391,21 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             tool_calls = self._parse_tool_calls(response)
             if not tool_calls:
                 diagnosis = response
+
+                # Diagnostic: capture cycle with no tool calls
+                try:
+                    self._diag_cycles.append({
+                        "cycle": attempts,
+                        "messages_before": diag_messages_before,
+                        "raw_llm_response": response,
+                        "tool_calls_parsed": [],
+                        "tool_results_full": [],
+                        "wrote_patch": False,
+                        "cycles_without_patch": cycles_without_patch,
+                    })
+                except Exception:
+                    pass
+
                 if (
                     cycles_without_patch
                     >= MAX_INVESTIGATION_CYCLES_WITHOUT_PATCH
@@ -352,12 +417,21 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
 
             wrote_patch = False
             tool_results: list[dict[str, Any]] = []
+            cycle_tool_results_full: list[dict[str, Any]] = []
             for tool_call in tool_calls:
                 result = await self._execute_tool_call(
                     tool_call, worktree_path, modified_files
                 )
                 wrote_patch = wrote_patch or result.get("wrote_patch", False)
                 tool_results.append(result)
+                # Diagnostic: capture full tool call and result
+                try:
+                    cycle_tool_results_full.append({
+                        "tool_call": tool_call,
+                        "result": result,
+                    })
+                except Exception:
+                    pass
 
             if wrote_patch:
                 cycles_without_patch = 0
@@ -370,6 +444,20 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                     raise HumanReviewRequired(
                         "3+ investigation cycles completed without producing a patch."
                     )
+
+            # Diagnostic: capture full cycle data
+            try:
+                self._diag_cycles.append({
+                    "cycle": attempts,
+                    "messages_before": diag_messages_before,
+                    "raw_llm_response": response,
+                    "tool_calls_parsed": tool_calls,
+                    "tool_results_full": cycle_tool_results_full,
+                    "wrote_patch": wrote_patch,
+                    "cycles_without_patch": cycles_without_patch,
+                })
+            except Exception:
+                pass
 
             messages.append({"role": "assistant", "content": response})
             messages.append(
@@ -876,5 +964,47 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             "stdout": self._truncate(str(result.stdout)),
         }
 
+
+    def _write_diagnostic(
+        self,
+        test_group: TestGroup | None,
+        fix_result: FixResult | None,
+        worktree_path: str,
+    ) -> None:
+        try:
+            import os  # noqa: F811
+
+            # Output directory: {repo_root}/pandas_compat_pipeline/diagnostic_logs/
+            repo_root = Path(__file__).resolve().parents[3]
+            out_dir = repo_root / "pandas_compat_pipeline" / "diagnostic_logs"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            safe_name = sanitize_branch_name(test_group.base_name).replace("/", "_") if test_group else "unknown"
+            out_path = out_dir / f"diag_{safe_name}.json"
+            tmp_path = out_dir / f"diag_{safe_name}.json.tmp"
+
+            payload = {
+                "test_name": test_group.base_name if test_group else "unknown",
+                "test_group": {
+                    "base_name": test_group.base_name,
+                    "file_path": test_group.file_path,
+                    "node_ids": test_group.node_ids,
+                    "reasons": test_group.reasons,
+                } if test_group else {},
+                "xfail_removed": self._diag_xfail_removed,
+                "baseline_all_passed": self._diag_baseline_passed,
+                "final_status": fix_result.status if fix_result else "exception",
+                "final_rejection_reason": fix_result.rejection_reason if fix_result else "unknown",
+                "diagnosis": fix_result.diagnosis if fix_result else "",
+                "modified_files": fix_result.modified_files if fix_result else [],
+                "attempts_detail": self._diag_cycles,
+                "verification_results": self._diag_verify,
+                "elapsed_seconds": time.time() - self._diag_start_time,
+            }
+
+            tmp_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+            tmp_path.rename(out_path)
+        except Exception:
+            pass  # NEVER let diagnostic failures affect the pipeline
 
 __all__ = ["FixResult", "FixerAgent"]

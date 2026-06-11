@@ -152,6 +152,22 @@ def fix(state: PipelineState) -> dict[str, Any]:
     config = load_config()
     task_name, assignment = _current_assignment(state)
     test_group = _test_group(assignment)
+
+    # Pre-filter: route unfixable groups directly to failed without LLM call
+    pre_filter_reason = _pre_filter_reason(test_group, state)
+    if pre_filter_reason is not None:
+        _run_async(
+            Dispatcher([]).fail_task(
+                int(assignment.get("worker_id", 0)),
+                task_name,
+                pre_filter_reason,
+            )
+        )
+        return {
+            "in_progress": {task_name: {**assignment, "status": "failed"}},
+            "failed": [{"test_name": task_name, "reason": pre_filter_reason}],
+        }
+
     attempts = int(assignment.get("attempts", 0)) + 1
     result = _run_async(
         FixerAgent(config=config).fix(
@@ -577,6 +593,46 @@ def _run_async(awaitable: Any) -> Any:
 
 def _repo_root() -> str:
     return str(Path(__file__).resolve().parents[3])
+
+
+_COLLECTION_FAILURE_PATTERNS = (
+    "not found",
+    "no match in any of",
+    "found no collectors",
+    "collected 0 items",
+    "ERROR: not found",
+    "no tests ran",
+)
+
+_DESELECTED_PATTERNS = (
+    "deselected / 0 selected",
+    "1 deselected",
+    "0 selected",
+    "collected 1 item / 1 deselected",
+)
+
+
+def _pre_filter_reason(
+    test_group: TestGroup, state: PipelineState
+) -> str | None:
+    """Return a pre-filter reason if the group is unfixable, else None."""
+    # Check baseline stale entries: if ALL node_ids are stale, it's a collection failure
+    baseline = state.get("baseline_results")
+    if isinstance(baseline, dict):
+        stale = set(baseline.get("stale_entries", []))
+        if stale and all(nid in stale for nid in test_group.node_ids):
+            return "pre_filtered: collection_failure"
+
+    # Check reasons from the xfail plugin for collection/deselection patterns
+    reasons_text = " ".join(test_group.reasons).lower()
+    for pattern in _COLLECTION_FAILURE_PATTERNS:
+        if pattern.lower() in reasons_text:
+            return "pre_filtered: collection_failure"
+    for pattern in _DESELECTED_PATTERNS:
+        if pattern.lower() in reasons_text:
+            return "pre_filtered: deselected"
+
+    return None
 
 
 def _meta(state: PipelineState) -> dict[str, Any]:

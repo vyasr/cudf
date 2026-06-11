@@ -129,7 +129,8 @@ class FixerAgent:
                 fail_on_fallback=False,
             )
             test_results.extend(
-                self._result_to_dict(result_item) for result_item in baseline_results
+                self._result_to_dict(result_item)
+                for result_item in baseline_results
             )
 
             blocker_reason = self._human_review_blocker_reason(
@@ -179,20 +180,25 @@ class FixerAgent:
                 worktree_path, test_group, gpu_id
             )
             test_results.extend(
-                self._result_to_dict(result_item) for result_item in verification_results
+                self._result_to_dict(result_item)
+                for result_item in verification_results
             )
 
             # Capture verification diagnostics
             try:
                 for vr in verification_results:
-                    self._diag_verify.append({
-                        "node_id": vr.node_id,
-                        "outcome": vr.outcome.value if hasattr(vr.outcome, 'value') else str(vr.outcome),
-                        "longrepr": vr.longrepr or "",
-                        "stdout": vr.stdout or "",
-                        "duration": vr.duration,
-                        "run_mode": "verification",
-                    })
+                    self._diag_verify.append(
+                        {
+                            "node_id": vr.node_id,
+                            "outcome": vr.outcome.value
+                            if hasattr(vr.outcome, "value")
+                            else str(vr.outcome),
+                            "longrepr": vr.longrepr or "",
+                            "stdout": vr.stdout or "",
+                            "duration": vr.duration,
+                            "run_mode": "verification",
+                        }
+                    )
             except Exception:
                 pass
 
@@ -368,12 +374,11 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         modified_files: list[str],
     ) -> dict[str, Any]:
         attempts = 0
+        reprompt_count = 0
         cycles_without_patch = 0
         diagnosis = ""
 
         while attempts < self.config.max_fix_attempts:
-            attempts += 1
-
             # Diagnostic: snapshot messages before LLM call
             try:
                 diag_messages_before = list(messages)
@@ -394,17 +399,31 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
 
                 # Diagnostic: capture cycle with no tool calls
                 try:
-                    self._diag_cycles.append({
-                        "cycle": attempts,
-                        "messages_before": diag_messages_before,
-                        "raw_llm_response": response,
-                        "tool_calls_parsed": [],
-                        "tool_results_full": [],
-                        "wrote_patch": False,
-                        "cycles_without_patch": cycles_without_patch,
-                    })
+                    self._diag_cycles.append(
+                        {
+                            "cycle": attempts,
+                            "messages_before": diag_messages_before,
+                            "raw_llm_response": response,
+                            "tool_calls_parsed": [],
+                            "tool_results_full": [],
+                            "wrote_patch": False,
+                            "cycles_without_patch": cycles_without_patch,
+                            "reprompted": reprompt_count < 2,
+                        }
+                    )
                 except Exception:
                     pass
+
+                if reprompt_count < 2:
+                    messages.append({"role": "assistant", "content": response})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "ERROR: Your response must be a JSON array of tool calls. Use read_file, search_code, run_command, or write_file. Do not respond with prose.",
+                        }
+                    )
+                    reprompt_count += 1
+                    continue
 
                 if (
                     cycles_without_patch
@@ -415,6 +434,8 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                     )
                 return {"attempts": attempts, "diagnosis": diagnosis}
 
+            attempts += 1
+            reprompt_count = 0
             wrote_patch = False
             tool_results: list[dict[str, Any]] = []
             cycle_tool_results_full: list[dict[str, Any]] = []
@@ -426,10 +447,12 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                 tool_results.append(result)
                 # Diagnostic: capture full tool call and result
                 try:
-                    cycle_tool_results_full.append({
-                        "tool_call": tool_call,
-                        "result": result,
-                    })
+                    cycle_tool_results_full.append(
+                        {
+                            "tool_call": tool_call,
+                            "result": result,
+                        }
+                    )
                 except Exception:
                     pass
 
@@ -447,15 +470,17 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
 
             # Diagnostic: capture full cycle data
             try:
-                self._diag_cycles.append({
-                    "cycle": attempts,
-                    "messages_before": diag_messages_before,
-                    "raw_llm_response": response,
-                    "tool_calls_parsed": tool_calls,
-                    "tool_results_full": cycle_tool_results_full,
-                    "wrote_patch": wrote_patch,
-                    "cycles_without_patch": cycles_without_patch,
-                })
+                self._diag_cycles.append(
+                    {
+                        "cycle": attempts,
+                        "messages_before": diag_messages_before,
+                        "raw_llm_response": response,
+                        "tool_calls_parsed": tool_calls,
+                        "tool_results_full": cycle_tool_results_full,
+                        "wrote_patch": wrote_patch,
+                        "cycles_without_patch": cycles_without_patch,
+                    }
+                )
             except Exception:
                 pass
 
@@ -964,7 +989,6 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             "stdout": self._truncate(str(result.stdout)),
         }
 
-
     def _write_diagnostic(
         self,
         test_group: TestGroup | None,
@@ -972,14 +996,16 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         worktree_path: str,
     ) -> None:
         try:
-            import os  # noqa: F811
-
             # Output directory: {repo_root}/pandas_compat_pipeline/diagnostic_logs/
             repo_root = Path(__file__).resolve().parents[3]
             out_dir = repo_root / "pandas_compat_pipeline" / "diagnostic_logs"
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            safe_name = sanitize_branch_name(test_group.base_name).replace("/", "_") if test_group else "unknown"
+            safe_name = (
+                sanitize_branch_name(test_group.base_name).replace("/", "_")
+                if test_group
+                else "unknown"
+            )
             out_path = out_dir / f"diag_{safe_name}.json"
             tmp_path = out_dir / f"diag_{safe_name}.json.tmp"
 
@@ -990,21 +1016,32 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                     "file_path": test_group.file_path,
                     "node_ids": test_group.node_ids,
                     "reasons": test_group.reasons,
-                } if test_group else {},
+                }
+                if test_group
+                else {},
                 "xfail_removed": self._diag_xfail_removed,
                 "baseline_all_passed": self._diag_baseline_passed,
-                "final_status": fix_result.status if fix_result else "exception",
-                "final_rejection_reason": fix_result.rejection_reason if fix_result else "unknown",
+                "final_status": fix_result.status
+                if fix_result
+                else "exception",
+                "final_rejection_reason": fix_result.rejection_reason
+                if fix_result
+                else "unknown",
                 "diagnosis": fix_result.diagnosis if fix_result else "",
-                "modified_files": fix_result.modified_files if fix_result else [],
+                "modified_files": fix_result.modified_files
+                if fix_result
+                else [],
                 "attempts_detail": self._diag_cycles,
                 "verification_results": self._diag_verify,
                 "elapsed_seconds": time.time() - self._diag_start_time,
             }
 
-            tmp_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+            tmp_path.write_text(
+                json.dumps(payload, indent=2, default=str), encoding="utf-8"
+            )
             tmp_path.rename(out_path)
         except Exception:
             pass  # NEVER let diagnostic failures affect the pipeline
+
 
 __all__ = ["FixResult", "FixerAgent"]

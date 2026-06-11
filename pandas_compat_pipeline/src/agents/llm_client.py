@@ -149,14 +149,14 @@ class LLMClient:
                 # Extract message content
                 if result.choices:
                     message = result.choices[0].message
-                    content = message.content
-                    if content:
-                        return str(content)
-                    # Handle tool calls if present
+                    # Prefer tool_calls over content (LLM may include thinking text in content)
                     if hasattr(message, "tool_calls") and message.tool_calls:
                         return json.dumps(
                             [tc.model_dump() for tc in message.tool_calls]
                         )
+                    content = message.content
+                    if content:
+                        return str(content)
 
                 raise ValueError("Empty response from model")
 

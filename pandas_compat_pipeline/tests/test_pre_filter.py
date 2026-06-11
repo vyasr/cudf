@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -22,7 +23,7 @@ _META_KEY = "__graph_meta__"
 
 def _make_state(
     test_group: TestGroup,
-    baseline_results: dict | None = None,
+    baseline_results: Mapping[str, object] | None = None,
 ) -> PipelineState:
     """Build a minimal PipelineState with a single task assignment."""
     task_name = test_group.base_name
@@ -185,8 +186,13 @@ def test_normal_group_not_pre_filtered(
 def test_stale_baseline_entries_pre_filtered(
     mock_fixer_cls, mock_dispatcher_cls, mock_load_config
 ) -> None:
-    """Group whose ALL node_ids are in baseline stale_entries is pre-filtered."""
-    mock_dispatcher_cls.return_value.fail_task = AsyncMock()
+    """Stale baseline entries alone do not pre-filter a group."""
+    mock_config = mock_load_config.return_value
+    mock_config.max_fix_attempts = 3
+
+    mock_fix_result = AsyncMock()
+    mock_fix_result.status = "success"
+    mock_fixer_cls.return_value.fix = AsyncMock(return_value=mock_fix_result)
 
     group = TestGroup(
         base_name="tests/test_old.py::test_removed",
@@ -209,13 +215,7 @@ def test_stale_baseline_entries_pre_filtered(
 
     result = graph.fix(state)
 
-    # Should NOT call FixerAgent.fix()
-    mock_fixer_cls.assert_not_called()
-
-    # Should emit to failed with collection_failure reason
-    assert result["failed"] == [
-        {
-            "test_name": group.base_name,
-            "reason": "pre_filtered: collection_failure",
-        }
-    ]
+    # Should still proceed to FixerAgent.fix()
+    mock_fixer_cls.return_value.fix.assert_called_once()
+    assert "failed" not in result or result.get("failed") is None
+    assert result["in_progress"][group.base_name]["status"] == "success"

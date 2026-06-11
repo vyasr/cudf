@@ -616,13 +616,6 @@ def _pre_filter_reason(
     test_group: TestGroup, state: PipelineState
 ) -> str | None:
     """Return a pre-filter reason if the group is unfixable, else None."""
-    # Check baseline stale entries: if ALL node_ids are stale, it's a collection failure
-    baseline = state.get("baseline_results")
-    if isinstance(baseline, dict):
-        stale = set(baseline.get("stale_entries", []))
-        if stale and all(nid in stale for nid in test_group.node_ids):
-            return "pre_filtered: collection_failure"
-
     # Check reasons from the xfail plugin for collection/deselection patterns
     reasons_text = " ".join(test_group.reasons).lower()
     for pattern in _COLLECTION_FAILURE_PATTERNS:

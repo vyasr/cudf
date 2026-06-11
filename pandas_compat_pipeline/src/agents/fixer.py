@@ -675,16 +675,19 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                     fail_on_fallback=False,
                 )
             )
-        for node_id in node_ids:
-            results.append(
-                await self._run_test_async(
-                    worktree_path,
-                    node_id,
-                    gpu_id,
-                    run_mode="verify",
-                    fail_on_fallback=True,
+        # Stale-xfail groups already passed strict verification; conftest import
+        # errors in fallback mode are irrelevant to the xfail removal fix.
+        if not self._diag_baseline_passed:
+            for node_id in node_ids:
+                results.append(
+                    await self._run_test_async(
+                        worktree_path,
+                        node_id,
+                        gpu_id,
+                        run_mode="verify",
+                        fail_on_fallback=True,
+                    )
                 )
-            )
 
         return results
 

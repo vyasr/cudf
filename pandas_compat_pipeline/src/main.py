@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# ruff: noqa: E402, T201
 
 """Pipeline entry point and CLI for the autonomous pandas test fix pipeline.
 
@@ -383,21 +384,28 @@ async def _run_pilot(
     initial_state: dict[str, Any] | None = None
     if not resume:
         # Build priority-ordered pending_tests: stale xfails first
+        import json as _json
+
         _baseline_path = _PIPELINE_DIR / "baseline_results.json"
         _pending_ordered: list[str] = []
         try:
-            from pandas_compat_pipeline.src.utils.xfail_parser import parse_xfail_list
+            from pandas_compat_pipeline.src.utils.xfail_parser import (
+                parse_xfail_list,
+            )
+
             _all_groups = parse_xfail_list()
             _all_names = [g.base_name for g in _all_groups]
             if _baseline_path.exists():
-                import json as _json
                 _baseline = _json.loads(_baseline_path.read_text())
                 _stale = set(_baseline.get("stale_entries", []))
                 _fully_stale = [
-                    g.base_name for g in _all_groups
+                    g.base_name
+                    for g in _all_groups
                     if _stale and all(nid in _stale for nid in g.node_ids)
                 ]
-                _not_stale = [n for n in _all_names if n not in set(_fully_stale)]
+                _not_stale = [
+                    n for n in _all_names if n not in set(_fully_stale)
+                ]
                 _pending_ordered = _fully_stale + _not_stale
             else:
                 _pending_ordered = _all_names
@@ -413,7 +421,9 @@ async def _run_pilot(
             "flagged_for_human": [],
             "integration_queue": [],
             "integration_results": [],
-            "baseline_results": None,
+            "baseline_results": _json.loads(_baseline_path.read_text())
+            if _baseline_path.exists()
+            else None,
             "fixes_since_last_integration": 0,
             "total_fixes": 0,
             "worker_status": _worker_manager.get_worker_status(),

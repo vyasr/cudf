@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 sys.path[:0] = [
     _path
@@ -17,11 +18,11 @@ sys.path[:0] = [
     if _path not in sys.path
 ]
 
+import pytest  # noqa: E402
+
 from pandas_compat_pipeline.src.agents.fixer import FixerAgent  # noqa: E402
 from pandas_compat_pipeline.src.agents.llm_client import LLMClient  # noqa: E402
 from pandas_compat_pipeline.src.utils.models import TestGroup  # noqa: E402
-
-import pytest  # noqa: E402
 
 
 def _make_agent() -> FixerAgent:
@@ -42,12 +43,28 @@ def _make_test_group() -> TestGroup:
     )
 
 
-def _success_result(cmd: str = "") -> dict:
-    return {"success": True, "stdout": "", "stderr": "", "returncode": 0, "timed_out": False, "cmd": cmd}
+def _success_result(cmd: str = "") -> dict[str, Any]:
+    return {
+        "success": True,
+        "stdout": "",
+        "stderr": "",
+        "returncode": 0,
+        "timed_out": False,
+        "cmd": cmd,
+    }
 
 
-def _failure_result(cmd: str = "", stderr: str = "hook failed") -> dict:
-    return {"success": False, "stdout": "", "stderr": stderr, "returncode": 1, "timed_out": False, "cmd": cmd}
+def _failure_result(
+    cmd: str = "", stderr: str = "hook failed"
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "stdout": "",
+        "stderr": stderr,
+        "returncode": 1,
+        "timed_out": False,
+        "cmd": cmd,
+    }
 
 
 def test_precommit_ruff_called_before_git_add() -> None:
@@ -57,11 +74,16 @@ def test_precommit_ruff_called_before_git_add() -> None:
 
     call_log: list[str] = []
 
-    def mock_run_command(cmd: str, cwd: str | None = None, timeout: int = 300) -> dict:
+    def mock_run_command(
+        cmd: str, cwd: str | None = None, timeout: int = 300
+    ) -> dict[str, Any]:
         call_log.append(cmd)
         return _success_result(cmd)
 
-    with patch("pandas_compat_pipeline.src.agents.fixer.run_command", side_effect=mock_run_command):
+    with patch(
+        "pandas_compat_pipeline.src.agents.fixer.run_command",
+        side_effect=mock_run_command,
+    ):
         asyncio.run(
             agent._commit_success(
                 worktree_path="/tmp/wt",
@@ -71,11 +93,17 @@ def test_precommit_ruff_called_before_git_add() -> None:
             )
         )
 
-    ruff_indices = [i for i, c in enumerate(call_log) if "pre-commit run ruff-format" in c]
-    add_indices = [i for i, c in enumerate(call_log) if c.startswith("git add")]
+    ruff_indices = [
+        i for i, c in enumerate(call_log) if "pre-commit run ruff-format" in c
+    ]
+    add_indices = [
+        i for i, c in enumerate(call_log) if c.startswith("git add")
+    ]
     assert ruff_indices, "pre-commit ruff-format was never called"
     assert add_indices, "git add was never called"
-    assert ruff_indices[0] < add_indices[0], "ruff-format must be called before git add"
+    assert ruff_indices[0] < add_indices[0], (
+        "ruff-format must be called before git add"
+    )
 
 
 def test_ruff_failure_does_not_abort() -> None:
@@ -83,12 +111,17 @@ def test_ruff_failure_does_not_abort() -> None:
     agent = _make_agent()
     agent._validate_or_raise = MagicMock()
 
-    def mock_run_command(cmd: str, cwd: str | None = None, timeout: int = 300) -> dict:
+    def mock_run_command(
+        cmd: str, cwd: str | None = None, timeout: int = 300
+    ) -> dict[str, Any]:
         if "pre-commit run ruff-format" in cmd:
             return _failure_result(cmd, stderr="reformatted src/foo.py")
         return _success_result(cmd)
 
-    with patch("pandas_compat_pipeline.src.agents.fixer.run_command", side_effect=mock_run_command):
+    with patch(
+        "pandas_compat_pipeline.src.agents.fixer.run_command",
+        side_effect=mock_run_command,
+    ):
         # Should NOT raise
         asyncio.run(
             agent._commit_success(
@@ -107,13 +140,18 @@ def test_noverify_fallback_on_commit_failure() -> None:
 
     call_log: list[str] = []
 
-    def mock_run_command(cmd: str, cwd: str | None = None, timeout: int = 300) -> dict:
+    def mock_run_command(
+        cmd: str, cwd: str | None = None, timeout: int = 300
+    ) -> dict[str, Any]:
         call_log.append(cmd)
         if cmd.startswith("git commit") and "--no-verify" not in cmd:
             return _failure_result(cmd, stderr="mypy timeout")
         return _success_result(cmd)
 
-    with patch("pandas_compat_pipeline.src.agents.fixer.run_command", side_effect=mock_run_command):
+    with patch(
+        "pandas_compat_pipeline.src.agents.fixer.run_command",
+        side_effect=mock_run_command,
+    ):
         asyncio.run(
             agent._commit_success(
                 worktree_path="/tmp/wt",
@@ -132,12 +170,17 @@ def test_both_commits_fail_raises() -> None:
     agent = _make_agent()
     agent._validate_or_raise = MagicMock()
 
-    def mock_run_command(cmd: str, cwd: str | None = None, timeout: int = 300) -> dict:
+    def mock_run_command(
+        cmd: str, cwd: str | None = None, timeout: int = 300
+    ) -> dict[str, Any]:
         if cmd.startswith("git commit"):
             return _failure_result(cmd, stderr="fatal error")
         return _success_result(cmd)
 
-    with patch("pandas_compat_pipeline.src.agents.fixer.run_command", side_effect=mock_run_command):
+    with patch(
+        "pandas_compat_pipeline.src.agents.fixer.run_command",
+        side_effect=mock_run_command,
+    ):
         with pytest.raises(RuntimeError, match="git commit failed on"):
             asyncio.run(
                 agent._commit_success(
@@ -156,11 +199,16 @@ def test_first_commit_success_no_fallback() -> None:
 
     call_log: list[str] = []
 
-    def mock_run_command(cmd: str, cwd: str | None = None, timeout: int = 300) -> dict:
+    def mock_run_command(
+        cmd: str, cwd: str | None = None, timeout: int = 300
+    ) -> dict[str, Any]:
         call_log.append(cmd)
         return _success_result(cmd)
 
-    with patch("pandas_compat_pipeline.src.agents.fixer.run_command", side_effect=mock_run_command):
+    with patch(
+        "pandas_compat_pipeline.src.agents.fixer.run_command",
+        side_effect=mock_run_command,
+    ):
         asyncio.run(
             agent._commit_success(
                 worktree_path="/tmp/wt",
@@ -171,4 +219,6 @@ def test_first_commit_success_no_fallback() -> None:
         )
 
     noverify_calls = [c for c in call_log if "--no-verify" in c]
-    assert not noverify_calls, "Should NOT call --no-verify when first commit succeeds"
+    assert not noverify_calls, (
+        "Should NOT call --no-verify when first commit succeeds"
+    )

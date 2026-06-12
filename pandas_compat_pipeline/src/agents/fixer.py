@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-# pyright: reportExplicitAny=false, reportAny=false, reportUnknownVariableType=false, reportUnannotatedClassAttribute=false
+# pyright: reportExplicitAny=false, reportAny=false, reportUnknownVariableType=false, reportUnannotatedClassAttribute=false, reportImportCycles=false
 import asyncio
 import json
 import logging
@@ -11,7 +11,7 @@ import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..config import PipelineConfig, load_config
 from ..utils.branch_manager import sanitize_branch_name
@@ -777,7 +777,7 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             "missing" if ALL results indicate test no longer exists in suite.
             None if results represent a genuine failure or mixed structural types.
         """
-        from ..orchestrator.graph import (
+        from ..orchestrator.graph import (  # pyright: ignore[reportImportCycles]
             _COLLECTION_FAILURE_PATTERNS,
             _DESELECTED_PATTERNS,
         )
@@ -858,7 +858,7 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         unique = set(non_none)
         if len(unique) == 1:
             result_type = unique.pop()
-            return result_type  # type: ignore[return-value]
+            return cast(Literal["deselected", "missing"], result_type)
 
         # Mixed structural types (e.g. one deselected + one missing) → fall through
         return None

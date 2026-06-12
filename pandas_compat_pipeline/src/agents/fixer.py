@@ -777,12 +777,31 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             "missing" if ALL results indicate test no longer exists in suite.
             None if results represent a genuine failure or mixed structural types.
         """
-        from ..orchestrator.graph import _COLLECTION_FAILURE_PATTERNS, _DESELECTED_PATTERNS
+        from ..orchestrator.graph import (
+            _COLLECTION_FAILURE_PATTERNS,
+            _DESELECTED_PATTERNS,
+        )
 
         if not results:
             return None
 
-        def _classify_single(longrepr: str) -> Literal["deselected", "missing", "genuine"] | None:
+        missing_patterns = frozenset(
+            pattern.lower() for pattern in self._MISSING_PATTERNS
+        )
+        deselected_patterns = frozenset(
+            pattern.lower() for pattern in _DESELECTED_PATTERNS
+        )
+        ambiguous_collection_patterns = frozenset(
+            pattern.lower()
+            for pattern in _COLLECTION_FAILURE_PATTERNS
+            if pattern.lower() not in missing_patterns
+            and pattern.lower() not in deselected_patterns
+            and "found no collectors" not in pattern.lower()
+        )
+
+        def _classify_single(
+            longrepr: str,
+        ) -> Literal["deselected", "missing", "genuine"] | None:
             """Classify a single result's longrepr. Returns 'genuine' if not structural."""
             low = (longrepr or "").lower()
             if not low.strip():
@@ -801,20 +820,26 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             # Priority 3: Other collection failures — check remaining _COLLECTION_FAILURE_PATTERNS
             for pattern in _COLLECTION_FAILURE_PATTERNS:
                 if pattern.lower() in low:
-                    # For ambiguous "collected 0 items" / "no tests ran", check if test file exists
-                    if pattern.lower() in ("collected 0 items", "no tests ran"):
+                    # For ambiguous collection failures, check if test file exists
+                    if pattern.lower() in ambiguous_collection_patterns:
                         test_file = (
                             Path(worktree_path)
                             / "pandas-testing"
                             / "pandas-tests"
                             / test_group.file_path
                         )
-                        return "deselected" if test_file.exists() else "missing"
+                        return (
+                            "deselected" if test_file.exists() else "missing"
+                        )
                     # "found no collectors" = dep missing, test exists → deselected
                     return "deselected"
 
             # Not a structural pattern → genuine failure
             return "genuine"
+
+        for result in results:
+            if not (result.longrepr or "").strip():
+                return None
 
         # Classify each result individually
         classifications = [_classify_single(r.longrepr or "") for r in results]

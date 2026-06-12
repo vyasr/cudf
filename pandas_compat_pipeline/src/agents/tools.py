@@ -219,76 +219,88 @@ def get_tools() -> list[dict[str, Any]]:
     """
     return [
         {
-            "name": "read_file",
-            "description": "Read contents of a file from the worktree",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to repository root",
-                    }
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read contents of a file from the worktree",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path relative to repository root",
+                        }
+                    },
+                    "required": ["path"],
                 },
-                "required": ["path"],
             },
         },
         {
-            "name": "write_file",
-            "description": "Write content to a file in the worktree with validation",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path relative to repository root",
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write content to a file in the worktree with validation",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File path relative to repository root",
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "File content to write",
+                        },
                     },
-                    "content": {
-                        "type": "string",
-                        "description": "File content to write",
-                    },
+                    "required": ["path", "content"],
                 },
-                "required": ["path", "content"],
             },
         },
         {
-            "name": "run_command",
-            "description": "Execute a shell command and capture output",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "cmd": {
-                        "type": "string",
-                        "description": "Shell command to execute",
+            "type": "function",
+            "function": {
+                "name": "run_command",
+                "description": "Execute a shell command and capture output",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "cmd": {
+                            "type": "string",
+                            "description": "Shell command to execute",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Working directory (optional)",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Timeout in seconds (default: 300)",
+                            "default": 300,
+                        },
                     },
-                    "cwd": {
-                        "type": "string",
-                        "description": "Working directory (optional)",
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Timeout in seconds (default: 300)",
-                        "default": 300,
-                    },
+                    "required": ["cmd"],
                 },
-                "required": ["cmd"],
             },
         },
         {
-            "name": "search_code",
-            "description": "Search for a regex pattern in code files",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pattern": {
-                        "type": "string",
-                        "description": "Regex pattern to search for",
+            "type": "function",
+            "function": {
+                "name": "search_code",
+                "description": "Search for a regex pattern in code files",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regex pattern to search for",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Directory or file path to search in",
+                        },
                     },
-                    "path": {
-                        "type": "string",
-                        "description": "Directory or file path to search in",
-                    },
+                    "required": ["pattern", "path"],
                 },
-                "required": ["pattern", "path"],
             },
         },
     ]

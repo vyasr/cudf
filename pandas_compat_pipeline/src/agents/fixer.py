@@ -57,14 +57,6 @@ MUTATING_COMMAND_MARKERS = (
     "cp ",
 )
 
-# Patterns indicating the test is deselected (marker/dependency exclusion)
-_DESELECTED_PATTERNS = (
-    "deselected / 0 selected",
-    "1 deselected",
-    "0 selected",
-    "collected 1 item / 1 deselected",
-)
-
 
 @dataclass(slots=True)
 class FixResult:
@@ -785,6 +777,8 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             "missing" if the test no longer exists in the pandas suite.
             None if the results represent a genuine test failure.
         """
+        from ..orchestrator.graph import _DESELECTED_PATTERNS
+
         if not results:
             return None
 

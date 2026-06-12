@@ -254,3 +254,28 @@ def test_ambiguous_collected_zero_file_missing(tmp_path: Path) -> None:
         results, str(tmp_path), _make_test_group()
     )
     assert classification == "missing"
+
+
+def test_mixed_deselected_and_missing_not_classified() -> None:
+    """Mixed group: one deselected, one missing → should return None (not classify)."""
+    agent = _make_agent()
+    results = [
+        TestResult(
+            node_id="test_a",
+            outcome=TestOutcome.FAILED,
+            longrepr="1 deselected in 0.5s",
+            stdout="",
+            duration=0.0,
+        ),
+        TestResult(
+            node_id="test_b",
+            outcome=TestOutcome.FAILED,
+            longrepr="ERROR: not found: test_b (no match in any of [<Module foo>])",
+            stdout="",
+            duration=0.0,
+        ),
+    ]
+    classification = agent._classify_baseline_results(
+        results, "/tmp/fake", _make_test_group()
+    )
+    assert classification is None

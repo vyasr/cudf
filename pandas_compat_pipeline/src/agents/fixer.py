@@ -773,67 +773,69 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         """Classify baseline results to detect structurally unfixable tests.
 
         Returns:
-            "deselected" if the test is excluded by marker/dependency.
-            "missing" if the test no longer exists in the pandas suite.
-            None if the results represent a genuine test failure.
+            "deselected" if ALL results are excluded by marker/dependency.
+            "missing" if ALL results indicate test no longer exists in suite.
+            None if results represent a genuine failure or mixed structural types.
         """
-        from ..orchestrator.graph import _DESELECTED_PATTERNS
+        from ..orchestrator.graph import _COLLECTION_FAILURE_PATTERNS, _DESELECTED_PATTERNS
 
         if not results:
             return None
 
-        combined = " ".join(r.longrepr or "" for r in results).lower()
-        if not combined.strip():
-            return None
+        def _classify_single(longrepr: str) -> Literal["deselected", "missing", "genuine"] | None:
+            """Classify a single result's longrepr. Returns 'genuine' if not structural."""
+            low = (longrepr or "").lower()
+            if not low.strip():
+                return None  # empty longrepr — treat as ambiguous
 
-        # Check if ALL individual results match structural patterns
-        # A genuine failure has longrepr that doesn't match any known pattern
-        def _is_structural(text: str) -> bool:
-            """Return True if a single result's longrepr is structural."""
-            low = text.lower()
+            # Priority 1: MISSING — test no longer exists (subset of _COLLECTION_FAILURE_PATTERNS)
             for pattern in self._MISSING_PATTERNS:
                 if pattern in low:
-                    return True
+                    return "missing"
+
+            # Priority 2: DESELECTED — excluded by marker
             for pattern in _DESELECTED_PATTERNS:
                 if pattern in low:
-                    return True
-            if "found no collectors" in low:
-                return True
-            if "collected 0 items" in low or "no tests ran" in low:
-                return True
-            return False
+                    return "deselected"
 
-        # If not ALL results look structural, don't classify
-        if not all(_is_structural(r.longrepr or "") for r in results):
+            # Priority 3: Other collection failures — check remaining _COLLECTION_FAILURE_PATTERNS
+            for pattern in _COLLECTION_FAILURE_PATTERNS:
+                if pattern.lower() in low:
+                    # For ambiguous "collected 0 items" / "no tests ran", check if test file exists
+                    if pattern.lower() in ("collected 0 items", "no tests ran"):
+                        test_file = (
+                            Path(worktree_path)
+                            / "pandas-testing"
+                            / "pandas-tests"
+                            / test_group.file_path
+                        )
+                        return "deselected" if test_file.exists() else "missing"
+                    # "found no collectors" = dep missing, test exists → deselected
+                    return "deselected"
+
+            # Not a structural pattern → genuine failure
+            return "genuine"
+
+        # Classify each result individually
+        classifications = [_classify_single(r.longrepr or "") for r in results]
+
+        # Filter out None (empty longrepr — skip them; they don't affect classification)
+        non_none = [c for c in classifications if c is not None]
+
+        if not non_none:
             return None
 
-        # Priority 1: MISSING — test no longer exists
-        for pattern in self._MISSING_PATTERNS:
-            if pattern in combined:
-                return "missing"
+        # If any result is genuine, fall through to LLM
+        if "genuine" in non_none:
+            return None
 
-        # Priority 2: DESELECTED — excluded by marker
-        for pattern in _DESELECTED_PATTERNS:
-            if pattern in combined:
-                return "deselected"
+        # All must agree on the SAME structural classification
+        unique = set(non_none)
+        if len(unique) == 1:
+            result_type = unique.pop()
+            return result_type  # type: ignore[return-value]
 
-        # Priority 3: found no collectors (dep missing, test file exists)
-        if "found no collectors" in combined:
-            return "deselected"
-
-        # Priority 4: Ambiguous "collected 0 items" / "no tests ran"
-        # Check if test file exists in the worktree
-        if "collected 0 items" in combined or "no tests ran" in combined:
-            test_file = (
-                Path(worktree_path)
-                / "pandas-testing"
-                / "pandas-tests"
-                / test_group.file_path
-            )
-            if test_file.exists():
-                return "deselected"
-            return "missing"
-
+        # Mixed structural types (e.g. one deselected + one missing) → fall through
         return None
 
     async def _run_group_tests(

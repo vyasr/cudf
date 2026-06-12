@@ -11,15 +11,17 @@ import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..config import PipelineConfig, load_config
 from ..utils.branch_manager import sanitize_branch_name
-from ..utils.models import TestGroup
 from ..utils.patch_validator import validate_patch
 from ..utils.test_runner import TestOutcome, TestResult, run_test
 from .llm_client import LLMClient
 from .tools import get_tools, read_file, run_command, search_code, write_file
+
+if TYPE_CHECKING:
+    from ..utils.models import TestGroup
 
 LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +55,14 @@ MUTATING_COMMAND_MARKERS = (
     "rm ",
     "mv ",
     "cp ",
+)
+
+# Patterns indicating the test is deselected (marker/dependency exclusion)
+_DESELECTED_PATTERNS = (
+    "deselected / 0 selected",
+    "1 deselected",
+    "0 selected",
+    "collected 1 item / 1 deselected",
 )
 
 
@@ -132,6 +142,52 @@ class FixerAgent:
                 self._result_to_dict(result_item)
                 for result_item in baseline_results
             )
+
+            # Classify baseline results: detect structurally unfixable tests
+            classification = self._classify_baseline_results(
+                baseline_results, worktree_path, test_group
+            )
+            if classification == "deselected":
+                # Test excluded by marker or missing dependency
+                await self._restore_removed_xfails(
+                    worktree_path, modified_files
+                )
+                diagnosis = (
+                    "Structurally unfixable: test excluded by marker "
+                    "selection or missing dependency."
+                )
+                result = FixResult(
+                    status="failed",
+                    branch_name=branch_name,
+                    modified_files=modified_files,
+                    test_results=test_results,
+                    diagnosis=diagnosis,
+                    attempts=attempts,
+                    rejection_reason=(
+                        "structurally_unfixable: deselected_or_skipped"
+                    ),
+                )
+                return result
+            elif classification == "missing":
+                # Test no longer exists in the pandas test suite
+                self._diag_baseline_passed = True
+                diagnosis = (
+                    "Removed stale xfail entry; "
+                    "test no longer exists in test suite."
+                )
+                await self._commit_success(
+                    worktree_path, branch_name, modified_files, test_group
+                )
+                result = FixResult(
+                    status="success",
+                    branch_name=branch_name,
+                    modified_files=modified_files,
+                    test_results=test_results,
+                    diagnosis=diagnosis,
+                    attempts=attempts,
+                    rejection_reason="",
+                )
+                return result
 
             blocker_reason = self._human_review_blocker_reason(
                 baseline_results, phase="baseline"
@@ -713,6 +769,79 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             or result.get("error"),
         )
 
+    # Patterns that indicate the test no longer exists (MISSING)
+    _MISSING_PATTERNS = ("not found", "no match in any of", "error: not found")
+
+    def _classify_baseline_results(
+        self,
+        results: list[TestResult],
+        worktree_path: str,
+        test_group: TestGroup,
+    ) -> Literal["deselected", "missing"] | None:
+        """Classify baseline results to detect structurally unfixable tests.
+
+        Returns:
+            "deselected" if the test is excluded by marker/dependency.
+            "missing" if the test no longer exists in the pandas suite.
+            None if the results represent a genuine test failure.
+        """
+        if not results:
+            return None
+
+        combined = " ".join(r.longrepr or "" for r in results).lower()
+        if not combined.strip():
+            return None
+
+        # Check if ALL individual results match structural patterns
+        # A genuine failure has longrepr that doesn't match any known pattern
+        def _is_structural(text: str) -> bool:
+            """Return True if a single result's longrepr is structural."""
+            low = text.lower()
+            for pattern in self._MISSING_PATTERNS:
+                if pattern in low:
+                    return True
+            for pattern in _DESELECTED_PATTERNS:
+                if pattern in low:
+                    return True
+            if "found no collectors" in low:
+                return True
+            if "collected 0 items" in low or "no tests ran" in low:
+                return True
+            return False
+
+        # If not ALL results look structural, don't classify
+        if not all(_is_structural(r.longrepr or "") for r in results):
+            return None
+
+        # Priority 1: MISSING — test no longer exists
+        for pattern in self._MISSING_PATTERNS:
+            if pattern in combined:
+                return "missing"
+
+        # Priority 2: DESELECTED — excluded by marker
+        for pattern in _DESELECTED_PATTERNS:
+            if pattern in combined:
+                return "deselected"
+
+        # Priority 3: found no collectors (dep missing, test file exists)
+        if "found no collectors" in combined:
+            return "deselected"
+
+        # Priority 4: Ambiguous "collected 0 items" / "no tests ran"
+        # Check if test file exists in the worktree
+        if "collected 0 items" in combined or "no tests ran" in combined:
+            test_file = (
+                Path(worktree_path)
+                / "pandas-testing"
+                / "pandas-tests"
+                / test_group.file_path
+            )
+            if test_file.exists():
+                return "deselected"
+            return "missing"
+
+        return None
+
     async def _run_group_tests(
         self,
         worktree_path: str,
@@ -826,7 +955,9 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             # Fallback: retry with --no-verify (hooks may have failed due to slow mypy, etc.)
             LOGGER.warning(
                 "git commit failed (hooks), retrying with --no-verify: %s",
-                str(commit_result.get("stderr") or commit_result.get("stdout"))[:200],
+                str(
+                    commit_result.get("stderr") or commit_result.get("stdout")
+                )[:200],
             )
             noverify_cmd = "git commit --no-verify -m " + shlex.quote(message)
             commit_result = await asyncio.to_thread(
@@ -836,7 +967,8 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
                 raise RuntimeError(
                     f"git commit failed on {branch_name}: "
                     + str(
-                        commit_result.get("stderr") or commit_result.get("stdout")
+                        commit_result.get("stderr")
+                        or commit_result.get("stdout")
                     )
                 )
 

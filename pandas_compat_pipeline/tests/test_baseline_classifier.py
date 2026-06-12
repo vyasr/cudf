@@ -256,6 +256,25 @@ def test_ambiguous_collected_zero_file_missing(tmp_path: Path) -> None:
     assert classification == "missing"
 
 
+def test_missing_no_tests_ran(tmp_path: Path) -> None:
+    """'no tests ran' with test file NOT existing → 'missing'."""
+    agent = _make_agent()
+    # Do NOT create the file — tmp_path is empty
+    results = [
+        TestResult(
+            node_id="x",
+            outcome=TestOutcome.FAILED,
+            longrepr="no tests ran",
+            stdout="",
+            duration=0.0,
+        )
+    ]
+    classification = agent._classify_baseline_results(
+        results, str(tmp_path), _make_test_group()
+    )
+    assert classification == "missing"
+
+
 def test_mixed_deselected_and_missing_not_classified() -> None:
     """Mixed group: one deselected, one missing → should return None (not classify)."""
     agent = _make_agent()

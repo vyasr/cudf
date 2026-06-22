@@ -192,7 +192,7 @@ def fix(state: PipelineState) -> dict[str, Any]:
 def review(state: PipelineState) -> dict[str, Any]:
     """Invoke reviewer agent to evaluate the proposed fix."""
     task_name, assignment = _current_assignment(state)
-    fix_result = cast(dict[str, Any], assignment.get("fix_result", {}))
+    fix_result = cast("dict[str, Any]", assignment.get("fix_result", {}))
     worktree_path = str(assignment["worktree_path"])
     diff = _git_diff_for_review(worktree_path)
     result = _run_async(
@@ -451,7 +451,7 @@ def route_after_fix(
 ) -> Literal["review", "dispatch", "fail", "flag"]:
     """Route after fix attempt: review if success, retry/dispatch, fail, or flag."""
     _, assignment = _current_assignment(state)
-    fix_result = cast(dict[str, Any], assignment.get("fix_result", {}))
+    fix_result = cast("dict[str, Any]", assignment.get("fix_result", {}))
     status = fix_result.get("status")
     if status == "success":
         return "review"
@@ -467,7 +467,7 @@ def route_after_review(
 ) -> Literal["verify", "fix", "flag"]:
     """Route after review: verify if approved, fix if rejected, flag if needs human."""
     _, assignment = _current_assignment(state)
-    verdict = cast(dict[str, Any], assignment.get("review_result", {})).get(
+    verdict = cast("dict[str, Any]", assignment.get("review_result", {})).get(
         "verdict"
     )
     if verdict == "approved":
@@ -480,7 +480,7 @@ def route_after_review(
 def route_after_verify(state: PipelineState) -> Literal["commit", "fix"]:
     """Route after verification: commit if pass, fix again if fail."""
     _, assignment = _current_assignment(state)
-    verification = cast(dict[str, Any], assignment.get("verification", {}))
+    verification = cast("dict[str, Any]", assignment.get("verification", {}))
     return "commit" if verification.get("passed") is True else "fix"
 
 
@@ -611,6 +611,21 @@ _DESELECTED_PATTERNS = (
     "collected 1 item / 1 deselected",
 )
 
+# Tests/modules deselected by runner marker expression:
+# -m "not slow and not single_cpu and not db and not network"
+_MARKER_DESELECTED_MODULES: frozenset[str] = frozenset(
+    {
+        "tests/io/test_sql.py",  # module-level @pytest.mark.single_cpu
+    }
+)
+
+_MARKER_DESELECTED_TESTS: frozenset[str] = frozenset(
+    {
+        "tests/indexes/ranges/test_setops.py::test_range_difference",  # @pytest.mark.slow
+        "tests/scalar/timestamp/test_timestamp.py::TestTimestampProperties::test_dow_parametric",  # @pytest.mark.slow
+    }
+)
+
 
 def _pre_filter_reason(
     test_group: TestGroup, state: PipelineState
@@ -624,6 +639,12 @@ def _pre_filter_reason(
     for pattern in _DESELECTED_PATTERNS:
         if pattern.lower() in reasons_text:
             return "pre_filtered: deselected"
+
+    # Check if the test is in a marker-deselected module or is a specific deselected test
+    if test_group.file_path in _MARKER_DESELECTED_MODULES:
+        return "pre_filtered: deselected"
+    if test_group.base_name in _MARKER_DESELECTED_TESTS:
+        return "pre_filtered: deselected"
 
     return None
 

@@ -74,14 +74,12 @@ def _make_state(
     }
 
 
-def test_single_cpu_module_test_not_filtered_by_current_prefilter() -> None:
-    """BUG: tests/io/test_sql.py is marked single_cpu at module level and will
-    be deselected by runner. The pre-filter should catch it but currently does not.
+def test_single_cpu_module_test_is_filtered() -> None:
+    """FIXED: tests/io/test_sql.py is module-level single_cpu and is now correctly
+    filtered by _pre_filter_reason via _MARKER_DESELECTED_MODULES.
 
     The runner invokes pytest with -m "not slow and not single_cpu and not db
     and not network", so any test in tests/io/test_sql.py will be deselected.
-    However, the failure reason from xfail output is a real error (e.g.,
-    AssertionError), not a "deselected" string, so the pre-filter misses it.
     """
     group = TestGroup(
         base_name="tests/io/test_sql.py::test_execute_sql[sqlite_engine_iris]",
@@ -96,19 +94,15 @@ def test_single_cpu_module_test_not_filtered_by_current_prefilter() -> None:
 
     result = graph._pre_filter_reason(group, state)
 
-    # BUG: This should return "pre_filtered: deselected" because
-    # tests/io/test_sql.py is module-level @pytest.mark.single_cpu.
-    # Currently returns None because _pre_filter_reason only checks reason text.
-    assert result is None
+    assert result == "pre_filtered: deselected"
 
 
-def test_slow_test_not_filtered_by_current_prefilter() -> None:
-    """BUG: test_range_difference is @pytest.mark.slow and will be deselected
-    by runner. The pre-filter should catch it but currently does not.
+def test_slow_test_is_filtered() -> None:
+    """FIXED: test_range_difference is @pytest.mark.slow and is now correctly
+    filtered by _pre_filter_reason via _MARKER_DESELECTED_TESTS.
 
     The runner uses -m "not slow and not single_cpu ...", so individually
-    @pytest.mark.slow tests will be deselected. But if the xfail output
-    contains a real error reason (e.g., TimeoutError), the pre-filter misses it.
+    @pytest.mark.slow tests will be deselected.
     """
     group = TestGroup(
         base_name="tests/indexes/ranges/test_setops.py::test_range_difference",
@@ -123,10 +117,7 @@ def test_slow_test_not_filtered_by_current_prefilter() -> None:
 
     result = graph._pre_filter_reason(group, state)
 
-    # BUG: This should return "pre_filtered: deselected" because
-    # test_range_difference is @pytest.mark.slow.
-    # Currently returns None because _pre_filter_reason only checks reason text.
-    assert result is None
+    assert result == "pre_filtered: deselected"
 
 
 def test_valid_test_not_filtered() -> None:
@@ -171,10 +162,8 @@ def test_deselected_reason_text_still_filtered() -> None:
 
 
 def test_after_fix_single_cpu_module_is_filtered() -> None:
-    """Forward-looking test: after Bug 3 is fixed, _pre_filter_reason() should
-    return "pre_filtered: deselected" for tests in single_cpu-marked modules.
-
-    Currently documents the broken behavior.
+    """After Bug 3 fix: confirmed _pre_filter_reason returns deselected
+    for tests in single_cpu-marked modules.
     """
     group = TestGroup(
         base_name="tests/io/test_sql.py::test_read_sql_delegate",
@@ -185,9 +174,6 @@ def test_after_fix_single_cpu_module_is_filtered() -> None:
     )
     state = _make_state(group)
 
-    # After Bug 3 fix: this should return "pre_filtered: deselected"
-    # Currently returns None (bug). Uncomment the assertion after fix:
-    # assert result == "pre_filtered: deselected"
     result = graph._pre_filter_reason(group, state)
-    # Documenting current broken behavior:
-    assert result is None  # BUG: should be "pre_filtered: deselected"
+
+    assert result == "pre_filtered: deselected"

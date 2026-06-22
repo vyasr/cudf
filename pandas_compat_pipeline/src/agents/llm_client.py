@@ -48,7 +48,7 @@ class LLMClient:
 
     async def call_fixer(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
         """Call Claude 4.6 Opus for test fixing with tool support.
@@ -75,7 +75,7 @@ class LLMClient:
 
     async def call_reviewer(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> str:
         """Call GPT 5.5 for test review.
 
@@ -101,7 +101,7 @@ class LLMClient:
     async def _call_with_retry(
         self,
         model: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         timeout: int = 300,
         max_retries: int = 3,
@@ -144,7 +144,7 @@ class LLMClient:
                 # acompletion returns ModelResponse when stream=False (our case).
                 # The return type is typed as ModelResponse | CustomStreamWrapper,
                 # so we narrow with cast since we never pass stream=True.
-                result = cast(ModelResponse, response)
+                result = cast("ModelResponse", response)
 
                 # Extract message content
                 if result.choices:

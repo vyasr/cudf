@@ -417,7 +417,7 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
     async def _tool_loop(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         worktree_path: str,
         modified_files: list[str],
     ) -> dict[str, Any]:
@@ -532,7 +532,16 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
             except Exception:
                 pass
 
-            messages.append({"role": "assistant", "content": response})
+            if tool_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_calls,
+                    }
+                )
+            else:
+                messages.append({"role": "assistant", "content": response})
             messages.append(
                 {
                     "role": "user",

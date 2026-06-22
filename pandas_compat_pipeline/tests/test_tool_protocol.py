@@ -5,9 +5,9 @@
 
 These tests exercise the conversation format between the agent and the LLM,
 including how tool calls are parsed, executed, and how results are appended
-to the message history. They also document Bug 1: the assistant message
-stores the raw JSON string in "content" instead of using the proper OpenAI
-tool_calls field.
+to the message history. They also document Bug 1's fixed behavior: assistant
+messages store tool calls in the proper OpenAI tool_calls field instead of raw
+JSON content.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 sys.path[:0] = [
@@ -109,7 +110,7 @@ def test_multi_turn_tool_loop_executes_tools() -> None:
         ]
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "Fix the test"}
     ]
 
@@ -151,7 +152,7 @@ def test_prose_response_triggers_reprompt() -> None:
         return_value={"wrote_patch": True, "output": "ok"}
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "Fix the test"}
     ]
 
@@ -198,7 +199,7 @@ def test_three_prose_responses_returns_diagnosis() -> None:
         return_value={"wrote_patch": False, "output": ""}
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "Fix the test"}
     ]
 
@@ -236,7 +237,7 @@ def test_tool_results_format_in_messages() -> None:
         return_value={"wrote_patch": False, "output": "file contents here"}
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "Fix the test"}
     ]
 
@@ -270,22 +271,15 @@ def test_tool_results_format_in_messages() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Assistant message contains raw response string (Bug 1 documentation)
+# Test 6: Assistant message contains structured tool_calls (Bug 1 fixed)
 # ---------------------------------------------------------------------------
 
 
 def test_assistant_message_contains_response_string() -> None:
-    """CURRENT BEHAVIOR: The full JSON string is stored in content.
+    """FIXED BEHAVIOR: tool_calls field used instead of raw JSON content.
 
-    Proper OpenAI protocol would use a tool_calls field on the assistant message
-    rather than stuffing the raw JSON string into content. This test documents
-    the current (buggy) behavior where:
-      {"role": "assistant", "content": '[{"id": "call_0", ...}]'}
-    is appended instead of:
-      {"role": "assistant", "tool_calls": [...]}
-
-    Bug 1: Assistant messages use content field with raw JSON string instead of
-    the structured tool_calls format expected by the OpenAI API.
+    Proper OpenAI protocol uses a tool_calls field on the assistant message
+    rather than stuffing the raw JSON string into content.
     """
     agent = _make_agent()
     agent.config.max_fix_attempts = 1
@@ -297,7 +291,7 @@ def test_assistant_message_contains_response_string() -> None:
         return_value={"wrote_patch": False, "output": "contents"}
     )
 
-    messages: list[dict[str, str]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "user", "content": "Fix the test"}
     ]
 
@@ -316,11 +310,10 @@ def test_assistant_message_contains_response_string() -> None:
     assistant_msgs = [m for m in messages if m.get("role") == "assistant"]
     assert len(assistant_msgs) >= 1
     assert assistant_msgs[0]["role"] == "assistant"
-    assert "content" in assistant_msgs[0]
+    assert "tool_calls" in assistant_msgs[0]
+    assert (
+        assistant_msgs[0]["tool_calls"][0]["function"]["name"] == "read_file"
+    )
 
-    # The content is the raw JSON string (current behavior - Bug 1)
-    # In proper OpenAI protocol, this would be a tool_calls field instead
-    content = assistant_msgs[0]["content"]
-    parsed = json.loads(content)
-    assert isinstance(parsed, list)
-    assert parsed[0]["function"]["name"] == "read_file"
+    # The raw JSON string must not be stored in content when tool_calls exist.
+    assert assistant_msgs[0].get("content") is None

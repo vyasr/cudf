@@ -34,7 +34,6 @@ from pandas_compat_pipeline.src.utils.test_runner import (  # noqa: E402
     TestResult,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -58,7 +57,9 @@ def _make_test_group(
     )
 
 
-def _passed_result(node_id: str = "tests/io/test_sql.py::test_read_sql[param1]") -> TestResult:
+def _passed_result(
+    node_id: str = "tests/io/test_sql.py::test_read_sql[param1]",
+) -> TestResult:
     return TestResult(
         node_id=node_id,
         outcome=TestOutcome.PASSED,
@@ -92,7 +93,8 @@ def _is_conftest_fallback_failure(result: TestResult) -> bool:
 
 def test_verify_fix_runs_standard_mode() -> None:
     """_verify_fix runs both standard (fail_on_fallback=False) and strict
-    (fail_on_fallback=True) modes when _diag_baseline_passed is False."""
+    (fail_on_fallback=True) modes when _diag_baseline_passed is False.
+    """
     agent = _make_agent()
     agent._diag_baseline_passed = False
 
@@ -105,17 +107,27 @@ def test_verify_fix_runs_standard_mode() -> None:
 
     # Collect all calls and their fail_on_fallback values
     calls = agent._run_test_async.call_args_list
-    fof_values = [call.kwargs.get("fail_on_fallback", call.args[4] if len(call.args) > 4 else None) for call in calls]
+    fof_values = [
+        call.kwargs.get(
+            "fail_on_fallback", call.args[4] if len(call.args) > 4 else None
+        )
+        for call in calls
+    ]
 
     # Both modes should be exercised
-    assert False in fof_values, "Expected at least one call with fail_on_fallback=False"
-    assert True in fof_values, "Expected at least one call with fail_on_fallback=True"
+    assert False in fof_values, (
+        "Expected at least one call with fail_on_fallback=False"
+    )
+    assert True in fof_values, (
+        "Expected at least one call with fail_on_fallback=True"
+    )
     assert len(results) == 2
 
 
 def test_verify_fix_skips_fallback_when_baseline_passed() -> None:
     """When _diag_baseline_passed is True (stale-xfail), _verify_fix only runs
-    standard mode and skips the fail_on_fallback=True verification."""
+    standard mode and skips the fail_on_fallback=True verification.
+    """
     agent = _make_agent()
     agent._diag_baseline_passed = True
 
@@ -127,11 +139,18 @@ def test_verify_fix_skips_fallback_when_baseline_passed() -> None:
     )
 
     calls = agent._run_test_async.call_args_list
-    fof_values = [call.kwargs.get("fail_on_fallback", call.args[4] if len(call.args) > 4 else None) for call in calls]
+    fof_values = [
+        call.kwargs.get(
+            "fail_on_fallback", call.args[4] if len(call.args) > 4 else None
+        )
+        for call in calls
+    ]
 
     # Only standard mode should run
     assert False in fof_values, "Expected call with fail_on_fallback=False"
-    assert True not in fof_values, "Should NOT call with fail_on_fallback=True for stale-xfail"
+    assert True not in fof_values, (
+        "Should NOT call with fail_on_fallback=True for stale-xfail"
+    )
     assert len(results) == 1
 
 
@@ -169,6 +188,46 @@ def test_conftest_fallback_pattern_in_longrepr() -> None:
     # A PASSED result should NOT be flagged
     passed = _passed_result()
     assert _is_conftest_fallback_failure(passed) is False
+
+
+def test_verify_fix_filters_conftest_fallback_result() -> None:
+    """_verify_fix filters out conftest fallback failures from results.
+
+    When fail_on_fallback=True triggers a conftest import error (not a real
+    target test failure), the result should be discarded so it doesn't cause
+    the fix to be rejected.
+    """
+    agent = _make_agent()
+    agent._diag_baseline_passed = False
+
+    # Standard mode: passes fine.
+    # Fallback mode: conftest crashes before test runs.
+    conftest_crash_longrepr = (
+        "conftest.py:95: in <module>\n"
+        "    import_optional_dependency('pytz', errors='ignore')\n"
+        "E   cudf.pandas.fast_slow_proxy.NotImplementedFallbackError: pytz"
+    )
+    conftest_fail = TestResult(
+        node_id="tests/io/test_sql.py::test_read_sql[param1]",
+        outcome=TestOutcome.FAILED,
+        duration=0.0,
+        longrepr=conftest_crash_longrepr,
+        stdout="",
+    )
+
+    agent._run_test_async = AsyncMock(
+        side_effect=[_passed_result(), conftest_fail]
+    )
+
+    group = _make_test_group()
+    results = asyncio.run(
+        agent._verify_fix(worktree_path="/tmp/wt", test_group=group, gpu_id=0)
+    )
+
+    # After fix: only the standard result should be in results.
+    # The conftest fallback failure should be filtered out.
+    assert len(results) == 1
+    assert results[0].outcome == TestOutcome.PASSED
 
 
 def test_verify_fix_returns_all_results() -> None:

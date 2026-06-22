@@ -727,17 +727,36 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         # errors in fallback mode are irrelevant to the xfail removal fix.
         if not self._diag_baseline_passed:
             for node_id in node_ids:
-                results.append(
-                    await self._run_test_async(
-                        worktree_path,
-                        node_id,
-                        gpu_id,
-                        run_mode="verify",
-                        fail_on_fallback=True,
-                    )
+                fallback_result = await self._run_test_async(
+                    worktree_path,
+                    node_id,
+                    gpu_id,
+                    run_mode="verify",
+                    fail_on_fallback=True,
                 )
+                # Do NOT count conftest setup-time fallbacks as target failures.
+                if not self._is_conftest_fallback_failure(fallback_result):
+                    results.append(fallback_result)
 
         return results
+
+    @staticmethod
+    def _is_conftest_fallback_failure(result: TestResult) -> bool:
+        """Return True if the failure was caused by conftest.py pytz fallback.
+
+        When fail_on_fallback=True, conftest.py:95 imports pytz via
+        import_optional_dependency('pytz', errors='ignore'), which triggers
+        NotImplementedFallbackError BEFORE the target test body executes.
+        This is a setup-time failure, not a target test failure.
+        """
+        if result.outcome not in (TestOutcome.FAILED, TestOutcome.ERRORED):
+            return False
+        longrepr = result.longrepr
+        return (
+            "conftest.py" in longrepr
+            and "import_optional_dependency" in longrepr
+            and "NotImplementedFallbackError" in longrepr
+        )
 
     async def _restore_removed_xfails(
         self, worktree_path: str, modified_files: list[str]
@@ -858,7 +877,7 @@ The complete debug-cudf-pandas skill content is embedded below. Follow it exactl
         unique = set(non_none)
         if len(unique) == 1:
             result_type = unique.pop()
-            return cast(Literal["deselected", "missing"], result_type)
+            return cast("Literal['deselected', 'missing']", result_type)
 
         # Mixed structural types (e.g. one deselected + one missing) → fall through
         return None

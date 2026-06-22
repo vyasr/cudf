@@ -46,11 +46,15 @@ def _make_agent() -> FixerAgent:
 
 def _tool_call_json(name: str, **arguments) -> str:
     """Build a JSON string representing a single tool call list."""
-    return json.dumps([{
-        "id": "call_0",
-        "type": "function",
-        "function": {"name": name, "arguments": json.dumps(arguments)},
-    }])
+    return json.dumps(
+        [
+            {
+                "id": "call_0",
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +66,18 @@ def test_tool_calls_parsed_from_structured_response() -> None:
     """_parse_tool_calls parses a valid JSON tool-call array."""
     agent = _make_agent()
 
-    response = json.dumps([{
-        "id": "call_0",
-        "type": "function",
-        "function": {"name": "read_file", "arguments": '{"path": "test.py"}'},
-    }])
+    response = json.dumps(
+        [
+            {
+                "id": "call_0",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": '{"path": "test.py"}',
+                },
+            }
+        ]
+    )
 
     tool_calls = agent._parse_tool_calls(response)
 
@@ -159,7 +170,8 @@ def test_prose_response_triggers_reprompt() -> None:
     assert raised
     # Reprompt message should be in the messages
     reprompt_msgs = [
-        m for m in messages
+        m
+        for m in messages
         if m.get("role") == "user"
         and "ERROR: Your response must be a JSON array" in m.get("content", "")
     ]
@@ -209,10 +221,10 @@ def test_three_prose_responses_returns_diagnosis() -> None:
 
 
 def test_tool_results_format_in_messages() -> None:
-    """After tool execution, results are appended as a user message with JSON content.
+    r"""After tool execution, results are appended as a user message with JSON content.
 
     The format is:
-      {"role": "user", "content": "Tool results:\\n" + json.dumps(results)}
+      {"role": "user", "content": "Tool results:\n" + json.dumps(results)}
     """
     agent = _make_agent()
     agent.config.max_fix_attempts = 1
@@ -241,14 +253,16 @@ def test_tool_results_format_in_messages() -> None:
 
     # Find user message with "Tool results:\n"
     tool_result_msgs = [
-        m for m in messages
-        if m.get("role") == "user" and m.get("content", "").startswith("Tool results:\n")
+        m
+        for m in messages
+        if m.get("role") == "user"
+        and m.get("content", "").startswith("Tool results:\n")
     ]
     assert len(tool_result_msgs) >= 1
 
     # Parse the JSON content after the prefix
     content = tool_result_msgs[0]["content"]
-    json_str = content[len("Tool results:\n"):]
+    json_str = content[len("Tool results:\n") :]
     parsed = json.loads(json_str)
 
     assert isinstance(parsed, list)

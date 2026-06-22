@@ -13,8 +13,15 @@ should catch them but currently does not.
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from pandas_compat_pipeline.src.orchestrator.state import (
+        PipelineState,
+    )
 
 _PIPELINE_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _PIPELINE_ROOT.parent
@@ -23,7 +30,6 @@ for _path in (str(_PIPELINE_ROOT), str(_REPO_ROOT)):
         sys.path.insert(0, _path)
 
 from pandas_compat_pipeline.src.orchestrator import graph  # noqa: E402
-from pandas_compat_pipeline.src.orchestrator.state import PipelineState  # noqa: E402
 from pandas_compat_pipeline.src.utils.models import TestGroup  # noqa: E402
 
 _META_KEY = "__graph_meta__"
@@ -81,7 +87,9 @@ def test_single_cpu_module_test_not_filtered_by_current_prefilter() -> None:
         base_name="tests/io/test_sql.py::test_execute_sql[sqlite_engine_iris]",
         file_path="tests/io/test_sql.py",
         class_name=None,
-        node_ids=["tests/io/test_sql.py::test_execute_sql[sqlite_engine_iris]"],
+        node_ids=[
+            "tests/io/test_sql.py::test_execute_sql[sqlite_engine_iris]"
+        ],
         reasons=["AssertionError: assert 1 == 2"],
     )
     state = _make_state(group)
@@ -106,7 +114,9 @@ def test_slow_test_not_filtered_by_current_prefilter() -> None:
         base_name="tests/indexes/ranges/test_setops.py::test_range_difference",
         file_path="tests/indexes/ranges/test_setops.py",
         class_name=None,
-        node_ids=["tests/indexes/ranges/test_setops.py::test_range_difference"],
+        node_ids=[
+            "tests/indexes/ranges/test_setops.py::test_range_difference"
+        ],
         reasons=["TimeoutError"],
     )
     state = _make_state(group)
@@ -127,7 +137,9 @@ def test_valid_test_not_filtered() -> None:
         base_name="tests/frame/test_constructors.py::test_constructor_from_dict",
         file_path="tests/frame/test_constructors.py",
         class_name=None,
-        node_ids=["tests/frame/test_constructors.py::test_constructor_from_dict"],
+        node_ids=[
+            "tests/frame/test_constructors.py::test_constructor_from_dict"
+        ],
         reasons=["AssertionError"],
     )
     state = _make_state(group)

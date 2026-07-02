@@ -172,7 +172,7 @@ __device__ void decode_fixed_width_values(
 
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
 __device__ inline void decode_fixed_width_split_values(
-  page_state_s* s, state_buf* const sb, int start, int end, int t)
+  page_state_s* s, state_buf* const sb, int start, int end, int t, uint8_t* bss_smem = nullptr)
 {
   using cudf::detail::warp_size;
   constexpr int num_warps      = block_size / warp_size;
@@ -198,79 +198,186 @@ __device__ inline void decode_fixed_width_split_values(
   // decode values
   int thread_pos = start + t;
   while (thread_pos < end) {
-    // Index from value buffer (doesn't include nulls) to final array (has gaps for nulls)
-    int const dst_pos = [&]() {
-      if constexpr (copy_mode_t == copy_mode::DIRECT) {
-        return thread_pos - s->first_row;
-      } else {
-        int dst_pos = sb->nz_idx[rolling_index<state_buf::nz_buf_size>(thread_pos)];
-        if constexpr (!has_lists_t) { dst_pos -= s->first_row; }
-        return dst_pos;
+    // For DIRECT mode with SMEM staging: cooperatively load byte lanes into shared memory.
+    // Each byte lane k occupies data_start[k*num_values + batch_start .. + batch_end-1].
+    // All threads load one byte per lane, yielding coalesced global reads.
+    int const batch_start = thread_pos - t;  // first src_pos in this batch
+    int const batch_end   = min(batch_start + max_batch_size, end);
+    int const batch_count = batch_end - batch_start;
+
+    // Use SMEM tiling for DIRECT mode when staging buffer is available and positions are
+    // contiguous (which they always are in DIRECT mode for non-list BSS).
+    bool const use_smem =
+      (bss_smem != nullptr) && (copy_mode_t == copy_mode::DIRECT) && (!has_lists_t);
+
+    if (use_smem) {
+      // Cooperative tile load: each thread loads one byte per byte-lane into SMEM.
+      // Layout: bss_smem[lane * max_batch_size + tid] for lane in [0, dtype_len_in).
+      int const dtype_len_in    = s->dtype_len_in;
+      uint8_t const* const base = s->data_start + batch_start;
+      for (int lane = 0; lane < dtype_len_in; ++lane) {
+        if (t < batch_count) { bss_smem[lane * max_batch_size + t] = base[lane * num_values + t]; }
       }
-    }();
+      __syncthreads();
+    }
 
-    // src_pos represents the logical row position we want to read from. But in the case of
-    // nested hierarchies (lists), there is no 1:1 mapping of rows to values. So src_pos
-    // has to take into account the # of values we have to skip in the page to get to the
-    // desired logical row.  For flat hierarchies, skipped_leaf_values will always be 0.
-    int const src_pos = [&]() {
-      if constexpr (has_lists_t) {
-        return thread_pos + skipped_leaf_values;
-      } else {
-        return thread_pos;
-      }
-    }();
+    if (thread_pos < end) {
+      // Index from value buffer (doesn't include nulls) to final array (has gaps for nulls)
+      int const dst_pos = [&]() {
+        if constexpr (copy_mode_t == copy_mode::DIRECT) {
+          return thread_pos - s->first_row;
+        } else {
+          int dst_pos = sb->nz_idx[rolling_index<state_buf::nz_buf_size>(thread_pos)];
+          if constexpr (!has_lists_t) { dst_pos -= s->first_row; }
+          return dst_pos;
+        }
+      }();
 
-    uint32_t const dtype_len = s->dtype_len;
-    uint8_t const* const src = s->data_start + src_pos;
-    uint8_t* const dst       = data_out + static_cast<size_t>(dst_pos) * dtype_len;
-    auto const is_decimal =
-      s->col.logical_type.has_value() and s->col.logical_type->type == LogicalType::DECIMAL;
+      // src_pos represents the logical row position we want to read from. But in the case of
+      // nested hierarchies (lists), there is no 1:1 mapping of rows to values. So src_pos
+      // has to take into account the # of values we have to skip in the page to get to the
+      // desired logical row.  For flat hierarchies, skipped_leaf_values will always be 0.
+      int const src_pos = [&]() {
+        if constexpr (has_lists_t) {
+          return thread_pos + skipped_leaf_values;
+        } else {
+          return thread_pos;
+        }
+      }();
 
-    // Note: non-decimal FIXED_LEN_BYTE_ARRAY will be handled in the string reader
-    if (is_decimal) {
-      switch (dtype) {
-        case Type::INT32: gpuOutputByteStreamSplit<int32_t>(dst, src, num_values); break;
-        case Type::INT64: gpuOutputByteStreamSplit<int64_t>(dst, src, num_values); break;
-        case Type::FIXED_LEN_BYTE_ARRAY:
-          if (s->dtype_len_in <= sizeof(int32_t)) {
-            gpuOutputSplitFixedLenByteArrayAsInt(
-              reinterpret_cast<int32_t*>(dst), src, num_values, s->dtype_len_in);
-            break;
-          } else if (s->dtype_len_in <= sizeof(int64_t)) {
-            gpuOutputSplitFixedLenByteArrayAsInt(
-              reinterpret_cast<int64_t*>(dst), src, num_values, s->dtype_len_in);
-            break;
-          } else if (s->dtype_len_in <= sizeof(__int128_t)) {
-            gpuOutputSplitFixedLenByteArrayAsInt(
-              reinterpret_cast<__int128_t*>(dst), src, num_values, s->dtype_len_in);
-            break;
+      uint32_t const dtype_len = s->dtype_len;
+      uint8_t* const dst       = data_out + static_cast<size_t>(dst_pos) * dtype_len;
+
+      if (use_smem) {
+        // Reconstruct value from SMEM tile
+        int const dtype_len_in = s->dtype_len_in;
+        auto const is_decimal =
+          s->col.logical_type.has_value() and s->col.logical_type->type == LogicalType::DECIMAL;
+
+        if (is_decimal && dtype == Type::FIXED_LEN_BYTE_ARRAY) {
+          // Decimal FIXED_LEN_BYTE_ARRAY is big-endian: byte 0 is MSB.
+          // Reconstruct by shifting each successive byte into the value.
+          if (dtype_len_in <= static_cast<int>(sizeof(int32_t))) {
+            int32_t val = 0;
+            for (int i = 0; i < dtype_len_in; ++i) {
+              val = (val << 8) | bss_smem[i * max_batch_size + t];
+            }
+            // Sign-extend from dtype_len_in bytes
+            if (dtype_len_in < static_cast<int>(sizeof(int32_t))) {
+              val <<= (sizeof(int32_t) - dtype_len_in) * 8;
+              val >>= (sizeof(int32_t) - dtype_len_in) * 8;
+            }
+            *reinterpret_cast<int32_t*>(dst) = val;
+          } else if (dtype_len_in <= static_cast<int>(sizeof(int64_t))) {
+            int64_t val = 0;
+            for (int i = 0; i < dtype_len_in; ++i) {
+              val = (val << 8) | bss_smem[i * max_batch_size + t];
+            }
+            if (dtype_len_in < static_cast<int>(sizeof(int64_t))) {
+              val <<= (sizeof(int64_t) - dtype_len_in) * 8;
+              val >>= (sizeof(int64_t) - dtype_len_in) * 8;
+            }
+            *reinterpret_cast<int64_t*>(dst) = val;
+          } else {
+            __int128_t val = 0;
+            for (int i = 0; i < dtype_len_in; ++i) {
+              val = (val << 8) | bss_smem[i * max_batch_size + t];
+            }
+            if (dtype_len_in < static_cast<int>(sizeof(__int128_t))) {
+              val <<= (sizeof(__int128_t) - dtype_len_in) * 8;
+              val >>= (sizeof(__int128_t) - dtype_len_in) * 8;
+            }
+            *reinterpret_cast<__int128_t*>(dst) = val;
           }
-          // unsupported decimal precision
-          [[fallthrough]];
-
-        default: s->set_error_code(decode_error::UNSUPPORTED_ENCODING);
-      }
-    } else if (dtype_len == 8) {
-      if (s->dtype_len_in == 4) {
-        // Reading INT32 TIME_MILLIS into 64-bit DURATION_MILLISECONDS
-        // TIME_MILLIS is the only duration type stored as int32:
-        // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-time-convertedtype
-        gpuOutputByteStreamSplit<int32_t>(dst, src, num_values);
-        // zero out most significant bytes
-        cuda::std::memset(dst + sizeof(int32_t), 0, sizeof(int32_t));
-      } else if (s->ts_scale) {
-        gpuOutputSplitInt64Timestamp(reinterpret_cast<int64_t*>(dst), src, num_values, s->ts_scale);
+        } else if (dtype_len == 4) {
+          // 4-byte reconstruction (float, int32)
+          for (int i = 0; i < 4; ++i) {
+            dst[i] = bss_smem[i * max_batch_size + t];
+          }
+        } else if (dtype_len == 8) {
+          if (dtype_len_in == 4) {
+            // INT32 TIME_MILLIS into 64-bit DURATION_MILLISECONDS
+            for (int i = 0; i < 4; ++i) {
+              dst[i] = bss_smem[i * max_batch_size + t];
+            }
+            cuda::std::memset(dst + sizeof(int32_t), 0, sizeof(int32_t));
+          } else if (s->ts_scale) {
+            // Timestamp with scaling
+            int64_t val;
+            for (int i = 0; i < 8; ++i) {
+              reinterpret_cast<uint8_t*>(&val)[i] = bss_smem[i * max_batch_size + t];
+            }
+            *reinterpret_cast<int64_t*>(dst) = apply_ts_scale(val, s->ts_scale);
+          } else {
+            // 8-byte reconstruction (double, int64)
+            for (int i = 0; i < 8; ++i) {
+              dst[i] = bss_smem[i * max_batch_size + t];
+            }
+          }
+        } else if (is_decimal) {
+          // Decimal INT32/INT64 (already handled dtype==4/8 above, this is fallback)
+          for (int i = 0; i < static_cast<int>(dtype_len); ++i) {
+            dst[i] = bss_smem[i * max_batch_size + t];
+          }
+        } else {
+          // Unsupported type (should not happen for valid BSS pages)
+          s->set_error_code(decode_error::UNSUPPORTED_ENCODING);
+        }
       } else {
-        gpuOutputByteStreamSplit<int64_t>(dst, src, num_values);
+        // Original global-memory path (INDIRECT mode or no SMEM available)
+        uint8_t const* const src = s->data_start + src_pos;
+        auto const is_decimal =
+          s->col.logical_type.has_value() and s->col.logical_type->type == LogicalType::DECIMAL;
+
+        // Note: non-decimal FIXED_LEN_BYTE_ARRAY will be handled in the string reader
+        if (is_decimal) {
+          switch (dtype) {
+            case Type::INT32: gpuOutputByteStreamSplit<int32_t>(dst, src, num_values); break;
+            case Type::INT64: gpuOutputByteStreamSplit<int64_t>(dst, src, num_values); break;
+            case Type::FIXED_LEN_BYTE_ARRAY:
+              if (s->dtype_len_in <= sizeof(int32_t)) {
+                gpuOutputSplitFixedLenByteArrayAsInt(
+                  reinterpret_cast<int32_t*>(dst), src, num_values, s->dtype_len_in);
+                break;
+              } else if (s->dtype_len_in <= sizeof(int64_t)) {
+                gpuOutputSplitFixedLenByteArrayAsInt(
+                  reinterpret_cast<int64_t*>(dst), src, num_values, s->dtype_len_in);
+                break;
+              } else if (s->dtype_len_in <= sizeof(__int128_t)) {
+                gpuOutputSplitFixedLenByteArrayAsInt(
+                  reinterpret_cast<__int128_t*>(dst), src, num_values, s->dtype_len_in);
+                break;
+              }
+              // unsupported decimal precision
+              [[fallthrough]];
+
+            default: s->set_error_code(decode_error::UNSUPPORTED_ENCODING);
+          }
+        } else if (dtype_len == 8) {
+          if (s->dtype_len_in == 4) {
+            // Reading INT32 TIME_MILLIS into 64-bit DURATION_MILLISECONDS
+            // TIME_MILLIS is the only duration type stored as int32:
+            // https://github.com/apache/parquet-format/blob/master/LogicalTypes.md#deprecated-time-convertedtype
+            gpuOutputByteStreamSplit<int32_t>(dst, src, num_values);
+            // zero out most significant bytes
+            cuda::std::memset(dst + sizeof(int32_t), 0, sizeof(int32_t));
+          } else if (s->ts_scale) {
+            gpuOutputSplitInt64Timestamp(
+              reinterpret_cast<int64_t*>(dst), src, num_values, s->ts_scale);
+          } else {
+            gpuOutputByteStreamSplit<int64_t>(dst, src, num_values);
+          }
+        } else if (dtype_len == 4) {
+          gpuOutputByteStreamSplit<int32_t>(dst, src, num_values);
+        } else {
+          s->set_error_code(decode_error::UNSUPPORTED_ENCODING);
+        }
       }
-    } else if (dtype_len == 4) {
-      gpuOutputByteStreamSplit<int32_t>(dst, src, num_values);
-    } else {
-      s->set_error_code(decode_error::UNSUPPORTED_ENCODING);
     }
 
     thread_pos += max_batch_size;
+    // Sync after SMEM tile consumption before next iteration loads new data
+    if (use_smem) { __syncthreads(); }
   }
 }
 
@@ -1066,6 +1173,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     1, rle_run_buffer_bytes * (static_cast<int>(has_dict_t) + static_cast<int>(has_bools_t)));
   __shared__ __align__(16) uint8_t shared_buf[shared_buf_size];
 
+  // BSS staging buffer for SMEM tiling of byte-stream-split reads.
+  // Only used by split_decode_t specializations (non-string BSS); sized for the widest
+  // fixed-width BSS type (__int128_t = 16 bytes) * block_size.
+  // For non-BSS specializations this is 1 byte (optimized away).
+  constexpr int bss_staging_size = split_decode_t && !has_strings_t ? 16 * decode_block_size_t : 1;
+  __shared__ __align__(16) uint8_t bss_stage_buf[bss_staging_size];
+  uint8_t* const bss_smem = (split_decode_t && !has_strings_t) ? bss_stage_buf : nullptr;
+
   // setup all shared memory buffers
   int shared_offset = 0;
 
@@ -1192,7 +1307,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
             s, sb, valid_count, next_valid_count, t, str_offsets, string_output_offset);
       } else if constexpr (split_decode_t) {
         decode_fixed_width_split_values<decode_block_size_t, has_lists_t, copy_mode_t>(
-          s, sb, valid_count, next_valid_count, t);
+          s, sb, valid_count, next_valid_count, t, bss_smem);
       } else {
         decode_fixed_width_values<decode_block_size_t, has_lists_t, copy_mode_t>(
           s, sb, valid_count, next_valid_count, t);

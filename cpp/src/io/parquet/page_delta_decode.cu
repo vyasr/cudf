@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -310,6 +310,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) page_state_s state_g;
   __shared__ __align__(16) page_state_buffers_s<delta_rolling_buf_size, 1, 1> state_buffers;
+  __shared__ __align__(16) uint8_t smem_mb[2][max_delta_mini_block_size];
 
   page_state_s* const s = &state_g;
   auto* const sb        = &state_buffers;
@@ -391,6 +392,16 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
     // This needs to be here to prevent warp 2 modifying src_pos before all threads have read it
     block.sync();
 
+    uint32_t const mb_size = db->current_mini_block_size();
+    bool const use_smem    = db->current_mini_block_fits(mb_size);
+    auto* const mb_buf     = smem_mb[db->cur_mb & 1];
+    if (use_smem) {
+      for (uint32_t i = block.thread_rank(); i < mb_size; i += block.size()) {
+        mb_buf[i] = db->cur_mb_start[i];
+      }
+    }
+    block.sync();
+
     // warp0 will decode the rep/def levels, warp1 will unpack a mini-batch of deltas.
     // warp2 waits one cycle for warps 0/1 to produce a batch, and then stuffs values
     // into the proper location in the output.
@@ -403,7 +414,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
       gpuDecodeLevels<delta_rolling_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
     } else if (warp.meta_group_rank() == 1) {
       // warp 1
-      db->decode_batch();
+      db->decode_batch(use_smem ? mb_buf : nullptr, mb_size);
     } else if (src_pos < target_pos) {
       // warp 2
       // nesting level that is storing actual leaf values

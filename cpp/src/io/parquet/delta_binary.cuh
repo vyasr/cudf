@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -110,6 +110,17 @@ struct delta_binary_decoder {
     return value_count == 0 ? 0 : all_values ? value_count : value_count - 1;
   }
 
+  __device__ uint32_t current_mini_block_size()
+  {
+    return value_count <= 1 ? 0 : cur_bitwidths[cur_mb] * values_per_mb / 8;
+  }
+
+  __device__ bool current_mini_block_fits(uint32_t mb_size)
+  {
+    return value_count > 1 && cur_mb_start != nullptr && mb_size <= max_delta_mini_block_size &&
+           cur_mb_start + mb_size <= block_end;
+  }
+
   // read mini-block header into state object. should only be called from init_binary_block or
   // setup_next_mini_block. header format is:
   //
@@ -218,7 +229,9 @@ struct delta_binary_decoder {
 
   // decode the current mini-batch of deltas, and convert to values.
   // called by all threads in a warp, currently only one warp supported.
-  inline __device__ void calc_mini_block_values(int lane_id)
+  inline __device__ void calc_mini_block_values(int lane_id,
+                                                uint8_t const* mb_data = nullptr,
+                                                uint32_t mb_size       = 0)
   {
     using cudf::detail::warp_size;
     if (current_value_idx >= value_count) { return; }
@@ -237,7 +250,8 @@ struct delta_binary_decoder {
     // need to do in multiple passes if values_per_mb != 32
     uint32_t const num_pass = values_per_mb / warp_size;
 
-    auto d_start = cur_mb_start;
+    auto d_start     = mb_data == nullptr ? cur_mb_start : mb_data;
+    auto const d_end = mb_data == nullptr ? block_end : mb_data + mb_size;
 
     for (int i = 0; i < num_pass; i++) {
       // position at end of the current mini-block since the following calculates
@@ -256,11 +270,11 @@ struct delta_binary_decoder {
         int32_t ofs      = (lane_id - warp_size) * mb_bits;
         uint8_t const* p = d_start + (ofs >> 3);
         ofs &= 7;
-        if (p < block_end) {
+        if (p < d_end) {
           uint32_t c = 8 - ofs;  // 0 - 7 bits
           delta      = (*p++) >> ofs;
 
-          while (c < mb_bits && p < block_end) {
+          while (c < mb_bits && p < d_end) {
             delta |= static_cast<zigzag128_t>(*p++) << c;
             c += 8;
           }
@@ -353,14 +367,14 @@ struct delta_binary_decoder {
 
   // decodes the current mini block and stores the values obtained. should only be called by
   // a single warp.
-  inline __device__ void decode_batch()
+  inline __device__ void decode_batch(uint8_t const* mb_data = nullptr, uint32_t mb_size = 0)
   {
     using cudf::detail::warp_size;
     int const t       = threadIdx.x;
     int const lane_id = t % warp_size;
 
     // unpack deltas and save in db->value
-    calc_mini_block_values(lane_id);
+    calc_mini_block_values(lane_id, mb_data, mb_size);
 
     // set up for next mini-block
     if (lane_id == 0) { setup_next_mini_block(true); }

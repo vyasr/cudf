@@ -419,7 +419,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   __shared__ rle_run def_runs[rle_run_buffer_size];
   __shared__ rle_run rep_runs[rle_run_buffer_size];
   static constexpr int max_output_values = cuda::std::numeric_limits<int>::max();
-  rle_stream<level_t, level_decode_block_size, max_output_values, true>
+  rle_stream<level_t,
+             level_decode_block_size,
+             max_output_values,
+             true,
+             /*use_smem_staging=*/true>
     decoders[level_type::NUM_LEVEL_TYPES] = {{def_runs}, {rep_runs}};
 
   // Shared-memory staging scratch for the encoded level streams. Level streams
@@ -428,7 +432,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   // dependent global loads. Staging the bytes into shared memory once removes
   // that latency from fill_run_batch(). Streams larger than the per-stream
   // budget fall back to parsing from global with no behavior change.
-  using rle_stream_t = rle_stream<level_t, level_decode_block_size, max_output_values>;
+  using rle_stream_t = rle_stream<level_t,
+                                  level_decode_block_size,
+                                  max_output_values,
+                                  true,
+                                  /*use_smem_staging=*/true>;
   __shared__ __align__(16) uint8_t stage[rle_stream_t::smem_stage_size];
   __shared__ cuda::pipeline_shared_state<cuda::thread_scope_block, 2> pipe_state;
   auto pipe = cuda::make_pipeline(block, &pipe_state);

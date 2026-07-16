@@ -122,23 +122,31 @@ TEST_F(ParquetReaderTest, RleStagingExactBoundary)
 // -----------------------------------------------------------------------------
 TEST_F(ParquetReaderTest, RleStagingSingleLongLiteralRun)
 {
+  // Two variants: dense (no nulls) and sparse (with nulls). Dense builds a
+  // rep-level stream of one long literal run; sparse forces def-level decoding
+  // (preprocess_levels_kernel only decodes def-levels when the column has nulls,
+  // so a null-free page never exercises the def-level chunked staging path).
   constexpr int num_rows  = 40 * 1024;  // > 32K, spans ~10 chunk_size chunks
   constexpr int list_size = 2;
-  auto col                = make_dense_list_int_col(num_rows, list_size);
-  cudf::table_view tbl({*col});
+  for (bool with_nulls : {false, true}) {
+    auto col = with_nulls ? make_list_int_col(num_rows, list_size)
+                          : make_dense_list_int_col(num_rows, list_size);
+    cudf::table_view tbl({*col});
 
-  auto filepath = temp_env->get_temp_filepath("RleStagingSingleLongLiteralRun.parquet");
-  cudf::io::parquet_writer_options out_args =
-    cudf::io::parquet_writer_options::builder(cudf::io::sink_info{filepath}, tbl)
-      .max_page_size_rows(num_rows)  // one giant page
-      .row_group_size_rows(num_rows);
-  cudf::io::write_parquet(out_args);
+    auto filepath = temp_env->get_temp_filepath(std::string("RleStagingSingleLongLiteralRun_") +
+                                                (with_nulls ? "nulls" : "dense") + ".parquet");
+    cudf::io::parquet_writer_options out_args =
+      cudf::io::parquet_writer_options::builder(cudf::io::sink_info{filepath}, tbl)
+        .max_page_size_rows(num_rows)  // one giant page
+        .row_group_size_rows(num_rows);
+    cudf::io::write_parquet(out_args);
 
-  cudf::io::parquet_reader_options read_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath});
-  auto result = cudf::io::read_parquet(read_args);
+    cudf::io::parquet_reader_options read_args =
+      cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath});
+    auto result = cudf::io::read_parquet(read_args);
 
-  CUDF_TEST_EXPECT_TABLES_EQUAL(*result.tbl, tbl);
+    CUDF_TEST_EXPECT_TABLES_EQUAL(*result.tbl, tbl);
+  }
 }
 
 // -----------------------------------------------------------------------------

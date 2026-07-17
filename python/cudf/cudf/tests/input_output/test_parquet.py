@@ -671,7 +671,7 @@ def test_parquet_reader_select_nonexistent_columns(ignore_missing_columns):
     else:
         with pytest.raises(
             ValueError,
-            match="Encountered non-existent column in selected path",
+            match=r"Encountered non-existent column '[^']+' in the selected path",
         ):
             cudf.read_parquet(
                 buf,
@@ -1306,7 +1306,8 @@ def test_parquet_reader_struct_select_columns_nonexistent_error(data, columns):
     pa.parquet.write_table(table, buff)
 
     with pytest.raises(
-        ValueError, match="Encountered non-existent column in selected path"
+        ValueError,
+        match=r"Encountered non-existent column '[^']+' in the selected path",
     ):
         cudf.read_parquet(buff, columns=columns, ignore_missing_columns=False)
 
@@ -1889,7 +1890,7 @@ def test_parquet_writer_bytes_io(simple_gdf, store_schema):
 )
 def test_parquet_writer_row_group_size(tmp_path, row_group_size_kwargs):
     # Check that row_group_size options are exposed in Python
-    # See https://github.com/rapidsai/cudf/issues/10978
+    # See https://github.com/NVIDIA/cudf/issues/10978
 
     size = 20000
     gdf = cudf.DataFrame({"a": range(size), "b": [1] * size})
@@ -3421,6 +3422,42 @@ def test_parquet_writer_zstd():
         assert_eq(expected, got)
 
 
+def test_parquet_writer_gzip():
+    size = 12345
+    # Both columns have to be compressible
+    expected = cudf.DataFrame(
+        {
+            "a": np.arange(0, stop=size, dtype="float64"),
+            "b": [f"row-{i}-value" for i in range(size)],
+        }
+    )
+
+    buff = BytesIO()
+    expected.to_parquet(buff, compression="GZIP")
+
+    got = pq.read_table(buff)
+    assert_eq(expected, got.to_pandas())
+
+    row_group = pq.ParquetFile(buff).metadata.row_group(0)
+    for i in range(row_group.num_columns):
+        assert row_group.column(i).compression == "GZIP"
+
+
+@pytest.mark.parametrize(
+    "compression", ["GZIP", "ZSTD", "LZ4", "snappy", None]
+)
+def test_parquet_writer_pyarrow_engine_compression(tmp_path, compression):
+    df = cudf.DataFrame({"a": [f"row-{i}-value" for i in range(1000)]})
+
+    df.to_parquet(tmp_path, engine="pyarrow", compression=compression)
+
+    row_group = pq.ParquetFile(
+        next(tmp_path.glob("*.parquet"))
+    ).metadata.row_group(0)
+    expected = "UNCOMPRESSED" if compression is None else compression.upper()
+    assert row_group.column(0).compression == expected
+
+
 @pytest.mark.parametrize("store_schema", [True, False])
 def test_parquet_writer_time_delta_physical_type(store_schema):
     df = cudf.DataFrame(
@@ -3606,7 +3643,7 @@ def test_parquet_write_lz4():
 def test_parquet_reader_zstd_huff_tables(datadir):
     # Ensure that this zstd-compressed file does not overrun buffers. The
     # problem was fixed in nvcomp 3.0.6.
-    # See https://github.com/rapidsai/cudf/issues/15096
+    # See https://github.com/NVIDIA/cudf/issues/15096
     fname = datadir / "zstd_huff_tables_bug.parquet"
 
     expected = pa.parquet.read_table(fname).to_pandas()
@@ -4409,7 +4446,10 @@ def test_parquet_reader_with_mismatched_schemas_error():
 
     with pytest.raises(
         ValueError,
-        match="Encountered mismatching SchemaElement properties for a column in the selected path",
+        match=(
+            r"Encountered mismatching data type or schema across the "
+            r"Parquet sources for column '[^']+'"
+        ),
     ):
         cudf.read_parquet(
             [buf1, buf2], columns=["millis"], allow_mismatched_pq_schemas=True
@@ -4437,8 +4477,11 @@ def test_parquet_reader_with_mismatched_schemas_error():
     df2.to_parquet(buf2)
 
     with pytest.raises(
-        IndexError,
-        match="Encountered mismatching number of children for a column in the selected path",
+        ValueError,
+        match=(
+            r"Encountered mismatching number of children across Parquet "
+            r"sources for column '[^']+'"
+        ),
     ):
         cudf.read_parquet(
             [buf1, buf2],
@@ -4447,8 +4490,11 @@ def test_parquet_reader_with_mismatched_schemas_error():
         )
 
     with pytest.raises(
-        IndexError,
-        match="Encountered mismatching schema tree depths across data sources",
+        ValueError,
+        match=(
+            r"Encountered missing nested column '[^']+' across Parquet "
+            r"sources for column '[^']+'"
+        ),
     ):
         cudf.read_parquet(
             [buf1, buf2],
@@ -4677,7 +4723,7 @@ def test_parquet_reader_mismatched_nullability_structs(tmp_path):
 
 @pytest.mark.skipif(
     pa.__version__ == "19.0.0",
-    reason="https://github.com/apache/arrow/issues/45283, https://github.com/rapidsai/cudf/issues/17806",
+    reason="https://github.com/apache/arrow/issues/45283, https://github.com/NVIDIA/cudf/issues/17806",
 )
 @pytest.mark.parametrize(
     "stats_fname,bloom_filter_fname",
@@ -4696,6 +4742,7 @@ def test_parquet_reader_mismatched_nullability_structs(tmp_path):
     "predicate,expected_len",
     [
         ([[("str", "==", "FINDME")], [("fp64", "==", float(500))]], 2),
+        ([("str", "!=", "FINDME")], 998),
         ([("fixed_pt", "==", decimal.Decimal(float(500)))], 2),
         ([[("ui32", "==", np.uint32(500)), ("str", "==", "FINDME")]], 2),
         ([[("str", "==", "FINDME")], [("ui32", ">=", np.uint32(0))]], 1000),
@@ -4770,6 +4817,48 @@ def test_parquet_bloom_filters_alignment(datadir, columns, memory_resource):
     read = cudf.read_parquet(
         fname, columns=columns, filters=filters
     ).to_arrow()
+
+    assert_eq(expected, read)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "data_index_bloom_encoding_stats.parquet",
+        "data_index_bloom_encoding_with_length.parquet",
+    ],
+    ids=["length-absent", "length-present"],
+)
+@pytest.mark.parametrize("value", ["Hello", "not-in-this-file"])
+def test_parquet_bloom_filters_length(datadir, filename, value):
+    # Header may omit the bloom filter length.
+    # Source: apache/parquet-testing (Apache-2.0)
+    fname = datadir / filename
+    filters = [("String", "==", value)]
+
+    expected = pq.read_table(fname, filters=filters)
+    read = cudf.read_parquet(fname, filters=filters).to_arrow()
+
+    assert_eq(expected, read)
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        [("r_reason_id", "==", "AAAAAAAABAAAAAAA")],  # no bloom filter
+        [
+            ("r_reason_desc", "==", "Did not like the color"),
+            ("r_reason_id", "==", "AAAAAAAAIAAAAAAA"),
+        ],  # with and without a bloom filter
+    ],
+)
+def test_parquet_bloom_filters_mixed_presence(datadir, predicate):
+    # Source: same data as in bloom_filter_alignment.parquet,
+    # written with only r_reason_desc having a bloom filter
+    fname = datadir / "bloom_filter_alignment_desc_only.parquet"
+
+    expected = pq.read_table(fname, filters=predicate)
+    read = cudf.read_parquet(fname, filters=predicate).to_arrow()
 
     assert_eq(expected, read)
 

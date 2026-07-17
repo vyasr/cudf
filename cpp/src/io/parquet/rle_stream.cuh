@@ -669,6 +669,22 @@ struct rle_stream {
     return decoded;
   }
 
+  /**
+   * @brief Block-cooperative fill for a single repeated-value RLE run.
+   *
+   * @param t      Thread index within the block [0, decode_threads).
+   * @param fill   The repeated level value.
+   * @param count  Number of output values to write (already clamped by caller).
+   *
+   * No __syncthreads() inside; the caller owns synchronization.
+   */
+  __device__ inline void decode_single_repeated_run(int t, level_t fill, int count)
+  {
+    for (int i = t; i < count; i += decode_threads) {
+      output[rolling_index<max_output_values>(cur_values + i)] = fill;
+    }
+  }
+
   __device__ inline int decode_next(int t, int count)
   {
     // Fast path: level_bits == 0 means every level is implicitly 0, so no
@@ -689,6 +705,67 @@ struct rle_stream {
       cur_values += output_count;
       return output_count;
     }
+    // Single-repeated-run fast path: bypass ring/chunked dispatch entirely
+    // when the encoded stream is one repeated-value RLE run that covers
+    // exactly total_values. Common on:
+    //   - definition streams for all-valid or all-null pages
+    //   - repetition streams for flat-nested pages (all level 0)
+    //   - bool value streams that happen to be constant
+    // Only attempted at the start of a fresh decode (cur_values == 0).
+    //
+    // The literal single-run fast path is intentionally omitted. It would
+    // add a bit-unpack helper (level_bits > 8/16/24 handling, level_bits
+    // == 32 mask, per-byte bounds checks) that did not fire on any
+    // measured workload. If a workload emerges where a whole stream is a
+    // single literal run, extend this along the shape used in
+    // decode_next_chunked's literal-expand arm.
+    __shared__ bool s_is_single_repeated_run;
+    __shared__ level_t s_repeat_value;
+    if (t == 0) {
+      s_is_single_repeated_run = false;
+      // Safety gate: only probe when cur_values == 0 and stream is non-empty.
+      // A prior partial decode_next may have left cur == end with cur_values > 0;
+      // dereferencing cur in that state would read past the buffer.
+      if (cur_values == 0 && cur < end) {
+        uint8_t const* probe_cur = cur;
+        uint32_t const header    = get_vlq32(probe_cur, end);
+        bool const is_lit        = (header & 1u) != 0u;
+        if (!is_lit) {
+          // Repeated run: (header >> 1) copies of one value at level_bits bits.
+          int const run_values    = static_cast<int>(header >> 1);
+          int const payload_bytes = (level_bits + 7) / 8;
+          // The run covers exactly total_values and payload ends exactly at end.
+          if (probe_cur + payload_bytes == end && run_values == total_values) {
+            // Reconstruct the repeated level_t value from the payload bytes.
+            uint32_t lv = probe_cur[0];
+            if constexpr (sizeof(level_t) > 1) {
+              if (level_bits > 8) {
+                lv |= static_cast<uint32_t>(probe_cur[1]) << 8;
+                if constexpr (sizeof(level_t) > 2) {
+                  if (level_bits > 16) {
+                    lv |= static_cast<uint32_t>(probe_cur[2]) << 16;
+                    if (level_bits > 24) { lv |= static_cast<uint32_t>(probe_cur[3]) << 24; }
+                  }
+                }
+              }
+            }
+            s_repeat_value           = static_cast<level_t>(lv);
+            s_is_single_repeated_run = true;
+          }
+        }
+      }
+    }
+    __syncthreads();
+
+    if (s_is_single_repeated_run && output_count == total_values - cur_values) {
+      // output_count == total_values (cur_values == 0 enforced by the gate above).
+      decode_single_repeated_run(t, s_repeat_value, output_count);
+      __syncthreads();
+      cur_values += output_count;
+      cur = end;
+      return output_count;
+    }
+
     if constexpr (use_chunked_expand) {
       return decode_next_chunked(t, count);
     } else {

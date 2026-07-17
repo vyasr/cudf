@@ -28,7 +28,43 @@ __device__ constexpr int rle_stream_required_run_buffer_size()
 }
 
 /**
- * @brief Read a 32-bit varint integer
+ * @brief Read a 32-bit varint integer from an arbitrary byte source.
+ *
+ * The byte source is provided via an accessor `read(int off) -> uint8_t`, so
+ * callers can read directly from a global pointer, from a shared-memory
+ * staging buffer, or dispatch between the two per-byte (chunked staging).
+ *
+ * @param[in,out] offset The current byte offset into the stream; advanced past the varint
+ * @param[in] end_offset One past the last valid byte offset
+ * @param[in] read Byte accessor: `read(int off) -> uint8_t`
+ *
+ * @return The 32-bit value read
+ */
+template <typename Accessor>
+__device__ inline uint32_t get_vlq32(int& offset, int const end_offset, Accessor read)
+{
+  uint32_t v = read(offset++);
+  if (v >= 0x80 && offset < end_offset) {
+    v = (v & 0x7f) | (read(offset++) << 7);
+    if (v >= (0x80 << 7) && offset < end_offset) {
+      v = (v & ((0x7f << 7) | 0x7f)) | (read(offset++) << 14);
+      if (v >= (0x80 << 14) && offset < end_offset) {
+        v = (v & ((0x7f << 14) | (0x7f << 7) | 0x7f)) | (read(offset++) << 21);
+        if (v >= (0x80 << 21) && offset < end_offset) {
+          v = (v & ((0x7f << 21) | (0x7f << 14) | (0x7f << 7) | 0x7f)) | (read(offset++) << 28);
+        }
+      }
+    }
+  }
+  return v;
+}
+
+/**
+ * @brief Read a 32-bit varint integer via a raw pointer cursor.
+ *
+ * Thin adapter over the offset-based `get_vlq32` for callers that already
+ * track a moving pointer. The lambda is trivial (`base[off]`) and inlines to
+ * the same load sequence as a direct `*cur++` walk.
  *
  * @param[in,out] cur The current data position, updated after the read
  * @param[in] end The end data position
@@ -37,19 +73,11 @@ __device__ constexpr int rle_stream_required_run_buffer_size()
  */
 inline __device__ uint32_t get_vlq32(uint8_t const*& cur, uint8_t const* end)
 {
-  uint32_t v = *cur++;
-  if (v >= 0x80 && cur < end) {
-    v = (v & 0x7f) | ((*cur++) << 7);
-    if (v >= (0x80 << 7) && cur < end) {
-      v = (v & ((0x7f << 7) | 0x7f)) | ((*cur++) << 14);
-      if (v >= (0x80 << 14) && cur < end) {
-        v = (v & ((0x7f << 14) | (0x7f << 7) | 0x7f)) | ((*cur++) << 21);
-        if (v >= (0x80 << 21) && cur < end) {
-          v = (v & ((0x7f << 21) | (0x7f << 14) | (0x7f << 7) | 0x7f)) | ((*cur++) << 28);
-        }
-      }
-    }
-  }
+  uint8_t const* const base = cur;
+  int offset                = 0;
+  int const end_offset      = static_cast<int>(end - cur);
+  uint32_t const v          = get_vlq32(offset, end_offset, [base](int off) { return base[off]; });
+  cur += offset;
   return v;
 }
 
@@ -538,23 +566,6 @@ struct rle_stream {
       return (use_smem && is_loaded(chunk)) ? stage_ptr(chunk)[offset - chunk * chunk_size]
                                             : s_start[offset];
     };
-    auto get_vlq32_at = [&](int& offset) {
-      uint32_t v = staged_byte(offset++);
-      if (v >= 0x80 && offset < stream_len) {
-        v = (v & 0x7f) | (staged_byte(offset++) << 7);
-        if (v >= (0x80 << 7) && offset < stream_len) {
-          v = (v & ((0x7f << 7) | 0x7f)) | (staged_byte(offset++) << 14);
-          if (v >= (0x80 << 14) && offset < stream_len) {
-            v = (v & ((0x7f << 14) | 0x7f << 7 | 0x7f)) | (staged_byte(offset++) << 21);
-            if (v >= (0x80 << 21) && offset < stream_len) {
-              v = (v & ((0x7f << 21) | (0x7f << 14) | (0x7f << 7) | 0x7f)) |
-                  (staged_byte(offset++) << 28);
-            }
-          }
-        }
-      }
-      return v;
-    };
 
     // Outer loop: process the requested output range in chunks of up to
     // `max_runs_per_chunk` runs at a time until we have emitted `output_count`
@@ -608,7 +619,7 @@ struct rle_stream {
         // Parse up to max_runs_per_chunk headers, stopping early if the output range
         // fills up or the encoded stream is exhausted.
         while (n < max_runs_per_chunk && (out_base + co) < out_end && cur_offset < stream_len) {
-          uint32_t const level_run = get_vlq32_at(cur_offset);
+          uint32_t const level_run = get_vlq32(cur_offset, stream_len, staged_byte);
           int cnt;
           int meta;
 

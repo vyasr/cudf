@@ -33,9 +33,6 @@ struct compute_page_sizes_state {
 struct preprocess_levels_state {
   page_decode_setup_state setup;
   page_decode_stream_state stream;
-  page_decode_nesting_state nesting;
-  page_decode_progress_state progress;
-  page_decode_output_state output_cvt;
   CUDF_PARQUET_PAGE_STATE_ERROR_METHODS
 };
 
@@ -105,8 +102,6 @@ struct compute_string_page_bounds_state {
 struct compute_delta_page_string_sizes_state {
   page_decode_setup_state setup;
   page_decode_stream_state stream;
-  page_decode_nesting_state nesting;
-  page_decode_progress_state progress;
   page_decode_output_state output_cvt;
   CUDF_PARQUET_PAGE_STATE_ERROR_METHODS
 };
@@ -114,8 +109,6 @@ struct compute_delta_page_string_sizes_state {
 struct compute_delta_length_page_string_sizes_state {
   page_decode_setup_state setup;
   page_decode_stream_state stream;
-  page_decode_nesting_state nesting;
-  page_decode_progress_state progress;
   page_decode_output_state output_cvt;
   CUDF_PARQUET_PAGE_STATE_ERROR_METHODS
 };
@@ -123,8 +116,6 @@ struct compute_delta_length_page_string_sizes_state {
 struct compute_page_string_sizes_state {
   page_decode_setup_state setup;
   page_decode_stream_state stream;
-  page_decode_nesting_state nesting;
-  page_decode_progress_state progress;
   page_decode_output_state output_cvt;
   CUDF_PARQUET_PAGE_STATE_ERROR_METHODS
 };
@@ -132,7 +123,6 @@ struct compute_page_string_sizes_state {
 struct preprocess_string_offsets_state {
   page_decode_setup_state setup;
   page_decode_stream_state stream;
-  page_decode_nesting_state nesting;
   page_decode_progress_state progress;
   page_decode_output_state output_cvt;
   CUDF_PARQUET_PAGE_STATE_ERROR_METHODS

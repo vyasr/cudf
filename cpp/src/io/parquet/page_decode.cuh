@@ -101,18 +101,24 @@ struct page_state_buffers_s {
 
 // Copies null counts back to `nesting_decode` at the end of scope
 struct null_count_back_copier {
-  page_state_s* s;
+  page_decode_setup_state* setup;
+  page_decode_nesting_state* nesting;
   int t;
+
+  __device__ null_count_back_copier(auto* s, int t) : setup(&s->setup), nesting(&s->nesting), t(t)
+  {
+  }
+
   __device__ ~null_count_back_copier()
   {
-    if (s->nesting.nesting_info != nullptr and
-        s->nesting.nesting_info == s->nesting.nesting_decode_cache) {
+    if (nesting->nesting_info != nullptr and
+        nesting->nesting_info == nesting->nesting_decode_cache) {
       int depth = 0;
-      while (depth < s->setup.page.num_output_nesting_levels) {
+      while (depth < setup->page.num_output_nesting_levels) {
         int const thread_depth = depth + t;
-        if (thread_depth < s->setup.page.num_output_nesting_levels) {
-          s->setup.page.nesting_decode[thread_depth].null_count =
-            s->nesting.nesting_decode_cache[thread_depth].null_count;
+        if (thread_depth < setup->page.num_output_nesting_levels) {
+          setup->page.nesting_decode[thread_depth].null_count =
+            nesting->nesting_decode_cache[thread_depth].null_count;
         }
         depth += blockDim.x;
       }
@@ -126,7 +132,7 @@ struct null_count_back_copier {
  * @param s Page state
  * @return True if the page is nullable (max definition level > 0)
  */
-__device__ inline bool is_nullable(page_state_s* s)
+__device__ inline bool is_nullable(auto* s)
 {
   auto const lvl           = level_type::DEFINITION;
   auto const max_def_level = s->setup.col.max_level[lvl];
@@ -145,7 +151,7 @@ __device__ inline bool is_nullable(page_state_s* s)
  * @param s Page state
  * @return True if the page could contain null values
  */
-__device__ inline bool maybe_has_nulls(page_state_s* s)
+__device__ inline bool maybe_has_nulls(auto* s)
 {
   auto const lvl      = level_type::DEFINITION;
   auto const init_run = s->stream.initial_rle_run[lvl];
@@ -169,7 +175,7 @@ __device__ inline bool maybe_has_nulls(page_state_s* s)
  * @param s Page state
  * @return True if the page should process nulls
  */
-__device__ inline bool should_process_nulls(page_state_s* s)
+__device__ inline bool should_process_nulls(auto* s)
 {
   return is_nullable(s) && maybe_has_nulls(s);
 }
@@ -298,7 +304,7 @@ inline __device__ bool page_has_rows_to_process(PageInfo const& page,
  * @return A pair containing a pointer to the string and its length
  */
 template <typename state_buf>
-inline __device__ string_index_pair gpuGetStringData(page_state_s* s, state_buf* sb, int src_pos)
+inline __device__ string_index_pair gpuGetStringData(auto* s, state_buf* sb, int src_pos)
 {
   char const* ptr = nullptr;
   using len_type  = cuda::std::tuple_element<1, string_index_pair>::type;
@@ -348,7 +354,7 @@ enum class is_calc_sizes_only : bool { NO = false, YES = true };
  */
 template <is_calc_sizes_only sizes_only, typename state_buf>
 __device__ cuda::std::pair<int, int> decode_dictionary_indices(
-  page_state_s* s,
+  auto* s,
   [[maybe_unused]] state_buf* sb,
   int target_pos,
   cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
@@ -475,7 +481,7 @@ __device__ cuda::std::pair<int, int> decode_dictionary_indices(
  */
 template <typename state_buf>
 inline __device__ int decode_rle_booleans(
-  page_state_s* s,
+  auto* s,
   state_buf* sb,
   int target_pos,
   cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
@@ -554,7 +560,7 @@ inline __device__ int decode_rle_booleans(
  * @return Total length of strings processed
  */
 template <is_calc_sizes_only sizes_only, typename state_buf, typename thread_group>
-__device__ size_type initialize_string_descriptors(page_state_s* s,
+__device__ size_type initialize_string_descriptors(auto* s,
                                                    [[maybe_unused]] state_buf* sb,
                                                    int target_pos,
                                                    thread_group const& group)
@@ -691,7 +697,7 @@ template <typename level_t>
 inline __device__ void get_nesting_bounds(int& start_depth,
                                           int& end_depth,
                                           int& d,
-                                          page_state_s* s,
+                                          auto* s,
                                           level_t const* const rep,
                                           level_t const* const def,
                                           int input_value_count,
@@ -744,7 +750,7 @@ inline __device__ void get_nesting_bounds(int& start_depth,
  */
 template <typename level_t, typename state_buf, int rolling_buf_size>
 __device__ void gpuUpdateValidityOffsetsAndRowIndices(int32_t target_input_value_count,
-                                                      page_state_s* s,
+                                                      auto* s,
                                                       state_buf* sb,
                                                       level_t const* const rep,
                                                       level_t const* const def,
@@ -932,7 +938,7 @@ __device__ void gpuUpdateValidityOffsetsAndRowIndices(int32_t target_input_value
  */
 template <int rolling_buf_size, typename level_t, typename state_buf>
 __device__ void gpuDecodeLevels(
-  page_state_s* s,
+  auto* s,
   state_buf* sb,
   int32_t target_leaf_count,
   level_t* const rep,
@@ -966,7 +972,7 @@ __device__ void gpuDecodeLevels(
  *
  * @return The length of the section
  */
-inline __device__ uint32_t InitLevelSection(page_state_s* s,
+inline __device__ uint32_t InitLevelSection(auto* s,
                                             uint8_t const* cur,
                                             uint8_t const* end,
                                             level_type lvl)
@@ -1081,7 +1087,7 @@ enum class page_processing_stage {
  * @return True if this page should be processed further
  */
 template <typename Filter>
-inline __device__ bool setup_local_page_info(page_state_s* const s,
+inline __device__ bool setup_local_page_info(auto* const s,
                                              PageInfo const* p,
                                              device_span<ColumnChunkDesc const> chunks,
                                              size_t min_row,
@@ -1477,7 +1483,7 @@ inline __device__ bool setup_local_page_info(page_state_s* const s,
  */
 template <int block_size>
 __device__ void zero_fill_null_positions_shared(
-  page_state_s* s, uint32_t dtype_len, int valid_map_offset, int num_values, int t)
+  auto* s, uint32_t dtype_len, int valid_map_offset, int num_values, int t)
 {
   auto const block = cg::this_thread_block();
   auto const warp  = cg::tiled_partition<cudf::detail::warp_size>(block);

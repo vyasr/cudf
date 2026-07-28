@@ -4,6 +4,7 @@
  */
 #include "page_data.cuh"
 #include "page_decode.cuh"
+#include "page_state_composed.cuh"
 #include "page_string_utils.cuh"
 #include "parquet_gpu.hpp"
 #include "rle_stream.cuh"
@@ -82,8 +83,7 @@ __device__ static void scan_block_exclusive_sum(
 }
 
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
-__device__ void decode_fixed_width_values(
-  page_state_s* s, state_buf* const sb, int start, int end, int t)
+__device__ void decode_fixed_width_values(auto* s, state_buf* const sb, int start, int end, int t)
 {
   constexpr int num_warps      = block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -173,7 +173,7 @@ __device__ void decode_fixed_width_values(
 
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
 __device__ inline void decode_fixed_width_split_values(
-  page_state_s* s, state_buf* const sb, int start, int end, int t)
+  auto* s, state_buf* const sb, int start, int end, int t)
 {
   using cudf::detail::warp_size;
   constexpr int num_warps      = block_size / warp_size;
@@ -292,7 +292,7 @@ __device__ inline void decode_fixed_width_split_values(
  */
 template <int decode_block_size, typename level_t>
 __device__ int skip_validity_and_row_indices_nonlist(
-  int32_t target_value_count, page_state_s* s, level_t const* const def, bool is_nested, int t)
+  int32_t target_value_count, auto* s, level_t const* const def, bool is_nested, int t)
 {
   int const max_def_level =
     is_nested ? s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].max_def_level : 1;
@@ -335,7 +335,7 @@ __device__ int skip_validity_and_row_indices_nonlist(
  */
 template <int decode_block_size, typename level_t, typename state_buf>
 __device__ int update_validity_and_row_indices_nested(
-  int32_t target_value_count, page_state_s* s, state_buf* sb, level_t const* const def, int t)
+  int32_t target_value_count, auto* s, state_buf* sb, level_t const* const def, int t)
 {
   constexpr int num_warps      = decode_block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -456,7 +456,7 @@ __device__ int update_validity_and_row_indices_nested(
  */
 template <int decode_block_size, typename level_t, typename state_buf>
 __device__ int update_validity_and_row_indices_flat(
-  int32_t target_value_count, page_state_s* s, state_buf* sb, level_t const* const def, int t)
+  int32_t target_value_count, auto* s, state_buf* sb, level_t const* const def, int t)
 {
   constexpr int num_warps      = decode_block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -567,7 +567,7 @@ __device__ int update_validity_and_row_indices_flat(
  */
 template <int decode_block_size, bool nullable, typename level_t, typename state_buf>
 __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
-                                                     page_state_s* s,
+                                                     auto* s,
                                                      state_buf* sb,
                                                      level_t const* const def,
                                                      level_t const* const rep,
@@ -794,7 +794,7 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
 }
 
 template <typename state_buf, typename thread_group>
-inline __device__ void bool_plain_decode(page_state_s* s,
+inline __device__ void bool_plain_decode(auto* s,
                                          state_buf* sb,
                                          int target_pos,
                                          thread_group const& group)
@@ -842,7 +842,7 @@ template <int decode_block_size_t,
           typename level_t,
           typename dict_stream_t,
           typename bool_stream_t>
-__device__ void skip_ahead_in_decoding(page_state_s* s,
+__device__ void skip_ahead_in_decoding(auto* s,
                                        dict_stream_t& dict_stream,
                                        bool_stream_t& bool_stream,
                                        bool bools_are_rle_stream,
@@ -1002,19 +1002,19 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
   constexpr int rolling_buf_size    = decode_block_size_t * 2;
   constexpr int rle_run_buffer_size = rle_stream_required_run_buffer_size<decode_block_size_t>();
 
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_page_data_generic_state state_g;
   constexpr bool use_dict_buffers = has_dict_t || has_bools_t;
   using state_buf_t               = page_state_buffers_s<rolling_buf_size,  // size of nz_idx buffer
                                            use_dict_buffers ? rolling_buf_size : 1,
                                                          1>;
   __shared__ __align__(16) state_buf_t state_buffers;
 
-  auto const block      = cg::this_thread_block();
-  page_state_s* const s = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = block.thread_rank();
-  PageInfo* pp          = &pages[page_idx];
+  auto const block   = cg::this_thread_block();
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = block.thread_rank();
+  PageInfo* pp       = &pages[page_idx];
 
   if (!(BitAnd(pages[page_idx].kernel_mask, kernel_mask_t))) { return; }
 

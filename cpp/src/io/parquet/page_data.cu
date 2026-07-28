@@ -5,6 +5,7 @@
 
 #include "page_data.cuh"
 #include "page_decode.cuh"
+#include "page_state_composed.cuh"
 
 #include <cudf/detail/algorithms/reduce.cuh>
 #include <cudf/detail/utilities/batched_memcpy.hpp>
@@ -50,16 +51,16 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
                                 cudf::device_span<bool const> page_mask,
                                 kernel_error::pointer error_code)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_split_page_data_state state_g;
   __shared__ __align__(16)
     page_state_buffers_s<rolling_buf_size, rolling_buf_size, rolling_buf_size>
       state_buffers;
 
-  page_state_s* const s = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = cg::this_grid().block_rank();
-  auto const block      = cg::this_thread_block();
-  auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = cg::this_grid().block_rank();
+  auto const block   = cg::this_thread_block();
+  auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
 
   // Exit early if the page is pruned
   if (not page_mask.empty() and not page_mask[page_idx]) { return; }
@@ -264,16 +265,16 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
                    cudf::device_span<bool const> page_mask,
                    kernel_error::pointer error_code)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_page_data_state state_g;
   __shared__ __align__(16)
     page_state_buffers_s<rolling_buf_size, rolling_buf_size, rolling_buf_size>
       state_buffers;
 
-  page_state_s* const s = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = cg::this_grid().block_rank();
-  auto const block      = cg::this_thread_block();
-  auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = cg::this_grid().block_rank();
+  auto const block   = cg::this_thread_block();
+  auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
   int out_warp_id;
 
   // Exit early if the page is pruned

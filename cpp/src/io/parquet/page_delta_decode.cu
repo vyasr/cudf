@@ -5,6 +5,7 @@
 
 #include "delta_binary.cuh"
 #include "io/utilities/block_utils.cuh"
+#include "page_state_composed.cuh"
 #include "page_string_utils.cuh"
 #include "parquet_gpu.hpp"
 
@@ -308,15 +309,15 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
                              kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_delta_binary_state state_g;
   __shared__ __align__(16) page_state_buffers_s<delta_rolling_buf_size, 1, 1> state_buffers;
 
-  page_state_s* const s = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = cg::this_grid().block_rank();
-  auto const block      = cg::this_thread_block();
-  auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
-  auto* const db        = &db_state;
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = cg::this_grid().block_rank();
+  auto const block   = cg::this_thread_block();
+  auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
+  auto* const db     = &db_state;
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
@@ -465,10 +466,10 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
                                  kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_byte_array_decoder db_state;
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_delta_byte_array_state state_g;
   __shared__ __align__(16) page_state_buffers_s<delta_rolling_buf_size, 1, 1> state_buffers;
 
-  page_state_s* const s = &state_g;
+  auto* const s         = &state_g;
   auto* const sb        = &state_buffers;
   int const page_idx    = cg::this_grid().block_rank();
   auto const block      = cg::this_thread_block();
@@ -678,17 +679,17 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
                                         kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) decode_delta_length_byte_array_state state_g;
   __shared__ __align__(16) page_state_buffers_s<delta_rolling_buf_size, 1, 1> state_buffers;
   __shared__ __align__(8) uint8_t const* page_string_data;
   __shared__ size_t string_offset;
 
-  page_state_s* const s = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = cg::this_grid().block_rank();
-  auto const block      = cg::this_thread_block();
-  auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
-  auto* const db        = &db_state;
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = cg::this_grid().block_rank();
+  auto const block   = cg::this_thread_block();
+  auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
+  auto* const db     = &db_state;
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 

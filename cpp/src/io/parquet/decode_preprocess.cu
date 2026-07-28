@@ -6,6 +6,7 @@
 #include "delta_binary.cuh"
 #include "io/utilities/column_buffer.hpp"
 #include "page_decode.cuh"
+#include "page_state_composed.cuh"
 #include "reader_impl_chunking_utils.cuh"
 
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -47,7 +48,7 @@ using unused_state_buf = page_state_buffers_s<0, 0, 0>;
  * @param block The cooperative thread block
  */
 template <typename level_t>
-__device__ void update_page_sizes(page_state_s* s,
+__device__ void update_page_sizes(auto* s,
                                   int target_value_count,
                                   level_t const* const rep,
                                   level_t const* const def,
@@ -169,7 +170,7 @@ __device__ void update_page_sizes(page_state_s* s,
  * @param[in] block The current thread block cooperative group
  */
 __device__ void compute_page_sizes_for_pruned_pages(PageInfo* page,
-                                                    page_state_s* const state,
+                                                    auto* const state,
                                                     bool has_repetition,
                                                     bool is_base_pass,
                                                     cg::thread_block const& block)
@@ -247,13 +248,13 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
                             size_t num_rows,
                             bool is_base_pass)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) compute_page_sizes_state state_g;
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = block.thread_rank();
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = block.thread_rank();
+  PageInfo* pp       = &pages[page_idx];
 
   // whether or not we have repetition levels (lists)
   bool has_repetition = chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0;
@@ -390,13 +391,13 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                            size_t min_row,
                            size_t num_rows)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) preprocess_levels_state state_g;
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = block.thread_rank();
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = block.thread_rank();
+  PageInfo* pp       = &pages[page_idx];
 
   // Return early if this page is pruned
   if (not page_mask.empty() and not page_mask[page_idx]) { return; }

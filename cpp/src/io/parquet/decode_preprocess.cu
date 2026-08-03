@@ -497,8 +497,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
  * flat pages.
  *
  * Runs one block per page; only pages with pp->nz_idx_buf != nullptr and matching the
- * DELTA_BINARY kernel mask are processed. Does not modify any other page state - level decoding
- * and validity remain the responsibility of the main decode kernels.
+ * DELTA_BINARY kernel mask are processed. Also records the flat-page nz_count and
+ * input_value_count side effects for temporary validation.
  *
  * @param pages List of pages
  * @param chunks List of column chunks
@@ -594,6 +594,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     value_count += block_value_count;
     valid_count += block_valid_count;
   }
+
+  if (t == 0) {
+    pp->prepass_nz_count          = valid_count;
+    pp->prepass_input_value_count = num_input_values;
+  }
 }
 
 /**
@@ -620,6 +625,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 
   // Only inspect pages that had an nz_idx_buf allocated (flat DELTA_BINARY pilot pages).
   if (pp->nz_idx_buf == nullptr) { return; }
+  if (chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0) { return; }
 
   if (!setup_local_page_info(s,
                              pp,
@@ -630,9 +636,6 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
                              page_processing_stage::DECODE)) {
     return;
   }
-
-  bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
-  if (has_repetition) { return; }
 
   int const max_depth      = s->setup.col.max_nesting_depth;
   int const max_def_level  = s->nesting_info[max_depth - 1].max_def_level;
@@ -680,6 +683,77 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     row_count += batch_size;
     value_count += block_value_count;
     valid_count += block_valid_count;
+  }
+}
+
+/**
+ * @brief Read-only validator for compute_nz_idx side effects.
+ */
+template <typename level_t, int decode_block_size>
+CUDF_KERNEL void __launch_bounds__(decode_block_size)
+  validate_nz_side_effects_kernel(device_span<PageInfo> pages,
+                                  device_span<ColumnChunkDesc const> chunks,
+                                  size_t min_row,
+                                  size_t num_rows,
+                                  int* mismatch_count)
+{
+  __shared__ __align__(16) page_state_s state_g;
+
+  page_state_s* const s = &state_g;
+  int const page_idx    = cg::this_grid().block_rank();
+  int const t           = static_cast<int>(threadIdx.x);
+  PageInfo* pp          = &pages[page_idx];
+
+  if (pp->nz_idx_buf == nullptr) { return; }
+  if (chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0) { return; }
+
+  if (!setup_local_page_info(s,
+                             pp,
+                             chunks,
+                             min_row,
+                             num_rows,
+                             mask_filter{decode_kernel_mask::DELTA_BINARY},
+                             page_processing_stage::DECODE)) {
+    return;
+  }
+
+  int const max_depth      = s->setup.col.max_nesting_depth;
+  int const max_def_level  = s->nesting_info[max_depth - 1].max_def_level;
+  bool const process_nulls = should_process_nulls(s);
+
+  level_t const* const def =
+    process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
+                  : nullptr;
+
+  int const num_input_values = s->setup.page.num_input_values;
+  int const last_row         = static_cast<int>(s->setup.first_row + s->setup.num_rows);
+
+  using block_scan = cub::BlockScan<int, decode_block_size>;
+  __shared__ typename block_scan::TempStorage scan_storage;
+
+  int valid_count = 0;
+  int row_count   = 0;
+
+  for (int base = 0; base < num_input_values; base += decode_block_size) {
+    int const src              = base + t;
+    bool const in_range        = src < num_input_values;
+    int const thread_row_index = row_count + t;
+    int const in_row_bounds    = in_range && (thread_row_index < last_row) ? 1 : 0;
+    int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
+    int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
+
+    int thread_valid_offset, block_valid_count;
+    block_scan(scan_storage).ExclusiveSum(is_valid, thread_valid_offset, block_valid_count);
+    __syncthreads();
+
+    int const batch_size = min(decode_block_size, num_input_values - base);
+    row_count += batch_size;
+    valid_count += block_valid_count;
+  }
+
+  if (t == 0 &&
+      (pp->prepass_nz_count != valid_count || pp->prepass_input_value_count != num_input_values)) {
+    atomicAdd(mismatch_count, 1);
   }
 }
 
@@ -815,6 +889,44 @@ int validate_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
 
   int const n = mismatch_count.value(stream);
   std::cerr << "nz_idx validation: " << n << " mismatches across " << num_delta_pages << " pages\n";
+  return n;
+}
+
+/**
+ * @copydoc cudf::io::parquet::detail::validate_nz_side_effects
+ */
+int validate_nz_side_effects(cudf::detail::hostdevice_span<PageInfo> pages,
+                             cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                             size_t min_row,
+                             size_t num_rows,
+                             int level_type_size,
+                             rmm::cuda_stream_view stream)
+{
+  CUDF_FUNC_RANGE();
+
+  if (std::getenv("CUDF_PARQUET_VALIDATE_NZ_SIDE_EFFECTS") == nullptr) { return 0; }
+  if (pages.size() == 0) { return 0; }
+
+  constexpr int decode_block_size = 128;
+  dim3 dim_block(decode_block_size, 1);
+  dim3 dim_grid(pages.size(), 1);
+
+  rmm::device_scalar<int> mismatch_count(0, stream);
+
+  if (level_type_size == 1) {
+    validate_nz_side_effects_kernel<uint8_t, decode_block_size>
+      <<<dim_grid, dim_block, 0, stream.value()>>>(
+        pages, chunks, min_row, num_rows, mismatch_count.data());
+    CUDF_CUDA_TRY(cudaGetLastError());
+  } else {
+    validate_nz_side_effects_kernel<uint16_t, decode_block_size>
+      <<<dim_grid, dim_block, 0, stream.value()>>>(
+        pages, chunks, min_row, num_rows, mismatch_count.data());
+    CUDF_CUDA_TRY(cudaGetLastError());
+  }
+
+  int const n = mismatch_count.value(stream);
+  std::cerr << "side-effect mismatch count: " << n << "\n";
   return n;
 }
 

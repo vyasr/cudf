@@ -388,7 +388,10 @@ struct PageInfo {
   Encoding definition_level_encoding;  // Encoding used for definition levels (data page)
   Encoding repetition_level_encoding;  // Encoding used for repetition levels (data page)
   bool is_compressed;                  // Whether the page is compressed (V2 header)
-  bool has_value_info;  // true if str_bytes, num_valids, etc are derivable from page indexes
+  bool has_value_info;         // true if str_bytes, num_valids, etc are derivable from page indexes
+  int32_t prepass_nz_count{};  ///< nz_count precomputed by compute_nz_idx pre-pass
+  int32_t
+    prepass_input_value_count{};  ///< input_value_count precomputed by compute_nz_idx pre-pass
 };
 
 // forward declaration
@@ -1077,6 +1080,18 @@ int validate_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     size_t num_rows,
                     int level_type_size,
                     rmm::cuda_stream_view stream);
+
+/**
+ * @brief Runtime correctness gate for compute_nz_idx side effects.
+ *
+ * Gated by CUDF_PARQUET_VALIDATE_NZ_SIDE_EFFECTS; returns 0 when unset.
+ */
+int validate_nz_side_effects(cudf::detail::hostdevice_span<PageInfo> pages,
+                             cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                             size_t min_row,
+                             size_t num_rows,
+                             int level_type_size,
+                             rmm::cuda_stream_view stream);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

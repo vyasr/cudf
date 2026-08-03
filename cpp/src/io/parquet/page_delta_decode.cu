@@ -454,7 +454,14 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
       for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
            sp += warp.size()) {
         // the position in the output column/buffer
-        int32_t dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];
+        // Pilot: prefer global nz_idx buffer; fall back to shared ring for LIST-parent pages.
+        auto const nz_idx_buf = pp->nz_idx_buf;
+        size_type dst_pos;
+        if (nz_idx_buf != nullptr && sp < pp->num_input_values) {
+          dst_pos = nz_idx_buf[sp];
+        } else {
+          dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];
+        }
 
         // handle skip_rows here. flat hierarchies can just skip up to first_row.
         if (!has_repetition) { dst_pos -= s->setup.first_row; }

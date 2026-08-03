@@ -799,6 +799,7 @@ int validate_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
   constexpr int decode_block_size = 128;
   dim3 dim_block(decode_block_size, 1);
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
+  int const num_delta_pages = static_cast<int>(dim_grid.x);
 
   rmm::device_scalar<int> mismatch_count(0, stream);
 
@@ -813,7 +814,7 @@ int validate_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
   }
 
   int const n = mismatch_count.value(stream);
-  if (n > 0) { std::cerr << "[nz_idx validate] MISMATCHES: " << n << "\n"; }
+  std::cerr << "nz_idx validation: " << n << " mismatches across " << num_delta_pages << " pages\n";
   return n;
 }
 

@@ -309,6 +309,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                         subpass_page_mask_span(),
                         error_code.data(),
                         streams[s_idx++]);
+    validate_nz_idx(
+      subpass.pages, pass.chunks, skip_rows, num_rows, level_type_size, streams[s_idx - 1]);
   }
 
   // launch byte stream split decoder

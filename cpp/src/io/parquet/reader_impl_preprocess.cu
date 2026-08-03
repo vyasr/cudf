@@ -350,6 +350,40 @@ void reader_impl::allocate_level_decode_space()
     pages[idx].num_decoded_level_values =
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
   }
+
+  // Second pass: per-page nz_idx buffer allocation (DELTA_BINARY flat pages only)
+  std::vector<size_t> nz_idx_size(num_pages, 0);
+  size_t total_nz_idx_size = 0;
+  for (size_t idx = 0; idx < num_pages; idx++) {
+    auto const& p     = pages[idx];
+    auto const& chunk = pass.chunks[p.chunk_idx];
+    if (p.flags & PAGEINFO_FLAGS_DICTIONARY) {
+      nz_idx_size[idx] = 0;
+    } else if (chunk.max_level[level_type::REPETITION] > 0) {
+      nz_idx_size[idx] = 0;  // LIST-parent: skip
+    } else if (BitAnd(p.kernel_mask, decode_kernel_mask::DELTA_BINARY) == 0) {
+      nz_idx_size[idx] = 0;  // non-DELTA_BINARY: skip
+    } else {
+      nz_idx_size[idx] = static_cast<size_t>(p.num_input_values) * sizeof(size_type);
+      total_nz_idx_size += nz_idx_size[idx];
+    }
+  }
+
+  subpass.nz_idx_decode_data =
+    rmm::device_buffer(total_nz_idx_size, _stream, cudf::get_current_device_resource_ref());
+
+  {
+    size_t running_offset = 0;
+    auto* nz_base         = static_cast<uint8_t*>(subpass.nz_idx_decode_data.data());
+    for (size_t idx = 0; idx < num_pages; idx++) {
+      if (nz_idx_size[idx] == 0) {
+        pages[idx].nz_idx_buf = nullptr;
+      } else {
+        pages[idx].nz_idx_buf = reinterpret_cast<size_type*>(nz_base + running_offset);
+        running_offset += nz_idx_size[idx];
+      }
+    }
+  }
 }
 
 namespace {

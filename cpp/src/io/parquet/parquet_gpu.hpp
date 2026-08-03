@@ -325,6 +325,8 @@ struct PageInfo {
   PageNestingDecodeInfo* nesting_decode;
   // level decode buffers
   uint8_t* lvl_decode_buf[level_type::NUM_LEVEL_TYPES];  // NOLINT
+  size_type*
+    nz_idx_buf;  // Pre-computed nz_idx values (DELTA_BINARY pilot, flat pages); nullptr otherwise
   // temporary space for decoding DELTA_BYTE_ARRAY encoded strings
   int64_t temp_string_size;
   uint8_t* temp_string_buf;
@@ -1031,6 +1033,28 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        size_t num_rows,
                        int level_type_size,
                        rmm::cuda_stream_view stream);
+
+/**
+ * @brief Pre-computes nz_idx values for flat DELTA_BINARY pages.
+ *
+ * For each qualifying page (pp->nz_idx_buf != nullptr and DELTA_BINARY kernel mask),
+ * writes the raw dst_pos (running count of in-row-bounds level values) for each valid
+ * level value into pp->nz_idx_buf. Mirrors sb->nz_idx values written by
+ * gpuUpdateValidityOffsetsAndRowIndices, without the first_row subtraction.
+ *
+ * @param[in,out] pages All pages to be processed
+ * @param[in] chunks All chunks to be processed
+ * @param[in] min_row Minimum row index to read
+ * @param[in] num_rows Number of rows to read starting from min_row
+ * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)
+ * @param[in] stream CUDA stream to use
+ */
+void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
+                    cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                    size_t min_row,
+                    size_t num_rows,
+                    int level_type_size,
+                    rmm::cuda_stream_view stream);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

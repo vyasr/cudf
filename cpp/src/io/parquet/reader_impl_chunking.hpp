@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -81,6 +81,7 @@ struct subpass_intermediate_data {
   subpass_intermediate_data(rmm::cuda_stream_view stream)
     : decomp_page_data(0, stream),
       level_decode_data(0, stream),
+      nz_idx_decode_data(0, stream),
       page_buf(0, stream),
       page_src_index{0, stream},
       page_string_offset_indices(0, stream),
@@ -94,6 +95,7 @@ struct subpass_intermediate_data {
   rmm::device_buffer decomp_page_data;
 
   rmm::device_buffer level_decode_data;
+  rmm::device_buffer nz_idx_decode_data;
   cudf::detail::hostdevice_span<PageInfo> pages{};
 
   cudf::detail::hostdevice_vector<PageInfo> page_buf;
@@ -158,6 +160,7 @@ struct pass_intermediate_data {
       decomp_scratch_sizes{0, stream},
       string_offset_sizes{0, stream},
       level_decode_sizes{0, stream},
+      nz_idx_sizes{0, stream},
       str_dict_index{0, stream}
   {
   }
@@ -181,6 +184,7 @@ struct pass_intermediate_data {
   rmm::device_uvector<size_t> decomp_scratch_sizes;
   rmm::device_uvector<size_t> string_offset_sizes;
   rmm::device_uvector<size_t> level_decode_sizes;
+  rmm::device_uvector<size_t> nz_idx_sizes;
   rmm::device_uvector<string_index_pair> str_dict_index;
 
   // currently active subpass

@@ -37,6 +37,33 @@ namespace {
 //   even if that goes past the user-specified limit.
 constexpr size_t minimum_subpass_expected_size = 200 * 1024 * 1024;
 
+// Compute per-page nz_idx buffer sizes (DELTA_BINARY flat pages only).
+struct compute_page_nz_idx_size {
+  cudf::device_span<ColumnChunkDesc const> chunks;
+
+  __device__ size_t operator()(PageInfo const& page) const
+  {
+    auto const& chunk = chunks[page.chunk_idx];
+    if (page.flags & PAGEINFO_FLAGS_DICTIONARY) { return 0; }
+    if (chunk.max_level[level_type::REPETITION] > 0) { return 0; }
+    if (BitAnd(page.kernel_mask, decode_kernel_mask::DELTA_BINARY) == 0) { return 0; }
+    return static_cast<size_t>(page.num_input_values) * sizeof(size_type);
+  }
+};
+
+void compute_nz_idx_sizes_(cudf::detail::hostdevice_vector<ColumnChunkDesc> const& chunks,
+                           cudf::detail::hostdevice_vector<PageInfo> const& pages,
+                           rmm::cuda_stream_view stream,
+                           rmm::device_async_resource_ref /*mr*/,
+                           rmm::device_uvector<size_t>& out)
+{
+  thrust::transform(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                    pages.d_begin(),
+                    pages.d_end(),
+                    out.begin(),
+                    compute_page_nz_idx_size{chunks});
+}
+
 }  // namespace
 
 void reader_impl::handle_chunking(read_mode mode)
@@ -273,7 +300,11 @@ void reader_impl::setup_next_subpass(read_mode mode)
         pass.chunks, pass.pages, pass.skip_rows, pass.num_rows, _stream, _mr);
       pass.level_decode_sizes = compute_level_decode_sizes(
         pass.chunks, pass.pages, pass.level_type_size, pass.skip_rows, pass.num_rows, _stream, _mr);
+      // nz_idx buffer sizes (DELTA_BINARY flat pages only)
+      pass.nz_idx_sizes = rmm::device_uvector<size_t>(pass.pages.size(), _stream, _mr);
+      compute_nz_idx_sizes_(pass.chunks, pass.pages, _stream, _mr, pass.nz_idx_sizes);
     }
+    include_scratch_size(pass.nz_idx_sizes, c_info, _stream);
     include_scratch_size(pass.decomp_scratch_sizes, c_info, _stream);
     include_scratch_size(pass.string_offset_sizes, c_info, _stream);
     include_scratch_size(pass.level_decode_sizes, c_info, _stream);

@@ -368,6 +368,16 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   // Must be evaluated after setup_local_page_info
   bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
   bool const process_nulls  = should_process_nulls(s);
+  PageInfo* pp              = &pages[page_idx];
+
+  // T11.5 Config A: flat DELTA_BINARY pages use the global nz_idx pre-pass; wire nz_count
+  // from the pre-pass output so the main loop sees the correct bound.
+  // See .sisyphus/evidence/task-11.5-warp-design.md for Config A rationale.
+  if (block.thread_rank() == 0 && pp->nz_idx_buf != nullptr) {
+    s->nz_count          = static_cast<int>(pp->prepass_nz_count);
+    s->input_value_count = static_cast<int>(pp->prepass_input_value_count);
+  }
+  if (pp->nz_idx_buf != nullptr) { block.sync(); }
 
   // Capture initial valid_map_offset before any processing that might modify it
   int const init_valid_map_offset =
@@ -377,11 +387,30 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   PageNestingDecodeInfo const* nesting_info_base = s->nesting.nesting_info;
 
   // Get the level decode buffers for this page
-  PageInfo* pp       = &pages[page_idx];
   level_t* const def = !process_nulls
                          ? nullptr
                          : reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   auto* const rep    = reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::REPETITION]);
+
+  if (pp->nz_idx_buf != nullptr && process_nulls) {
+    auto& ni                = s->nesting_info[s->setup.col.max_nesting_depth - 1];
+    int const max_def_level = ni.max_def_level;
+    for (int out_base = static_cast<int>(block.thread_rank()) * cudf::detail::warp_size;
+         out_base < s->setup.num_rows;
+         out_base += static_cast<int>(block.size()) * cudf::detail::warp_size) {
+      int const nbits = min(cudf::detail::warp_size, s->setup.num_rows - out_base);
+      uint32_t mask   = 0;
+      for (int i = 0; i < nbits; ++i) {
+        int const src = static_cast<int>(s->setup.first_row) + out_base + i;
+        if (src < pp->num_decoded_level_values && def[src] >= max_def_level) { mask |= 1u << i; }
+      }
+      if (ni.valid_map != nullptr) {
+        store_validity(ni.valid_map_offset + out_base, ni.valid_map, mask, nbits);
+      }
+      atomicAdd(&ni.null_count, nbits - __popc(mask));
+    }
+    block.sync();
+  }
 
   // skipped_leaf_values will always be 0 for flat hierarchies.
   uint32_t const skipped_leaf_values = s->setup.page.skipped_leaf_values;
@@ -431,12 +460,12 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
     // warp2 waits one cycle for warps 0/1 to produce a batch, and then stuffs values
     // into the proper location in the output.
     if (warp.meta_group_rank() == 0) {
-      // warp 0
-      // decode repetition and definition levels.
-      // - update validity vectors
-      // - updates offsets (for nested columns)
-      // - produces non-NULL value indices in s->nz_idx for subsequent decoding
-      gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
+      // warp 0: decode rep/def levels for LIST-parent pages only.
+      // Flat DELTA_BINARY pages use the global nz_idx pre-pass (T11.5 Config A).
+      // See .sisyphus/evidence/task-11.5-warp-design.md.
+      if (pp->nz_idx_buf == nullptr) {
+        gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
+      }
     } else if (warp.meta_group_rank() == 1) {
       // warp 1
       for (uint32_t i = 0; i < passes_per_batch; i++) {
@@ -445,7 +474,11 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
         if (i > 0) { warp.sync(); }
         db->decode_next_pass(warp);
       }
-    } else if (src_pos < target_pos) {
+    }
+
+    block.sync();
+
+    if (warp.meta_group_rank() == 2 && src_pos < target_pos) {
       // warp 2
       // nesting level that is storing actual leaf values
       int const leaf_level_index = s->setup.col.max_nesting_depth - 1;

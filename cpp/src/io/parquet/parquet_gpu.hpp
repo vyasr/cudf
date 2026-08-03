@@ -1057,6 +1057,28 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     rmm::cuda_stream_view stream);
 
 /**
+ * @brief Read-only correctness gate for the flat DELTA_BINARY nz_idx pilot.
+ *
+ * Recomputes nz_idx exactly as compute_nz_idx() does and compares against the pre-decoded
+ * pp->nz_idx_buf. Never modifies pp->nz_idx_buf. Gated at runtime by the
+ * CUDF_PARQUET_VALIDATE_NZ_IDX environment variable; returns 0 immediately when unset.
+ *
+ * @param[in] pages All pages to inspect
+ * @param[in] chunks All chunks to be processed
+ * @param[in] min_row Minimum row index to read
+ * @param[in] num_rows Number of rows to read starting from min_row
+ * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)
+ * @param[in] stream CUDA stream to use
+ * @return Number of mismatches observed (0 when env var unset or all values match).
+ */
+int validate_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
+                    cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                    size_t min_row,
+                    size_t num_rows,
+                    int level_type_size,
+                    rmm::cuda_stream_view stream);
+
+/**
  * @brief Fills output offset entries for pruned string and list pages
  *
  * @param[in] pages All pages to be processed

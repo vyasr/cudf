@@ -507,9 +507,13 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
             dst_pos = -1;
           }
           dst_pos -= s->setup.first_row;
-          if (dst_pos >= 0 && sp < target_pos) {
-            void* const dst = nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
-            auto const val  = db->value_at(sp + skipped_leaf_values);
+          auto* const base = static_cast<uint8_t*>(s->setup.col.column_data_base[leaf_level_index]);
+          auto const page_start_row = s->setup.col.start_row + s->setup.page.chunk_row;
+          auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
+          if (base != nullptr && dst_pos >= 0 && sp < target_pos) {
+            auto const global_dst_pos = output_offset + dst_pos;
+            void* const dst           = base + global_dst_pos * s->output_cvt.dtype_len;
+            auto const val            = db->value_at(sp + skipped_leaf_values);
             switch (s->output_cvt.dtype_len) {
               case 1: *static_cast<int8_t*>(dst) = val; break;
               case 2: *static_cast<int16_t*>(dst) = val; break;

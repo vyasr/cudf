@@ -366,18 +366,19 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   }
 
   // Must be evaluated after setup_local_page_info
-  bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
-  bool const process_nulls  = should_process_nulls(s);
-  PageInfo* pp              = &pages[page_idx];
+  bool const has_repetition    = s->setup.col.max_level[level_type::REPETITION] > 0;
+  bool const process_nulls     = should_process_nulls(s);
+  PageInfo* pp                 = &pages[page_idx];
+  bool const use_global_nz_idx = pp->nz_idx_buf != nullptr && s->setup.col.max_nesting_depth == 1;
 
   // T11.5 Config A: flat DELTA_BINARY pages use the global nz_idx pre-pass; wire nz_count
   // from the pre-pass output so the main loop sees the correct bound.
   // See .sisyphus/evidence/task-11.5-warp-design.md for Config A rationale.
-  if (block.thread_rank() == 0 && pp->nz_idx_buf != nullptr) {
+  if (block.thread_rank() == 0 && use_global_nz_idx) {
     s->nz_count          = static_cast<int>(pp->prepass_nz_count);
     s->input_value_count = static_cast<int>(pp->prepass_input_value_count);
   }
-  if (pp->nz_idx_buf != nullptr) { block.sync(); }
+  if (use_global_nz_idx) { block.sync(); }
 
   // Capture initial valid_map_offset before any processing that might modify it
   int const init_valid_map_offset =
@@ -392,18 +393,24 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
                          : reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   auto* const rep    = reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::REPETITION]);
 
-  if (pp->nz_idx_buf != nullptr && process_nulls) {
-    auto& ni                = s->nesting_info[s->setup.col.max_nesting_depth - 1];
-    int const max_def_level = ni.max_def_level;
-    for (int out_base = static_cast<int>(block.thread_rank()) * cudf::detail::warp_size;
-         out_base < s->setup.num_rows;
-         out_base += static_cast<int>(block.size()) * cudf::detail::warp_size) {
-      int const nbits = min(cudf::detail::warp_size, s->setup.num_rows - out_base);
+  if (use_global_nz_idx && process_nulls) {
+    auto& ni                    = s->nesting_info[s->setup.col.max_nesting_depth - 1];
+    int const max_def_level     = ni.max_def_level;
+    int const first_src         = static_cast<int>(s->setup.first_row);
+    int const actual_num_values = (pp->num_decoded_level_values > 0)
+                                    ? min(pp->num_input_values, pp->num_decoded_level_values)
+                                    : pp->num_input_values;
+    int const last_src          = min(first_src + s->setup.num_rows, actual_num_values);
+    for (int src_base = first_src + static_cast<int>(block.thread_rank()) * cudf::detail::warp_size;
+         src_base < last_src;
+         src_base += static_cast<int>(block.size()) * cudf::detail::warp_size) {
+      int const nbits = min(cudf::detail::warp_size, last_src - src_base);
       uint32_t mask   = 0;
       for (int i = 0; i < nbits; ++i) {
-        int const src = static_cast<int>(s->setup.first_row) + out_base + i;
-        if (src < pp->num_decoded_level_values && def[src] >= max_def_level) { mask |= 1u << i; }
+        int const src = src_base + i;
+        if (def[src] >= max_def_level) { mask |= 1u << i; }
       }
+      int const out_base = src_base - first_src;
       if (ni.valid_map != nullptr) {
         store_validity(ni.valid_map_offset + out_base, ni.valid_map, mask, nbits);
       }
@@ -463,7 +470,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
       // warp 0: decode rep/def levels for LIST-parent pages only.
       // Flat DELTA_BINARY pages use the global nz_idx pre-pass (T11.5 Config A).
       // See .sisyphus/evidence/task-11.5-warp-design.md.
-      if (pp->nz_idx_buf == nullptr) {
+      if (!use_global_nz_idx) {
         gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
       }
     } else if (warp.meta_group_rank() == 1) {
@@ -490,7 +497,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
         // Pilot: prefer global nz_idx buffer; fall back to shared ring for LIST-parent pages.
         auto const nz_idx_buf = pp->nz_idx_buf;
         size_type dst_pos;
-        if (nz_idx_buf != nullptr && sp < pp->num_input_values) {
+        if (use_global_nz_idx && sp < pp->num_input_values) {
           dst_pos = nz_idx_buf[sp];
         } else {
           dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];

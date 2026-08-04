@@ -299,8 +299,13 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   if (BitAnd(kernel_mask, decode_kernel_mask::DELTA_BINARY) != 0) {
     // Pilot: materialize nz_idx into a global buffer for DELTA_BINARY pages;
     // consumed by decode_delta_binary_kernel warp 2.
-    compute_nz_idx(
-      subpass.pages, pass.chunks, skip_rows, num_rows, level_type_size, streams[s_idx]);
+    compute_nz_idx(subpass.pages,
+                   pass.chunks,
+                   subpass_page_mask_span(),
+                   skip_rows,
+                   num_rows,
+                   level_type_size,
+                   streams[s_idx]);
     decode_delta_binary(subpass.pages,
                         pass.chunks,
                         num_rows,

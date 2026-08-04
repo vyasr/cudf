@@ -328,7 +328,8 @@ struct delta_byte_array_decoder {
 // Decode page data that is DELTA_BINARY_PACKED encoded. This encoding is
 // only used for int32 and int64 physical types (and appears to only be used
 // with V2 page headers; see https://www.mail-archive.com/dev@parquet.apache.org/msg11826.html).
-// this kernel only needs 96 threads (3 warps)(for now).
+// this kernel only needs 96 threads (3 warps). Warp 0 is a no-op for flat pages (guarded by
+// use_global_nz_idx).
 template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   decode_delta_binary_kernel(PageInfo* pages,

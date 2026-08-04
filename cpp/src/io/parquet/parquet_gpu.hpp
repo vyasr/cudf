@@ -1047,6 +1047,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  *
  * @param[in,out] pages All pages to be processed
  * @param[in] chunks All chunks to be processed
+ * @param[in] page_mask Boolean vector indicating which pages need to be processed
  * @param[in] min_row Minimum row index to read
  * @param[in] num_rows Number of rows to read starting from min_row
  * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)
@@ -1054,6 +1055,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  */
 void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                    cudf::device_span<bool const> page_mask,
                     size_t min_row,
                     size_t num_rows,
                     int level_type_size,

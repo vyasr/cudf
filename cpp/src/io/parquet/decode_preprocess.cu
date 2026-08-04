@@ -502,6 +502,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
  *
  * @param pages List of pages
  * @param chunks List of column chunks
+ * @param page_mask Boolean vector indicating which pages need to be processed
  * @param min_row Minimum row index to read
  * @param num_rows Number of rows to read starting from min_row
  * @param error_code Error code output (unused; nullptr in current launcher)
@@ -510,6 +511,7 @@ template <typename level_t, int decode_block_size>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
   compute_nz_idx_kernel(device_span<PageInfo> pages,
                         device_span<ColumnChunkDesc const> chunks,
+                        cudf::device_span<bool const> page_mask,
                         size_t min_row,
                         size_t num_rows,
                         kernel_error::pointer /*error_code*/)
@@ -523,6 +525,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 
   // Only process pages that had an nz_idx_buf allocated (flat DELTA_BINARY pilot pages).
   if (pp->nz_idx_buf == nullptr) { return; }
+
+  // Return early if this page is pruned.
+  if (not page_mask.empty() and not page_mask[page_idx]) { return; }
+
+  [[maybe_unused]] null_count_back_copier _{s, t};
 
   // Filter to DELTA_BINARY pages and match the DECODE stage (same as decode_delta_binary_kernel).
   if (!setup_local_page_info(s,
@@ -593,6 +600,29 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     row_count += batch_size;
     value_count += block_value_count;
     valid_count += block_valid_count;
+  }
+
+  if (process_nulls) {
+    auto& ni                    = s->nesting_info[max_depth - 1];
+    int const first_src         = static_cast<int>(s->setup.first_row);
+    int const actual_num_values = (pp->num_decoded_level_values > 0)
+                                    ? min(pp->num_input_values, pp->num_decoded_level_values)
+                                    : pp->num_input_values;
+    int const last_src          = min(first_src + s->setup.num_rows, actual_num_values);
+    for (int src_base = first_src + t * cudf::detail::warp_size; src_base < last_src;
+         src_base += decode_block_size * cudf::detail::warp_size) {
+      int const nbits = min(cudf::detail::warp_size, last_src - src_base);
+      uint32_t mask   = 0;
+      for (int i = 0; i < nbits; ++i) {
+        int const src = src_base + i;
+        if (def[src] >= max_def_level) { mask |= 1u << i; }
+      }
+      if (ni.valid_map != nullptr) {
+        store_validity(ni.valid_map_offset + src_base - first_src, ni.valid_map, mask, nbits);
+      }
+      atomicAdd(&ni.null_count, nbits - __popc(mask));
+    }
+    __syncthreads();
   }
 
   if (t == 0) {
@@ -830,6 +860,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  */
 void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                    cudf::device_span<bool const> page_mask,
                     size_t min_row,
                     size_t num_rows,
                     int level_type_size,
@@ -845,11 +876,11 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
 
   if (level_type_size == 1) {
     compute_nz_idx_kernel<uint8_t, decode_block_size><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages, chunks, min_row, num_rows, /*error_code=*/nullptr);
+      pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
     compute_nz_idx_kernel<uint16_t, decode_block_size><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages, chunks, min_row, num_rows, /*error_code=*/nullptr);
+      pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 }

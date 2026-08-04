@@ -388,37 +388,15 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
   // copying logic from gpuDecodePageData.
   PageNestingDecodeInfo const* nesting_info_base = s->nesting.nesting_info;
 
+  // Flat global-nz pages get validity/null_count from compute_nz_idx_kernel (pre-pass).
+  // Prevent null_count_back_copier from overwriting the pre-pass null_count with zero.
+  if (use_global_nz_idx) { s->nesting_info = nullptr; }
+
   // Get the level decode buffers for this page
   level_t* const def = !process_nulls
                          ? nullptr
                          : reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   auto* const rep    = reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::REPETITION]);
-
-  if (use_global_nz_idx && process_nulls) {
-    auto& ni                    = s->nesting_info[s->setup.col.max_nesting_depth - 1];
-    int const max_def_level     = ni.max_def_level;
-    int const first_src         = static_cast<int>(s->setup.first_row);
-    int const actual_num_values = (pp->num_decoded_level_values > 0)
-                                    ? min(pp->num_input_values, pp->num_decoded_level_values)
-                                    : pp->num_input_values;
-    int const last_src          = min(first_src + s->setup.num_rows, actual_num_values);
-    for (int src_base = first_src + static_cast<int>(block.thread_rank()) * cudf::detail::warp_size;
-         src_base < last_src;
-         src_base += static_cast<int>(block.size()) * cudf::detail::warp_size) {
-      int const nbits = min(cudf::detail::warp_size, last_src - src_base);
-      uint32_t mask   = 0;
-      for (int i = 0; i < nbits; ++i) {
-        int const src = src_base + i;
-        if (def[src] >= max_def_level) { mask |= 1u << i; }
-      }
-      int const out_base = src_base - first_src;
-      if (ni.valid_map != nullptr) {
-        store_validity(ni.valid_map_offset + out_base, ni.valid_map, mask, nbits);
-      }
-      atomicAdd(&ni.null_count, nbits - __popc(mask));
-    }
-    block.sync();
-  }
 
   // skipped_leaf_values will always be 0 for flat hierarchies.
   uint32_t const skipped_leaf_values = s->setup.page.skipped_leaf_values;

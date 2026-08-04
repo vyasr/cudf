@@ -15,7 +15,6 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <cuda/barrier>
 #include <thrust/transform_scan.h>
 
 #include <cassert>
@@ -351,13 +350,10 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
-  using state_buffers_t  = std::conditional_t<Flat,
-                                              page_state_buffers_s<1, 1, 1>,
-                                              page_state_buffers_s<delta_nz_buf_size, 1, 1>>;
-  using nz_idx_barrier_t = cuda::barrier<cuda::thread_scope_block>;
+  using state_buffers_t = std::conditional_t<Flat,
+                                             page_state_buffers_s<1, 1, 1>,
+                                             page_state_buffers_s<delta_nz_buf_size, 1, 1>>;
   __shared__ __align__(16) state_buffers_t state_buffers;
-  __shared__ __align__(16) size_type nz_idx_stage[2 * delta_max_batch_size];
-  __shared__ __align__(16) uint8_t nz_idx_barrier_storage[sizeof(nz_idx_barrier_t)];
 
   auto* const s         = &state_g;
   auto* const sb        = &state_buffers;
@@ -365,8 +361,6 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
   auto const block      = cg::this_thread_block();
   auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
   auto* const db        = &db_state;
-  [[maybe_unused]] auto* const nz_idx_barrier =
-    reinterpret_cast<nz_idx_barrier_t*>(nz_idx_barrier_storage);
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
@@ -452,45 +446,12 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
   // that has a value we need.
   if (is_skip_resume) { db->skip_values(skipped_leaf_values, block, warp); }
 
-  [[maybe_unused]] uint32_t flat_iter = 0;
-  if constexpr (Flat) {
-    if (block.thread_rank() == 0) { init(nz_idx_barrier, block.size()); }
-    block.sync();
-
-    uint32_t const init_sp    = s->progress.src_pos;
-    uint32_t const init_avail = init_sp < static_cast<uint32_t>(pp->num_input_values)
-                                  ? static_cast<uint32_t>(pp->num_input_values) - init_sp
-                                  : 0u;
-    size_t const init_len     = min(batch_size, init_avail) * sizeof(size_type);
-    if (init_len > 0) {
-      cuda::memcpy_async(
-        block, &nz_idx_stage[0], &pp->nz_idx_buf[init_sp], init_len, *nz_idx_barrier);
-      nz_idx_barrier->arrive_and_wait();
-      block.sync();
-    }
-  }
-
   while (s->setup.error == 0 &&
          (s->progress.input_value_count < s->setup.num_input_values || s->progress.src_pos < s->progress.nz_count)) {
     uint32_t target_pos;
-    uint32_t const src_pos                     = s->progress.src_pos;
-    [[maybe_unused]] bool flat_prefetched_next = false;
+    uint32_t const src_pos = s->progress.src_pos;
 
     if constexpr (Flat) {
-      uint32_t const next_sp    = src_pos + batch_size;
-      uint32_t const next_avail = next_sp < static_cast<uint32_t>(pp->num_input_values)
-                                    ? static_cast<uint32_t>(pp->num_input_values) - next_sp
-                                    : 0u;
-      size_t const next_len     = min(batch_size, next_avail) * sizeof(size_type);
-      if (next_len > 0) {
-        cuda::memcpy_async(block,
-                           &nz_idx_stage[((flat_iter + 1) % 2) * delta_max_batch_size],
-                           &pp->nz_idx_buf[next_sp],
-                           next_len,
-                           *nz_idx_barrier);
-        flat_prefetched_next = true;
-      }
-
       // 2-warp layout: warp 0 = delta decoder, warp 1 = value stuffer
       if (warp.meta_group_rank() < 1) {
         target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
@@ -536,13 +497,12 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     // Value stuffer: warp 1 in flat, warp 2 in nested
     if constexpr (Flat) {
       if (warp.meta_group_rank() == 1 && src_pos < target_pos) {
-        int const leaf_level_index      = s->setup.col.max_nesting_depth - 1;
-        auto const* const staged_nz_idx = &nz_idx_stage[(flat_iter % 2) * delta_max_batch_size];
+        int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
         for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
              sp += warp.size()) {
           size_type dst_pos;
           if (sp < pp->num_input_values) {
-            dst_pos = staged_nz_idx[sp - src_pos];
+            dst_pos = pp->nz_idx_buf[sp];
           } else {
             dst_pos = -1;
           }
@@ -587,14 +547,6 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     }
 
     block.sync();
-
-    if constexpr (Flat) {
-      if (flat_prefetched_next) {
-        nz_idx_barrier->arrive_and_wait();
-        block.sync();
-      }
-      ++flat_iter;
-    }
   }
 
   if constexpr (!Flat) {

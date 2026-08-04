@@ -10,7 +10,9 @@
 #include "parquet_gpu.hpp"
 
 #include <cudf/detail/utilities/cuda.cuh>
+#include <cudf/detail/utilities/cuda_memcpy.hpp>
 
+#include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
 #include <thrust/transform_scan.h>
@@ -329,8 +331,9 @@ struct delta_byte_array_decoder {
 // Decode page data that is DELTA_BINARY_PACKED encoded. This encoding is
 // only used for int32 and int64 physical types (and appears to only be used
 // with V2 page headers; see https://www.mail-archive.com/dev@parquet.apache.org/msg11826.html).
-// this kernel only needs 96 threads (3 warps). Warp 0 is a no-op for flat pages (guarded by
-// use_global_nz_idx).
+// this kernel is instantiated for two block sizes: 64 threads (Flat=true) for flat DELTA_BINARY
+// pages using the global nz_idx pre-pass, and 96 threads (Flat=false) for all other cases.
+// Pages are partitioned host-side and dispatched via filter_indices.
 template <typename level_t, bool Flat>
 CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
                                         : decode_delta_binary_block_size)
@@ -339,6 +342,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
                              size_t min_row,
                              size_t num_rows,
                              cudf::device_span<bool const> page_mask,
+                             cudf::device_span<uint32_t const> filter_indices,
                              kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
@@ -347,7 +351,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 
   auto* const s      = &state_g;
   auto* const sb     = &state_buffers;
-  int const page_idx = cg::this_grid().block_rank();
+  int const page_idx = static_cast<int>(filter_indices[cg::this_grid().block_rank()]);
   auto const block   = cg::this_thread_block();
   auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
   auto* const db     = &db_state;
@@ -988,17 +992,88 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
 {
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
-  dim3 dim_block(decode_delta_binary_block_size, 1);
-  dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
+  // Partition pages into flat (nz_idx_buf != nullptr && max_nesting_depth == 1) and nested.
+  auto const num_pages = pages.size();
+  auto const* h_pages  = pages.host_ptr();
+  auto const* h_chunks = chunks.host_ptr();
+  std::vector<uint32_t> h_flat_indices;
+  std::vector<uint32_t> h_nested_indices;
+  h_flat_indices.reserve(num_pages);
+  h_nested_indices.reserve(num_pages);
+  for (size_t i = 0; i < num_pages; ++i) {
+    if (h_pages[i].nz_idx_buf != nullptr && h_chunks[h_pages[i].chunk_idx].max_nesting_depth == 1) {
+      h_flat_indices.push_back(static_cast<uint32_t>(i));
+    } else {
+      h_nested_indices.push_back(static_cast<uint32_t>(i));
+    }
+  }
+
+  rmm::device_uvector<uint32_t> flat_indices(h_flat_indices.size(), stream);
+  rmm::device_uvector<uint32_t> nested_indices(h_nested_indices.size(), stream);
+  if (!h_flat_indices.empty()) {
+    cudf::detail::cuda_memcpy_async<uint32_t>(
+      cudf::device_span<uint32_t>{flat_indices},
+      cudf::host_span<uint32_t const>{h_flat_indices.data(), h_flat_indices.size()},
+      stream);
+  }
+  if (!h_nested_indices.empty()) {
+    cudf::detail::cuda_memcpy_async<uint32_t>(
+      cudf::device_span<uint32_t>{nested_indices},
+      cudf::host_span<uint32_t const>{h_nested_indices.data(), h_nested_indices.size()},
+      stream);
+  }
+
+  dim3 const flat_block(decode_delta_binary_flat_block_size, 1);
+  dim3 const nested_block(decode_delta_binary_block_size, 1);
+  dim3 const flat_grid(flat_indices.size(), 1);
+  dim3 const nested_grid(nested_indices.size(), 1);
 
   if (level_type_size == 1) {
-    decode_delta_binary_kernel<uint8_t, false><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
-    CUDF_CUDA_TRY(cudaGetLastError());
+    if (!flat_indices.is_empty()) {
+      decode_delta_binary_kernel<uint8_t, true><<<flat_grid, flat_block, 0, stream.value()>>>(
+        pages.device_ptr(),
+        chunks,
+        min_row,
+        num_rows,
+        page_mask,
+        cudf::device_span<uint32_t const>(flat_indices),
+        error_code);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
+    if (!nested_indices.is_empty()) {
+      decode_delta_binary_kernel<uint8_t, false><<<nested_grid, nested_block, 0, stream.value()>>>(
+        pages.device_ptr(),
+        chunks,
+        min_row,
+        num_rows,
+        page_mask,
+        cudf::device_span<uint32_t const>(nested_indices),
+        error_code);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
   } else {
-    decode_delta_binary_kernel<uint16_t, false><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
-    CUDF_CUDA_TRY(cudaGetLastError());
+    if (!flat_indices.is_empty()) {
+      decode_delta_binary_kernel<uint16_t, true><<<flat_grid, flat_block, 0, stream.value()>>>(
+        pages.device_ptr(),
+        chunks,
+        min_row,
+        num_rows,
+        page_mask,
+        cudf::device_span<uint32_t const>(flat_indices),
+        error_code);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
+    if (!nested_indices.is_empty()) {
+      decode_delta_binary_kernel<uint16_t, false><<<nested_grid, nested_block, 0, stream.value()>>>(
+        pages.device_ptr(),
+        chunks,
+        min_row,
+        num_rows,
+        page_mask,
+        cudf::device_span<uint32_t const>(nested_indices),
+        error_code);
+      CUDF_CUDA_TRY(cudaGetLastError());
+    }
   }
 }
 

@@ -17,6 +17,9 @@
 
 #include <thrust/transform_scan.h>
 
+#include <cassert>
+#include <type_traits>
+
 namespace cudf::io::parquet::detail {
 
 namespace {
@@ -347,7 +350,10 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
-  __shared__ __align__(16) page_state_buffers_s<delta_nz_buf_size, 1, 1> state_buffers;
+  using state_buffers_t = std::conditional_t<Flat,
+                                             page_state_buffers_s<1, 1, 1>,
+                                             page_state_buffers_s<delta_nz_buf_size, 1, 1>>;
+  __shared__ __align__(16) state_buffers_t state_buffers;
 
   auto* const s      = &state_g;
   auto* const sb     = &state_buffers;
@@ -372,31 +378,36 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     return;
   }
 
+  if constexpr (Flat) { assert(s->setup.col.max_nesting_depth == 1); }
+
   // Must be evaluated after setup_local_page_info
-  bool const has_repetition    = s->setup.col.max_level[level_type::REPETITION] > 0;
-  bool const process_nulls     = should_process_nulls(s);
-  PageInfo* pp                 = &pages[page_idx];
-  bool const use_global_nz_idx = pp->nz_idx_buf != nullptr && s->setup.col.max_nesting_depth == 1;
+  bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
+  bool const process_nulls  = should_process_nulls(s);
+  PageInfo* pp              = &pages[page_idx];
 
   // T11.5 Config A: flat DELTA_BINARY pages use the global nz_idx pre-pass; wire nz_count
   // from the pre-pass output so the main loop sees the correct bound.
   // See .sisyphus/evidence/task-11.5-warp-design.md for Config A rationale.
-  if (block.thread_rank() == 0 && use_global_nz_idx) {
-    s->nz_count          = static_cast<int>(pp->prepass_nz_count);
-    s->input_value_count = static_cast<int>(pp->prepass_input_value_count);
+  if constexpr (Flat) {
+    if (block.thread_rank() == 0) {
+      s->progress.nz_count          = static_cast<int>(pp->prepass_nz_count);
+      s->progress.input_value_count = static_cast<int>(pp->prepass_input_value_count);
+    }
+    block.sync();
   }
-  if (use_global_nz_idx) { block.sync(); }
 
   // Capture initial valid_map_offset before any processing that might modify it
-  int const init_valid_map_offset =
-    s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_map_offset;
+  [[maybe_unused]] int init_valid_map_offset = 0;
+  if constexpr (!Flat) {
+    init_valid_map_offset = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_map_offset;
+  }
 
   // copying logic from gpuDecodePageData.
   PageNestingDecodeInfo const* nesting_info_base = s->nesting.nesting_info;
 
   // Flat global-nz pages get validity/null_count from compute_nz_idx_kernel (pre-pass).
   // Prevent null_count_back_copier from overwriting the pre-pass null_count with zero.
-  if (use_global_nz_idx) { s->nesting_info = nullptr; }
+  if constexpr (Flat) { s->nesting.nesting_info = nullptr; }
 
   // Get the level decode buffers for this page
   level_t* const def = !process_nulls
@@ -440,86 +451,112 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     uint32_t target_pos;
     uint32_t const src_pos = s->progress.src_pos;
 
-    if (warp.meta_group_rank() < 2) {  // warp0..1
-      target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
-    } else {  // warp2
-      target_pos = min(s->progress.nz_count, src_pos + batch_size);
+    if constexpr (Flat) {
+      // 2-warp layout: warp 0 = delta decoder, warp 1 = value stuffer
+      if (warp.meta_group_rank() < 1) {
+        target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
+      } else {
+        target_pos = min(s->progress.nz_count, src_pos + batch_size);
+      }
+    } else {
+      // 3-warp layout: warps 0+1 produce, warp 2 consumes
+      if (warp.meta_group_rank() < 2) {
+        target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
+      } else {
+        target_pos = min(s->progress.nz_count, src_pos + batch_size);
+      }
     }
     // This needs to be here to prevent warp 2 modifying src_pos before all threads have read it
     block.sync();
 
-    // warp0 will decode the rep/def levels, warp1 will unpack a mini-batch of deltas.
-    // warp2 waits one cycle for warps 0/1 to produce a batch, and then stuffs values
-    // into the proper location in the output.
-    if (warp.meta_group_rank() == 0) {
-      // warp 0: decode rep/def levels for LIST-parent pages only.
-      // Flat DELTA_BINARY pages use the global nz_idx pre-pass (T11.5 Config A).
-      // See .sisyphus/evidence/task-11.5-warp-design.md.
-      if (!use_global_nz_idx) {
-        gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
+    if constexpr (Flat) {
+      // 2-warp flat layout
+      if (warp.meta_group_rank() == 0) {
+        // warp 0: delta value decoder (was warp 1 in nested layout)
+        for (uint32_t i = 0; i < passes_per_batch; i++) {
+          if (i > 0) { warp.sync(); }
+          db->decode_next_pass(warp);
+        }
       }
-    } else if (warp.meta_group_rank() == 1) {
-      // warp 1
-      for (uint32_t i = 0; i < passes_per_batch; i++) {
-        // make lane 0's state updates from the previous pass visible to the whole warp; the
-        // block-wide sync below covers the last pass of the iteration
-        if (i > 0) { warp.sync(); }
-        db->decode_next_pass(warp);
+    } else {
+      // 3-warp nested layout
+      if (warp.meta_group_rank() == 0) {
+        // warp 0: decode rep/def levels
+        gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
+      } else if (warp.meta_group_rank() == 1) {
+        // warp 1: delta decoder
+        for (uint32_t i = 0; i < passes_per_batch; i++) {
+          if (i > 0) { warp.sync(); }
+          db->decode_next_pass(warp);
+        }
       }
     }
 
     block.sync();
 
-    if (warp.meta_group_rank() == 2 && src_pos < target_pos) {
-      // warp 2
-      // nesting level that is storing actual leaf values
-      int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
-
-      // process the mini-block using warps
-      for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
-           sp += warp.size()) {
-        // the position in the output column/buffer
-        // Pilot: prefer global nz_idx buffer; fall back to shared ring for LIST-parent pages.
-        auto const nz_idx_buf = pp->nz_idx_buf;
-        size_type dst_pos;
-        if (use_global_nz_idx && sp < pp->num_input_values) {
-          dst_pos = nz_idx_buf[sp];
-        } else {
-          dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];
-        }
-
-        // handle skip_rows here. flat hierarchies can just skip up to first_row.
-        if (!has_repetition) { dst_pos -= s->setup.first_row; }
-
-        // place value for this thread
-        if (dst_pos >= 0 && sp < target_pos) {
-          void* const dst =
-            nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
-          auto const val = db->value_at(sp + skipped_leaf_values);
-          switch (s->output_cvt.dtype_len) {
-            case 1: *static_cast<int8_t*>(dst) = val; break;
-            case 2: *static_cast<int16_t*>(dst) = val; break;
-            case 4: *static_cast<int32_t*>(dst) = val; break;
-            case 8: *static_cast<int64_t*>(dst) = val; break;
+    // Value stuffer: warp 1 in flat, warp 2 in nested
+    if constexpr (Flat) {
+      if (warp.meta_group_rank() == 1 && src_pos < target_pos) {
+        int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
+        for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
+             sp += warp.size()) {
+          size_type dst_pos;
+          if (sp < pp->num_input_values) {
+            dst_pos = pp->nz_idx_buf[sp];
+          } else {
+            dst_pos = -1;
+          }
+          dst_pos -= s->setup.first_row;
+          if (dst_pos >= 0 && sp < target_pos) {
+            void* const dst = nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
+            auto const val  = db->value_at(sp + skipped_leaf_values);
+            switch (s->output_cvt.dtype_len) {
+              case 1: *static_cast<int8_t*>(dst) = val; break;
+              case 2: *static_cast<int16_t*>(dst) = val; break;
+              case 4: *static_cast<int32_t*>(dst) = val; break;
+              case 8: *static_cast<int64_t*>(dst) = val; break;
+            }
           }
         }
+        if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
       }
-      if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
+    } else {
+      if (warp.meta_group_rank() == 2 && src_pos < target_pos) {
+        int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
+        for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
+             sp += warp.size()) {
+          size_type dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];
+          if (!has_repetition) { dst_pos -= s->setup.first_row; }
+          if (dst_pos >= 0 && sp < target_pos) {
+            void* const dst = nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
+            auto const val  = db->value_at(sp + skipped_leaf_values);
+            switch (s->output_cvt.dtype_len) {
+              case 1: *static_cast<int8_t*>(dst) = val; break;
+              case 2: *static_cast<int16_t*>(dst) = val; break;
+              case 4: *static_cast<int32_t*>(dst) = val; break;
+              case 8: *static_cast<int64_t*>(dst) = val; break;
+            }
+          }
+        }
+        if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
+      }
     }
 
     block.sync();
   }
 
-  if (has_repetition) {
-    // Zero-fill null positions after decoding valid values
-    auto const& ni = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1];
-    if (ni.valid_map != nullptr) {
-      int const num_values = ni.valid_map_offset - init_valid_map_offset;
-      zero_fill_null_positions_shared<decode_block_size>(s,
-                                                         s->output_cvt.dtype_len,
-                                                         init_valid_map_offset,
-                                                         num_values,
-                                                         static_cast<int>(block.thread_rank()));
+  if constexpr (!Flat) {
+    if (has_repetition) {
+      // Zero-fill null positions after decoding valid values
+      auto const& ni = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1];
+      if (ni.valid_map != nullptr) {
+        int const num_values = ni.valid_map_offset - init_valid_map_offset;
+        zero_fill_null_positions_shared<decode_block_size>(s,
+                                                           s->output_cvt.dtype_len,
+                                                           init_valid_map_offset,
+                                                           num_values,
+                                                           static_cast<int>(block.thread_rank()));
+      }
     }
   }
 

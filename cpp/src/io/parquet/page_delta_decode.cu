@@ -21,8 +21,9 @@ namespace {
 
 namespace cg = cooperative_groups;
 
-constexpr int decode_block_size              = 128;
-constexpr int decode_delta_binary_block_size = 96;
+constexpr int decode_block_size                   = 128;
+constexpr int decode_delta_binary_block_size      = 96;
+constexpr int decode_delta_binary_flat_block_size = 64;
 
 // Size of the ring buffer that maps leaf-value ordinals to output rows (nz_idx). The level
 // decoder runs up to two batches ahead of the value consumer and, on nested pages, overshoots
@@ -330,8 +331,9 @@ struct delta_byte_array_decoder {
 // with V2 page headers; see https://www.mail-archive.com/dev@parquet.apache.org/msg11826.html).
 // this kernel only needs 96 threads (3 warps). Warp 0 is a no-op for flat pages (guarded by
 // use_global_nz_idx).
-template <typename level_t>
-CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
+template <typename level_t, bool Flat>
+CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
+                                        : decode_delta_binary_block_size)
   decode_delta_binary_kernel(PageInfo* pages,
                              device_span<ColumnChunkDesc const> chunks,
                              size_t min_row,
@@ -990,11 +992,11 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_delta_binary_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.value()>>>(
+    decode_delta_binary_kernel<uint8_t, false><<<dim_grid, dim_block, 0, stream.value()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_delta_binary_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.value()>>>(
+    decode_delta_binary_kernel<uint16_t, false><<<dim_grid, dim_block, 0, stream.value()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }

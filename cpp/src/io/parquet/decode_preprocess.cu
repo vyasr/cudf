@@ -551,8 +551,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
                   : nullptr;
 
-  int const num_input_values = s->setup.page.num_input_values;
-  int const last_row         = static_cast<int>(s->setup.first_row + s->setup.num_rows);
+  int const num_input_values  = s->setup.page.num_input_values;
+  int const last_row          = static_cast<int>(s->setup.first_row + s->setup.num_rows);
+  auto& ni                    = s->nesting_info[max_depth - 1];
+  int const first_src         = static_cast<int>(s->setup.first_row);
+  int const actual_num_values = (pp->num_decoded_level_values > 0)
+                                  ? min(pp->num_input_values, pp->num_decoded_level_values)
+                                  : pp->num_input_values;
+  int const last_src = process_nulls ? min(first_src + s->setup.num_rows, actual_num_values) : 0;
 
   struct counts {
     int row;
@@ -597,6 +603,27 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
       pp->nz_idx_buf[src_pos] = dst_pos;
     }
 
+    if (process_nulls) {
+      int constexpr warp_size = cudf::detail::warp_size;
+      int const lane          = t % warp_size;
+      int const warp_src      = src - lane;
+      int const write_start   = max(first_src, warp_src);
+      int const write_end     = min(warp_src + warp_size, last_src);
+      int const bit_count     = write_end - write_start;
+      uint32_t const mask =
+        __ballot_sync(0xffffffff, is_valid && src >= first_src && src < last_src);
+      if (lane == 0 && bit_count > 0) {
+        uint32_t const shifted_mask = mask >> (write_start - warp_src);
+        if (ni.valid_map != nullptr) {
+          store_validity(
+            ni.valid_map_offset + write_start - first_src, ni.valid_map, shifted_mask, bit_count);
+        }
+        uint32_t const relevant_mask =
+          bit_count == warp_size ? ~uint32_t{0} : ((uint32_t{1} << bit_count) - 1);
+        atomicAdd(&ni.null_count, bit_count - __popc(shifted_mask & relevant_mask));
+      }
+    }
+
     // Advance row_count by number of level values processed in this iteration (flat: every level
     // starts a new row). in_range acts as the row-emit predicate; count via ballot-equivalent.
     int const batch_size = min(decode_block_size, num_input_values - base);
@@ -605,28 +632,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     valid_count += block_valid_count;
   }
 
-  if (process_nulls) {
-    auto& ni                    = s->nesting_info[max_depth - 1];
-    int const first_src         = static_cast<int>(s->setup.first_row);
-    int const actual_num_values = (pp->num_decoded_level_values > 0)
-                                    ? min(pp->num_input_values, pp->num_decoded_level_values)
-                                    : pp->num_input_values;
-    int const last_src          = min(first_src + s->setup.num_rows, actual_num_values);
-    for (int src_base = first_src + t * cudf::detail::warp_size; src_base < last_src;
-         src_base += decode_block_size * cudf::detail::warp_size) {
-      int const nbits = min(cudf::detail::warp_size, last_src - src_base);
-      uint32_t mask   = 0;
-      for (int i = 0; i < nbits; ++i) {
-        int const src = src_base + i;
-        if (def[src] >= max_def_level) { mask |= 1u << i; }
-      }
-      if (ni.valid_map != nullptr) {
-        store_validity(ni.valid_map_offset + src_base - first_src, ni.valid_map, mask, nbits);
-      }
-      atomicAdd(&ni.null_count, nbits - __popc(mask));
-    }
-    __syncthreads();
-  }
+  if (process_nulls) { __syncthreads(); }
 
   if (t == 0) {
     pp->prepass_nz_count          = valid_count;

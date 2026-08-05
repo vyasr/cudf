@@ -564,7 +564,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     int row;
     int valid;
   };
-  using block_scan = cub::BlockScan<counts, decode_block_size>;
+  using block_scan = cub::BlockScan<counts, decode_block_size, cub::BLOCK_SCAN_WARP_SCANS>;
   __shared__ typename block_scan::TempStorage scan_storage;
 
   // Running block-wide counters. Match gpuUpdateValidityOffsetsAndRowIndices for flat pages:

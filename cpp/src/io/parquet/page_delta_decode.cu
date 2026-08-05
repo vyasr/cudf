@@ -28,7 +28,7 @@ namespace cg = cooperative_groups;
 
 constexpr int decode_block_size                   = 128;
 constexpr int decode_delta_binary_block_size      = 96;
-constexpr int decode_delta_binary_flat_block_size = 64;
+constexpr int decode_delta_binary_flat_block_size = 32;
 
 // Size of the ring buffer that maps leaf-value ordinals to output rows (nz_idx). The level
 // decoder runs up to two batches ahead of the value consumer and, on nested pages, overshoots
@@ -338,8 +338,7 @@ struct delta_byte_array_decoder {
 // pages using the global nz_idx pre-pass, and 96 threads (Flat=false) for all other cases.
 // Pages are partitioned host-side and dispatched via filter_indices.
 template <typename level_t, bool Flat>
-CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
-                                        : decode_delta_binary_block_size)
+CUDF_KERNEL void __maxnreg__(Flat ? 32 : 64)
   decode_delta_binary_kernel(PageInfo* pages,
                              device_span<ColumnChunkDesc const> chunks,
                              size_t min_row,
@@ -393,7 +392,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       s->progress.nz_count          = static_cast<int>(pp->prepass_nz_count);
       s->progress.input_value_count = static_cast<int>(pp->prepass_input_value_count);
     }
-    block.sync();
+    warp.sync();
   }
 
   // Capture initial valid_map_offset before any processing that might modify it
@@ -420,7 +419,11 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 
   // initialize delta state
   if (block.thread_rank() == 0) { db->init_binary_block(s->stream.data_start, s->stream.data_end); }
-  block.sync();
+  if constexpr (Flat) {
+    warp.sync();
+  } else {
+    cg::sync(block);
+  }
 
   if (db->error) {
     if (block.thread_rank() == 0) {
@@ -452,12 +455,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     uint32_t const src_pos = s->progress.src_pos;
 
     if constexpr (Flat) {
-      // 2-warp layout: warp 0 = delta decoder, warp 1 = value stuffer
-      if (warp.meta_group_rank() < 1) {
-        target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
-      } else {
-        target_pos = min(s->progress.nz_count, src_pos + batch_size);
-      }
+      target_pos = min(s->progress.nz_count, src_pos + batch_size);
     } else {
       // 3-warp layout: warps 0+1 produce, warp 2 consumes
       if (warp.meta_group_rank() < 2) {
@@ -466,17 +464,17 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
         target_pos = min(s->progress.nz_count, src_pos + batch_size);
       }
     }
-    // This needs to be here to prevent warp 2 modifying src_pos before all threads have read it
-    block.sync();
+    // This needs to be here before the consumer updates src_pos.
+    if constexpr (Flat) {
+      warp.sync();
+    } else {
+      cg::sync(block);
+    }
 
     if constexpr (Flat) {
-      // 2-warp flat layout
-      if (warp.meta_group_rank() == 0) {
-        // warp 0: delta value decoder (was warp 1 in nested layout)
-        for (uint32_t i = 0; i < passes_per_batch; i++) {
-          if (i > 0) { warp.sync(); }
-          db->decode_next_pass(warp);
-        }
+      for (uint32_t i = 0; i < passes_per_batch; i++) {
+        if (i > 0) { warp.sync(); }
+        db->decode_next_pass(warp);
       }
     } else {
       // 3-warp nested layout
@@ -492,33 +490,30 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       }
     }
 
-    block.sync();
-
-    // Value stuffer: warp 1 in flat, warp 2 in nested
     if constexpr (Flat) {
-      if (warp.meta_group_rank() == 1 && src_pos < target_pos) {
+      warp.sync();
+    } else {
+      cg::sync(block);
+    }
+
+    // Value stuffer: same warp in flat, warp 2 in nested
+    if constexpr (Flat) {
+      if (src_pos < target_pos) {
         int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
-        for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
-             sp += warp.size()) {
-          size_type dst_pos;
-          if (sp < pp->num_input_values) {
-            dst_pos = pp->nz_idx_buf[sp];
-          } else {
-            dst_pos = -1;
-          }
-          dst_pos -= s->setup.first_row;
-          auto* const base = static_cast<uint8_t*>(s->setup.col.column_data_base[leaf_level_index]);
-          auto const page_start_row = s->setup.col.start_row + s->setup.page.chunk_row;
-          auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
-          if (base != nullptr && dst_pos >= 0 && sp < target_pos) {
-            auto const global_dst_pos = output_offset + dst_pos;
-            void* const dst           = base + global_dst_pos * s->output_cvt.dtype_len;
-            auto const val            = db->value_at(sp + skipped_leaf_values);
+        auto* const base = static_cast<uint8_t*>(s->setup.col.column_data_base[leaf_level_index]);
+        auto const page_start_row = s->setup.col.start_row + s->setup.page.chunk_row;
+        auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
+        for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos;
+             sp += cudf::detail::warp_size) {
+          if (sp >= pp->num_input_values) { continue; }
+          size_type dst_pos = pp->nz_idx_buf[sp] - s->setup.first_row;
+          if (base != nullptr && dst_pos >= 0) {
+            void* const dst = base + (output_offset + dst_pos) * s->output_cvt.dtype_len;
             switch (s->output_cvt.dtype_len) {
-              case 1: *static_cast<int8_t*>(dst) = val; break;
-              case 2: *static_cast<int16_t*>(dst) = val; break;
-              case 4: *static_cast<int32_t*>(dst) = val; break;
-              case 8: *static_cast<int64_t*>(dst) = val; break;
+              case 1: *static_cast<int8_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
+              case 2: *static_cast<int16_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
+              case 4: *static_cast<int32_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
+              case 8: *static_cast<int64_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
             }
           }
         }
@@ -546,7 +541,11 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       }
     }
 
-    block.sync();
+    if constexpr (Flat) {
+      warp.sync();
+    } else {
+      cg::sync(block);
+    }
   }
 
   if constexpr (!Flat) {

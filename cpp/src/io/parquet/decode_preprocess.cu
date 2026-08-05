@@ -504,7 +504,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
  * @param error_code Error code output (unused; nullptr in current launcher)
  */
 template <typename level_t, int decode_block_size>
-CUDF_KERNEL void __launch_bounds__(decode_block_size)
+CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
   compute_nz_idx_kernel(device_span<PageInfo> pages,
                         device_span<ColumnChunkDesc const> chunks,
                         cudf::device_span<bool const> page_mask,
@@ -554,7 +554,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   int const num_input_values = s->setup.page.num_input_values;
   int const last_row         = static_cast<int>(s->setup.first_row + s->setup.num_rows);
 
-  using block_scan = cub::BlockScan<int, decode_block_size>;
+  struct counts {
+    int row;
+    int valid;
+  };
+  using block_scan = cub::BlockScan<counts, decode_block_size>;
   __shared__ typename block_scan::TempStorage scan_storage;
 
   // Running block-wide counters. Match gpuUpdateValidityOffsetsAndRowIndices for flat pages:
@@ -573,14 +577,17 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    // Block-wide exclusive prefix sum of in-row-bounds count -> thread_value_offset.
-    int thread_value_offset, block_value_count;
-    block_scan(scan_storage).ExclusiveSum(in_row_bounds, thread_value_offset, block_value_count);
-    __syncthreads();
-
-    // Block-wide exclusive prefix sum of valid count -> thread_valid_offset.
-    int thread_valid_offset, block_valid_count;
-    block_scan(scan_storage).ExclusiveSum(is_valid, thread_valid_offset, block_valid_count);
+    auto const scan_op = [] __device__(counts a, counts b) {
+      return counts{a.row + b.row, a.valid + b.valid};
+    };
+    counts thread_in{in_row_bounds, is_valid};
+    counts thread_out{};
+    counts block_agg{};
+    block_scan(scan_storage).ExclusiveScan(thread_in, thread_out, counts{0, 0}, scan_op, block_agg);
+    auto const thread_value_offset = thread_out.row;
+    auto const block_value_count   = block_agg.row;
+    auto const thread_valid_offset = thread_out.valid;
+    auto const block_valid_count   = block_agg.valid;
     __syncthreads();
 
     if (is_valid) {

@@ -338,7 +338,8 @@ struct delta_byte_array_decoder {
 // pages using the global nz_idx pre-pass, and 96 threads (Flat=false) for all other cases.
 // Pages are partitioned host-side and dispatched via filter_indices.
 template <typename level_t, bool Flat>
-CUDF_KERNEL void __maxnreg__(Flat ? 32 : 64)
+CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
+                                        : decode_delta_binary_block_size)
   decode_delta_binary_kernel(PageInfo* pages,
                              device_span<ColumnChunkDesc const> chunks,
                              size_t min_row,

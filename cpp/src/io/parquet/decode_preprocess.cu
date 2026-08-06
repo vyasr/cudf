@@ -515,8 +515,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
   __shared__ __align__(16) page_state_s state_g;
 
   page_state_s* const s = &state_g;
+  auto const block      = cg::this_thread_block();
   int const page_idx    = cg::this_grid().block_rank();
-  int const t           = static_cast<int>(threadIdx.x);
+  int const t           = static_cast<int>(block.thread_rank());
   PageInfo* pp          = &pages[page_idx];
 
   // Only process pages that had an nz_idx_buf allocated (flat DELTA_BINARY pilot pages).
@@ -594,7 +595,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     auto const block_value_count   = block_agg.row;
     auto const thread_valid_offset = thread_out.valid;
     auto const block_valid_count   = block_agg.valid;
-    __syncthreads();
+    block.sync();
 
     if (is_valid) {
       int const src_pos = valid_count + thread_valid_offset;
@@ -632,7 +633,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     valid_count += block_valid_count;
   }
 
-  if (process_nulls) { __syncthreads(); }
+  if (process_nulls) { block.sync(); }
 
   if (t == 0) {
     pp->prepass_nz_count          = valid_count;

@@ -504,18 +504,18 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
  * @param error_code Error code output (unused; nullptr in current launcher)
  */
 template <typename level_t, int decode_block_size>
-CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
-  compute_nz_idx_kernel(device_span<PageInfo> pages,
-                        device_span<ColumnChunkDesc const> chunks,
-                        cudf::device_span<bool const> page_mask,
-                        size_t min_row,
-                        size_t num_rows,
-                        kernel_error::pointer /*error_code*/)
+CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
+                                       device_span<ColumnChunkDesc const> chunks,
+                                       cudf::device_span<bool const> page_mask,
+                                       size_t min_row,
+                                       size_t num_rows,
+                                       kernel_error::pointer /*error_code*/)
 {
   __shared__ __align__(16) page_state_s state_g;
 
   page_state_s* const s = &state_g;
   auto const block      = cg::this_thread_block();
+  auto const warp       = cg::tiled_partition<32>(block);
   int const page_idx    = cg::this_grid().block_rank();
   int const t           = static_cast<int>(block.thread_rank());
   PageInfo* pp          = &pages[page_idx];
@@ -561,13 +561,6 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
                                   : pp->num_input_values;
   int const last_src = process_nulls ? min(first_src + s->setup.num_rows, actual_num_values) : 0;
 
-  struct counts {
-    int row;
-    int valid;
-  };
-  using block_scan = cub::BlockScan<counts, decode_block_size, cub::BLOCK_SCAN_WARP_SCANS>;
-  __shared__ typename block_scan::TempStorage scan_storage;
-
   // Running block-wide counters. Match gpuUpdateValidityOffsetsAndRowIndices for flat pages:
   //   value_count advances by in-row-bounds level values,
   //   valid_count advances by valid (and in-row-bounds) values,
@@ -584,35 +577,26 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    auto const scan_op = [] __device__(counts a, counts b) {
-      return counts{a.row + b.row, a.valid + b.valid};
-    };
-    counts thread_in{in_row_bounds, is_valid};
-    counts thread_out{};
-    counts block_agg{};
-    block_scan(scan_storage).ExclusiveScan(thread_in, thread_out, counts{0, 0}, scan_op, block_agg);
-    auto const thread_value_offset = thread_out.row;
-    auto const block_value_count   = block_agg.row;
-    auto const thread_valid_offset = thread_out.valid;
-    auto const block_valid_count   = block_agg.valid;
-    block.sync();
+    int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
+    int const block_row_count     = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
+    int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
+    int const block_valid_count   = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
 
     if (is_valid) {
       int const src_pos = valid_count + thread_valid_offset;
-      int const dst_pos = value_count + thread_value_offset;
+      int const dst_pos = value_count + thread_row_offset;
       // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
       pp->nz_idx_buf[src_pos] = dst_pos;
     }
 
     if (process_nulls) {
       int constexpr warp_size = cudf::detail::warp_size;
-      int const lane          = t % warp_size;
+      int const lane          = warp.thread_rank();
       int const warp_src      = src - lane;
       int const write_start   = max(first_src, warp_src);
       int const write_end     = min(warp_src + warp_size, last_src);
       int const bit_count     = write_end - write_start;
-      uint32_t const mask =
-        __ballot_sync(0xffffffff, is_valid && src >= first_src && src < last_src);
+      uint32_t const mask     = warp.ballot(is_valid && src >= first_src && src < last_src);
       if (lane == 0 && bit_count > 0) {
         uint32_t const shifted_mask = mask >> (write_start - warp_src);
         if (ni.valid_map != nullptr) {
@@ -629,11 +613,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)  // compute_nz_idx_kernel
     // starts a new row). in_range acts as the row-emit predicate; count via ballot-equivalent.
     int const batch_size = min(decode_block_size, num_input_values - base);
     row_count += batch_size;
-    value_count += block_value_count;
+    value_count += block_row_count;
     valid_count += block_valid_count;
   }
-
-  if (process_nulls) { block.sync(); }
 
   if (t == 0) {
     pp->prepass_nz_count          = valid_count;
@@ -724,7 +706,7 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
 
   if (pages.size() == 0) { return; }
 
-  constexpr int decode_block_size = 128;
+  constexpr int decode_block_size = 32;
   dim3 dim_block(decode_block_size, 1);
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 

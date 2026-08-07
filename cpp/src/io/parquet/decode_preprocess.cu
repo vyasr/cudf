@@ -570,19 +570,12 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     int const in_row_bounds =
       in_range && (thread_row_index < static_cast<int>(s->setup.first_row + s->setup.num_rows)) ? 1
                                                                                                 : 0;
-    int const d = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
-    // When def == nullptr, d == max_def_level, so is_valid degenerates to in_row_bounds.
-    // Skip the redundant is_valid tracking (and its scan/reduce) on the no-nulls fast path.
-    int const is_valid = (def == nullptr)
-                           ? in_row_bounds
-                           : ((in_range && d >= max_def_level && in_row_bounds) ? 1 : 0);
+    int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
+    int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
     {
-      int const thread_row_offset = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
-      // When def == nullptr, is_valid == in_row_bounds, so reuse thread_row_offset.
-      int const thread_valid_offset = (def == nullptr)
-                                        ? thread_row_offset
-                                        : cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
+      int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
+      int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
       if (is_valid) {
         int const src_pos = valid_count + thread_valid_offset;
         int const dst_pos = value_count + thread_row_offset;
@@ -618,11 +611,8 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     // starts a new row). in_range acts as the row-emit predicate; count via ballot-equivalent.
     int const batch_size = min(decode_block_size, num_input_values - base);
     row_count += batch_size;
-    int const iter_row_count = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
-    value_count += iter_row_count;
-    // When def == nullptr, valid_count tracks in_row_bounds identically to value_count.
-    valid_count +=
-      (def == nullptr) ? iter_row_count : cg::reduce(warp, int{is_valid}, cg::plus<int>{});
+    value_count += cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
+    valid_count += cg::reduce(warp, int{is_valid}, cg::plus<int>{});
   }
 
   if (t == 0) {

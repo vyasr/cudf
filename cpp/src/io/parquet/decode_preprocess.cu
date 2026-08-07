@@ -574,6 +574,22 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
   //
   // valid_count still needs a running warp reduction because is_valid depends
   // on the (possibly non-uniform) def stream when process_nulls is true.
+  // No-nulls fast path: skip the reduce/scan entirely and iota-write.
+  // process_nulls == false ⇒ is_valid = in_range && in_row_bounds, so the
+  // set of valid src is exactly [0, count) with count = min(num_input_values,
+  // last_row).  Skip the mask work and just write nz_idx_buf[i] = i.
+  if (!process_nulls) {
+    int const count = min(num_input_values, last_row);
+    for (int i = t; i < count; i += decode_block_size) {
+      pp->nz_idx_buf[i] = i;
+    }
+    if (t == 0) {
+      pp->prepass_nz_count          = count;
+      pp->prepass_input_value_count = num_input_values;
+    }
+    return;
+  }
+
   int valid_count = 0;
 
   for (int base = 0; base < num_input_values; base += decode_block_size) {

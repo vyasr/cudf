@@ -561,35 +561,34 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
                                   : pp->num_input_values;
   int const last_src = process_nulls ? min(first_src + s->setup.num_rows, actual_num_values) : 0;
 
-  // Running block-wide counters. Match gpuUpdateValidityOffsetsAndRowIndices for flat pages:
-  //   value_count advances by in-row-bounds level values,
-  //   valid_count advances by valid (and in-row-bounds) values,
-  //   row_count advances by every level value (each level == one row for flat).
-  int value_count = 0;
+  // For flat pages every input level is one row and row_count == base every
+  // iteration, so thread_row_index == src. This lets us drop value_count and
+  // row_count entirely: dst_pos == src, and in_row_bounds can be computed
+  // directly from src without a running counter.
+  //
+  // valid_count still needs a running warp reduction because is_valid depends
+  // on the (possibly non-uniform) def stream when process_nulls is true.
   int valid_count = 0;
-  int row_count   = 0;
 
   for (int base = 0; base < num_input_values; base += decode_block_size) {
-    int const src              = base + t;
-    bool const in_range        = src < num_input_values;
-    int const thread_row_index = row_count + t;
-    int const in_row_bounds    = in_range && (thread_row_index < last_row) ? 1 : 0;
+    int const src       = base + t;
+    bool const in_range = src < num_input_values;
+    // For flat pages, row_count == base every iteration (each level == one row
+    // and rows advance by the input-level batch size), so thread_row_index == src.
+    int const in_row_bounds = in_range && (src < last_row) ? 1 : 0;
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    int const block_row_count   = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
     int const block_valid_count = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
 
-    // Scope thread offsets to the nz_idx write block so their liveness does not
-    // cross the null-map path below (reduces register pressure).
+    // Scope the valid-offset scan to the nz_idx write block so its liveness
+    // does not cross the null-map path below (reduces register pressure).
     {
-      int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
       int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
       if (is_valid) {
         int const src_pos = valid_count + thread_valid_offset;
-        int const dst_pos = value_count + thread_row_offset;
         // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
-        pp->nz_idx_buf[src_pos] = dst_pos;
+        pp->nz_idx_buf[src_pos] = src;
       }
     }
 
@@ -613,11 +612,6 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
       }
     }
 
-    // Advance row_count by number of level values processed in this iteration (flat: every level
-    // starts a new row). in_range acts as the row-emit predicate; count via ballot-equivalent.
-    int const batch_size = min(decode_block_size, num_input_values - base);
-    row_count += batch_size;
-    value_count += block_row_count;
     valid_count += block_valid_count;
   }
 

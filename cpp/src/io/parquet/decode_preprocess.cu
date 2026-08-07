@@ -585,8 +585,6 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    int const block_valid_count = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
-
     // Scope the valid-offset scan to the nz_idx write block so its liveness
     // does not cross the null-map path below (reduces register pressure).
     {
@@ -618,7 +616,7 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
       }
     }
 
-    valid_count += block_valid_count;
+    valid_count += cg::reduce(warp, int{is_valid}, cg::plus<int>{});
   }
 
   if (t == 0) {

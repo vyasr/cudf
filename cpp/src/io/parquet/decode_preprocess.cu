@@ -609,7 +609,7 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
         }
         uint32_t const relevant_mask =
           bit_count == warp_size ? ~uint32_t{0} : ((uint32_t{1} << bit_count) - 1);
-        atomicAdd(&ni.null_count, bit_count - __popc(shifted_mask & relevant_mask));
+        ni.null_count += bit_count - __popc(shifted_mask & relevant_mask);
       }
     }
 

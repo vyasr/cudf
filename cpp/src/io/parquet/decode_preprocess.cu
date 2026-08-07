@@ -577,28 +577,32 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
-    int const block_row_count     = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
-    int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
-    int const block_valid_count   = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
+    int const block_row_count   = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
+    int const block_valid_count = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
 
-    if (is_valid) {
-      int const src_pos = valid_count + thread_valid_offset;
-      int const dst_pos = value_count + thread_row_offset;
-      // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
-      pp->nz_idx_buf[src_pos] = dst_pos;
+    // Scope thread offsets to the nz_idx write block so their liveness does not
+    // cross the null-map path below (reduces register pressure).
+    {
+      int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
+      int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
+      if (is_valid) {
+        int const src_pos = valid_count + thread_valid_offset;
+        int const dst_pos = value_count + thread_row_offset;
+        // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
+        pp->nz_idx_buf[src_pos] = dst_pos;
+      }
     }
 
     if (process_nulls) {
       int constexpr warp_size = cudf::detail::warp_size;
-      int const lane          = warp.thread_rank();
-      int const warp_src      = src - lane;
-      int const write_start   = max(first_src, warp_src);
-      int const write_end     = min(warp_src + warp_size, last_src);
-      int const bit_count     = write_end - write_start;
-      uint32_t const mask     = warp.ballot(is_valid && src >= first_src && src < last_src);
-      if (lane == 0 && bit_count > 0) {
-        uint32_t const shifted_mask = mask >> (write_start - warp_src);
+      // src == base + t and warp.thread_rank() == t (single-warp block),
+      // so the warp's src_0 for this iteration is exactly `base`.
+      int const write_start = max(first_src, base);
+      int const write_end   = min(base + warp_size, last_src);
+      int const bit_count   = write_end - write_start;
+      uint32_t const mask   = warp.ballot(is_valid && src >= first_src && src < last_src);
+      if (t == 0 && bit_count > 0) {
+        uint32_t const shifted_mask = mask >> (write_start - base);
         if (ni.valid_map != nullptr) {
           store_validity(
             ni.valid_map_offset + write_start - first_src, ni.valid_map, shifted_mask, bit_count);

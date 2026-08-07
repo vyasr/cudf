@@ -552,8 +552,14 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
                   : nullptr;
 
-  int const num_input_values = s->setup.page.num_input_values;
-  auto& ni                   = s->nesting_info[max_depth - 1];
+  int const num_input_values  = s->setup.page.num_input_values;
+  int const last_row          = static_cast<int>(s->setup.first_row + s->setup.num_rows);
+  auto& ni                    = s->nesting_info[max_depth - 1];
+  int const first_src         = static_cast<int>(s->setup.first_row);
+  int const actual_num_values = (pp->num_decoded_level_values > 0)
+                                  ? min(pp->num_input_values, pp->num_decoded_level_values)
+                                  : pp->num_input_values;
+  int const last_src = process_nulls ? min(first_src + s->setup.num_rows, actual_num_values) : 0;
 
   // Running block-wide counters. Match gpuUpdateValidityOffsetsAndRowIndices for flat pages:
   //   value_count advances by in-row-bounds level values,
@@ -567,35 +573,31 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     int const src              = base + t;
     bool const in_range        = src < num_input_values;
     int const thread_row_index = row_count + t;
-    int const in_row_bounds =
-      in_range && (thread_row_index < static_cast<int>(s->setup.first_row + s->setup.num_rows)) ? 1
-                                                                                                : 0;
+    int const in_row_bounds    = in_range && (thread_row_index < last_row) ? 1 : 0;
     int const d        = (in_range && def != nullptr) ? static_cast<int>(def[src]) : max_def_level;
     int const is_valid = (in_range && d >= max_def_level && in_row_bounds) ? 1 : 0;
 
-    {
-      int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
-      int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
-      if (is_valid) {
-        int const src_pos = valid_count + thread_valid_offset;
-        int const dst_pos = value_count + thread_row_offset;
-        // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
-        pp->nz_idx_buf[src_pos] = dst_pos;
-      }
+    int const thread_row_offset   = cg::exclusive_scan(warp, int{in_row_bounds}, cg::plus<int>{});
+    int const block_row_count     = cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
+    int const thread_valid_offset = cg::exclusive_scan(warp, int{is_valid}, cg::plus<int>{});
+    int const block_valid_count   = cg::reduce(warp, int{is_valid}, cg::plus<int>{});
+
+    if (is_valid) {
+      int const src_pos = valid_count + thread_valid_offset;
+      int const dst_pos = value_count + thread_row_offset;
+      // Write raw dst_pos (pre-first_row subtraction), matching sb->nz_idx semantics.
+      pp->nz_idx_buf[src_pos] = dst_pos;
     }
 
     if (process_nulls) {
-      int constexpr warp_size     = cudf::detail::warp_size;
-      int const first_src         = static_cast<int>(s->setup.first_row);
-      int const actual_num_values = (pp->num_decoded_level_values > 0)
-                                      ? min(pp->num_input_values, pp->num_decoded_level_values)
-                                      : pp->num_input_values;
-      int const last_src = min(first_src + static_cast<int>(s->setup.num_rows), actual_num_values);
-      int const warp_src = src - t;
-      int const write_start = max(first_src, warp_src);
-      int const bit_count   = min(warp_src + warp_size, last_src) - write_start;
-      uint32_t const mask   = warp.ballot(is_valid && src >= first_src && src < last_src);
-      if (t == 0 && bit_count > 0) {
+      int constexpr warp_size = cudf::detail::warp_size;
+      int const lane          = warp.thread_rank();
+      int const warp_src      = src - lane;
+      int const write_start   = max(first_src, warp_src);
+      int const write_end     = min(warp_src + warp_size, last_src);
+      int const bit_count     = write_end - write_start;
+      uint32_t const mask     = warp.ballot(is_valid && src >= first_src && src < last_src);
+      if (lane == 0 && bit_count > 0) {
         uint32_t const shifted_mask = mask >> (write_start - warp_src);
         if (ni.valid_map != nullptr) {
           store_validity(
@@ -611,8 +613,8 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     // starts a new row). in_range acts as the row-emit predicate; count via ballot-equivalent.
     int const batch_size = min(decode_block_size, num_input_values - base);
     row_count += batch_size;
-    value_count += cg::reduce(warp, int{in_row_bounds}, cg::plus<int>{});
-    valid_count += cg::reduce(warp, int{is_valid}, cg::plus<int>{});
+    value_count += block_row_count;
+    valid_count += block_valid_count;
   }
 
   if (t == 0) {

@@ -503,7 +503,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
  * @param num_rows Number of rows to read starting from min_row
  * @param error_code Error code output (unused; nullptr in current launcher)
  */
-template <typename level_t, int decode_block_size>
+template <typename level_t, int decode_block_size, bool has_repetition>
 CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
                                        device_span<ColumnChunkDesc const> chunks,
                                        cudf::device_span<bool const> page_mask,
@@ -539,9 +539,15 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     return;
   }
 
-  // Only flat pages have nz_idx_buf allocated; guard defensively.
-  bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
-  if (has_repetition) { return; }
+  // Nested (rep>0) pages are not yet supported by this precompute kernel. When we
+  // extend delta binary decoding to nested pages, model the level walk on
+  // gpuDecodeLevels in page_decode.cuh (it already produces thread_row_index /
+  // thread_row_count / per-lane end_depth) rather than resurrecting the flat-shaped
+  // scaffolding this kernel used to carry.
+  if constexpr (has_repetition) {
+    static_assert(!has_repetition, "compute_nz_idx_kernel: nested pages not implemented");
+    return;
+  }
 
   int const max_depth      = s->setup.col.max_nesting_depth;
   int const max_def_level  = s->nesting_info[max_depth - 1].max_def_level;
@@ -709,12 +715,14 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    compute_nz_idx_kernel<uint8_t, decode_block_size><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
+    compute_nz_idx_kernel<uint8_t, decode_block_size, /*has_repetition=*/false>
+      <<<dim_grid, dim_block, 0, stream.value()>>>(
+        pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    compute_nz_idx_kernel<uint16_t, decode_block_size><<<dim_grid, dim_block, 0, stream.value()>>>(
-      pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
+    compute_nz_idx_kernel<uint16_t, decode_block_size, /*has_repetition=*/false>
+      <<<dim_grid, dim_block, 0, stream.value()>>>(
+        pages, chunks, page_mask, min_row, num_rows, /*error_code=*/nullptr);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 }

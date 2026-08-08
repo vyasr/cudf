@@ -612,7 +612,10 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
       }
     }
 
-    if (process_nulls) {
+    // process_nulls is guaranteed true here: the !process_nulls fast path
+    // returned above. Block is scoped to keep null-map locals off the
+    // valid-offset scan's register set (mirrors the block above).
+    {
       int constexpr warp_size = cudf::detail::warp_size;
       // src == base + t and warp.thread_rank() == t (single-warp block),
       // so the warp's src_0 for this iteration is exactly `base`.

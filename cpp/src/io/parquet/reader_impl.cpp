@@ -305,6 +305,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                    skip_rows,
                    num_rows,
                    level_type_size,
+                   static_cast<uint32_t*>(subpass.nz_idx_scratch_map.data()),
+                   subpass.nz_idx_scratch_words_per_page,
                    streams[s_idx]);
     decode_delta_binary(subpass.pages,
                         pass.chunks,

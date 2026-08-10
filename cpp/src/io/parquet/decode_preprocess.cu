@@ -1028,6 +1028,7 @@ uint32_t compute_nz_idx_max_page_values(cudf::detail::hostdevice_span<PageInfo> 
  */
 uint32_t compute_nz_idx_scratch_words_per_page(uint32_t max_page_values)
 {
+  if (max_page_values == 0) { return 0; }
   if (max_page_values <= 4096) { return (4096 + 31) / 32; }
   if (max_page_values <= 8192) { return (8192 + 31) / 32; }
   if (max_page_values <= 20480) { return (20480 + 31) / 32; }

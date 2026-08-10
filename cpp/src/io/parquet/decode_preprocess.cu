@@ -1043,21 +1043,22 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     size_t min_row,
                     size_t num_rows,
                     int level_type_size,
+                    uint32_t* scratch,
+                    uint32_t words_per_page,
                     rmm::cuda_stream_view stream)
 {
   CUDF_FUNC_RANGE();
 
   if (pages.size() == 0) { return; }
 
-  uint32_t const max_page_values = compute_nz_idx_max_page_values(pages);
-  if (max_page_values == 0) { return; }
-  uint32_t const words_per_page = compute_nz_idx_scratch_words_per_page(max_page_values);
+  if (scratch == nullptr || words_per_page == 0) { return; }
 
-  size_t const scratch_size = pages.size() * static_cast<size_t>(words_per_page) * sizeof(uint32_t);
-  rmm::device_buffer scratch_valid_map{
-    scratch_size, stream, cudf::get_current_device_resource_ref()};
-  CUDF_CUDA_TRY(cudaMemsetAsync(scratch_valid_map.data(), 0, scratch_size, stream.value()));
-  auto* const scratch = static_cast<uint32_t*>(scratch_valid_map.data());
+  uint32_t const max_page_values = compute_nz_idx_max_page_values(pages);
+  CUDF_CUDA_TRY(
+    cudaMemsetAsync(scratch,
+                    0,
+                    static_cast<size_t>(words_per_page) * sizeof(uint32_t) * pages.size(),
+                    stream.value()));
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
 #define LAUNCH_NZ_IDX(T, PAGE_VALUES, BLOCK)                             \

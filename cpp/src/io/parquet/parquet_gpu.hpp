@@ -1061,6 +1061,8 @@ uint32_t compute_nz_idx_scratch_words_per_page(uint32_t max_page_values);
  * @param[in] min_row Minimum row index to read
  * @param[in] num_rows Number of rows to read starting from min_row
  * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)
+ * @param[in] scratch Scratch bitmap storage, sized for all pages in this batch
+ * @param[in] words_per_page Number of scratch words reserved per page
  * @param[in] stream CUDA stream to use
  */
 void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
@@ -1069,6 +1071,8 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
                     size_t min_row,
                     size_t num_rows,
                     int level_type_size,
+                    uint32_t* scratch,
+                    uint32_t words_per_page,
                     rmm::cuda_stream_view stream);
 
 /**

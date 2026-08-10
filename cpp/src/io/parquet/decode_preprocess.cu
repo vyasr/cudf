@@ -1008,6 +1008,33 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
 }
 
 /**
+ * @copydoc cudf::io::parquet::detail::compute_nz_idx_max_page_values
+ */
+uint32_t compute_nz_idx_max_page_values(cudf::detail::hostdevice_span<PageInfo> pages)
+{
+  uint32_t max_val          = 0;
+  auto const* const h_pages = pages.host_ptr();
+  for (size_t i = 0; i < pages.size(); ++i) {
+    if (h_pages[i].nz_idx_buf != nullptr &&
+        static_cast<uint32_t>(h_pages[i].num_input_values) > max_val) {
+      max_val = static_cast<uint32_t>(h_pages[i].num_input_values);
+    }
+  }
+  return max_val;
+}
+
+/**
+ * @copydoc cudf::io::parquet::detail::compute_nz_idx_scratch_words_per_page
+ */
+uint32_t compute_nz_idx_scratch_words_per_page(uint32_t max_page_values)
+{
+  if (max_page_values <= 4096) { return (4096 + 31) / 32; }
+  if (max_page_values <= 8192) { return (8192 + 31) / 32; }
+  if (max_page_values <= 20480) { return (20480 + 31) / 32; }
+  return (max_page_values + 31) / 32;
+}
+
+/**
  * @copydoc cudf::io::parquet::detail::compute_nz_idx
  */
 void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
@@ -1022,25 +1049,9 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
 
   if (pages.size() == 0) { return; }
 
-  int max_page_values = 0;
-  auto const* h_pages = pages.host_ptr();
-  for (size_t i = 0; i < pages.size(); ++i) {
-    if (h_pages[i].nz_idx_buf != nullptr && h_pages[i].num_input_values > max_page_values) {
-      max_page_values = h_pages[i].num_input_values;
-    }
-  }
+  uint32_t const max_page_values = compute_nz_idx_max_page_values(pages);
   if (max_page_values == 0) { return; }
-
-  uint32_t words_per_page = 0;
-  if (max_page_values <= 4096) {
-    words_per_page = (4096 + 31) / 32;
-  } else if (max_page_values <= 8192) {
-    words_per_page = (8192 + 31) / 32;
-  } else if (max_page_values <= 20480) {
-    words_per_page = (20480 + 31) / 32;
-  } else {
-    words_per_page = (max_page_values + 31) / 32;
-  }
+  uint32_t const words_per_page = compute_nz_idx_scratch_words_per_page(max_page_values);
 
   size_t const scratch_size = pages.size() * static_cast<size_t>(words_per_page) * sizeof(uint32_t);
   rmm::device_buffer scratch_valid_map{

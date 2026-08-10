@@ -1038,6 +1038,16 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        rmm::cuda_stream_view stream);
 
 /**
+ * @brief Returns max num_input_values across DELTA_BINARY pages (host-side loop).
+ */
+uint32_t compute_nz_idx_max_page_values(cudf::detail::hostdevice_span<PageInfo> pages);
+
+/**
+ * @brief Returns the scratch words-per-page for the given max page value count (4-tier).
+ */
+uint32_t compute_nz_idx_scratch_words_per_page(uint32_t max_page_values);
+
+/**
  * @brief Pre-computes nz_idx values for flat DELTA_BINARY pages.
  *
  * For each qualifying page (pp->nz_idx_buf != nullptr and DELTA_BINARY kernel mask),

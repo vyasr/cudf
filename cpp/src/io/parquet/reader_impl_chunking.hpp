@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -82,6 +82,7 @@ struct subpass_intermediate_data {
     : decomp_page_data(0, stream),
       level_decode_data(0, stream),
       nz_idx_decode_data(0, stream),
+      nz_idx_scratch_map(0, stream),
       page_buf(0, stream),
       page_src_index{0, stream},
       page_string_offset_indices(0, stream),
@@ -96,6 +97,8 @@ struct subpass_intermediate_data {
 
   rmm::device_buffer level_decode_data;
   rmm::device_buffer nz_idx_decode_data;
+  rmm::device_buffer nz_idx_scratch_map;
+  uint32_t nz_idx_scratch_words_per_page{0};
   cudf::detail::hostdevice_span<PageInfo> pages{};
 
   cudf::detail::hostdevice_vector<PageInfo> page_buf;

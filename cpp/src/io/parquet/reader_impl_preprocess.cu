@@ -384,6 +384,14 @@ void reader_impl::allocate_level_decode_space()
       }
     }
   }
+
+  // Allocate persistent per-subpass scratch buffer for compute_nz_idx()
+  uint32_t const max_page_values        = compute_nz_idx_max_page_values(pages);
+  subpass.nz_idx_scratch_words_per_page = compute_nz_idx_scratch_words_per_page(max_page_values);
+  subpass.nz_idx_scratch_map            = rmm::device_buffer(
+    static_cast<size_t>(subpass.nz_idx_scratch_words_per_page) * sizeof(uint32_t) * num_pages,
+    _stream,
+    cudf::get_current_device_resource_ref());
 }
 
 namespace {

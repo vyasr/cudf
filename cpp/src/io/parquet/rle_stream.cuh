@@ -581,36 +581,39 @@ struct rle_stream {
       int const hi  = min(lo + per, chunk_total);
       if (lo < hi) {
         // Per-lane expand: each lane owns output positions
-        //   p = lo + lane, lo + lane + 32, lo + lane + 64, ...
+        //   out_pos = lo + lane, lo + lane + 32, lo + lane + 64, ...
         // and finds its own run. run_idx starts by binary-search on the
-        // lane's first p, then advances forward by linear walk (usually 0
-        // steps when still in the same run). Across all 32 lanes the linear
-        // walks amortize to <= (num_runs_in_slice / 32) warp cycles total.
+        // lane's first out_pos, then advances forward by linear walk (usually
+        // 0 steps when still in the same run). Across all 32 lanes the
+        // linear walks amortize to <= (num_runs_in_slice / 32) warp cycles
+        // total.
         //
         // This keeps all 32 lanes writing on every iteration, instead of the
         // per-run loop where only lanes 0..(run_len-1) do useful work on
         // short runs.
-        int p = lo + lane;
+        int out_pos = lo + lane;
         int run_idx =
-          static_cast<int>(cuda::std::upper_bound(
-                             chunk_out_off_v.begin(), chunk_out_off_v.begin() + chunk_runs + 1, p) -
+          static_cast<int>(cuda::std::upper_bound(chunk_out_off_v.begin(),
+                                                  chunk_out_off_v.begin() + chunk_runs + 1,
+                                                  out_pos) -
                            chunk_out_off_v.begin()) -
           1;
-        while (p < hi) {
+        while (out_pos < hi) {
           // Linear walk forward: no iterations if we're still in the same
-          // run (long run case), 1+ iterations only when p crosses one or
-          // more short-run boundaries.
-          while (run_idx < chunk_runs && chunk_out_off_v[run_idx + 1] <= p) {
+          // run (long run case), 1+ iterations only when out_pos crosses one
+          // or more short-run boundaries.
+          while (run_idx < chunk_runs && chunk_out_off_v[run_idx + 1] <= out_pos) {
             ++run_idx;
           }
           int const run_start_out = chunk_out_off_v[run_idx];
           uint32_t const run_desc = chunk_meta_v[run_idx];
 
           if (run_desc & run_desc_literal_flag) {
-            // Literal (bit-packed) run: bit-field extract for this lane's p.
+            // Literal (bit-packed) run: bit-field extract for this lane's
+            // out_pos.
             uint32_t const payload_off = run_desc & run_desc_offset_mask;
             uint8_t const* payload     = s_start + payload_off;
-            int const local            = p - run_start_out;
+            int const local            = out_pos - run_start_out;
             int bitpos                 = local * level_bits;
             uint8_t const* source      = payload + (bitpos >> 3);
             bitpos &= 7;
@@ -635,7 +638,7 @@ struct rle_stream {
               }
             }
             level_val = (level_val >> bitpos) & level_mask;
-            output[rolling_index<max_output_values>(base_out + p)] =
+            output[rolling_index<max_output_values>(base_out + out_pos)] =
               static_cast<level_t>(level_val);
           } else {
             // RLE run: read the single repeated value from s_start.
@@ -659,10 +662,10 @@ struct rle_stream {
                 }
               }
             }
-            output[rolling_index<max_output_values>(base_out + p)] =
+            output[rolling_index<max_output_values>(base_out + out_pos)] =
               static_cast<level_t>(level_val);
           }
-          p += warp.size();
+          out_pos += warp.size();
         }
       }
       // Barrier before rewriting the shared tables on the next iteration.

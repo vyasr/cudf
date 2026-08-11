@@ -806,6 +806,145 @@ struct delta_binary_decoder {
     warp.sync();
   }
 
+  /**
+   * @brief Can this page be decoded with one warp per mini-block?
+   *
+   * Requires exactly one mini-block per warp so no warp idles and no warp handles two, and a
+   * mini-block that is a whole number of warp-wide steps, at most 2 of them. Every extra
+   * values-per-lane instantiation raises the register budget ptxas picks for the *whole* kernel,
+   * including on pages that never take that path, so the set is kept as small as the real data
+   * allows: pages carry 4 mini-blocks of 64 values, i.e. vpl == 2.
+   */
+  inline __device__ bool block_decode_multiwarp_supported(int num_warps) const
+  {
+    using cudf::detail::warp_size;
+    auto const vpl = values_per_mb / warp_size;
+    return not error and static_cast<int>(mini_block_count) == num_warps and
+           values_per_mb >= static_cast<uint32_t>(warp_size) and
+           (values_per_mb % warp_size) == 0 and (vpl == 1 or vpl == 2);
+  }
+
+  /**
+   * @brief Decode one whole block with `mini_block_count` warps cooperating, one per mini-block.
+   *
+   * The single-warp decode_block() gives one lane `block_size / warp_size` values (8 on real
+   * pages), and holding that many int64 deltas in flight is what pins the kernel at 64 registers
+   * -- which in turn caps occupancy at 50%, because at 128 threads/block the register file only
+   * admits 8 blocks. Splitting the block across its own mini-blocks drops each lane to
+   * `values_per_mb / warp_size` values (2 on real pages) and puts four warps in a block, which is
+   * the only way past the 32-blocks/SM ceiling a one-warp block runs into.
+   *
+   * The mini-block split is free of the sequential walk a block-per-warp split would need: every
+   * mini-block width is already in the block header, so each warp computes its own body offset
+   * independently. Only block-to-block stays sequential, and that is one header per `block_size`
+   * values.
+   *
+   * `cur_block_start`, `carry` and `value_idx` are per-thread replicas of the decoder's
+   * `block_start` / `last_value` / value cursor. Every thread computes identical values for them,
+   * so they stay in registers and nothing is published back to shared state; only the per
+   * mini-block totals cross warps. Callers must write them back once the loop finishes.
+   *
+   * @param mb_totals Shared scratch, at least `mini_block_count` entries.
+   * @param store Called as `store(value_index, value)` for every value this block produces.
+   */
+  template <int VPL, typename StoreFn>
+  inline __device__ void decode_block_multiwarp(
+    cg::thread_block const& block,
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    zigzag128_t* mb_totals,
+    uint8_t const*& cur_block_start,
+    zigzag128_t& carry,
+    uint32_t& value_idx,
+    StoreFn store)
+  {
+    using cudf::detail::warp_size;
+    static_assert(VPL > 0 and VPL <= delta_max_values_per_lane);
+
+    auto const lane = static_cast<int>(warp.thread_rank());
+    int const w     = static_cast<int>(warp.meta_group_rank());
+    int const vpm   = static_cast<int>(values_per_mb);
+    int const nmb   = static_cast<int>(mini_block_count);
+
+    // Every warp parses the block header redundantly instead of one warp publishing it: it is a
+    // varint plus mini_block_count width bytes broadcast out of L1, which is cheaper than the
+    // extra block-wide barrier a publish/consume split would cost.
+    zigzag128_t min_delta = 0;
+    int hdr_len           = 0;
+    if (lane == 0) {
+      auto cur  = cur_block_start;
+      min_delta = get_zz128(cur, block_end);
+      hdr_len   = static_cast<int>(cur - cur_block_start);
+    }
+    min_delta = warp.shfl(min_delta, 0);
+    hdr_len   = warp.shfl(hdr_len, 0);
+
+    auto const* const widths = cur_block_start + hdr_len;
+    auto const* const body   = widths + nmb;
+
+    // this warp owns mini-block w, which starts after the w preceding mini-block bodies
+    int my_off = 0;
+    for (int j = 0; j < w; ++j) {
+      my_off += vpm * widths[j] / CHAR_BIT;
+    }
+    int const width = widths[w];
+
+    // Step k covers values [k * warp_size, (k+1) * warp_size) of this mini-block, so consecutive
+    // lanes stay on consecutive values and the nz_idx loads and output stores stay coalesced.
+    // Giving each lane VPL consecutive values instead measured ~9% slower on the real kernel.
+    uint32_t const mb_first = value_idx + w * vpm;
+    zigzag128_t d[VPL];
+#pragma unroll
+    for (int k = 0; k < VPL; ++k) {
+      int const slot    = k * warp_size + lane;
+      uint32_t const gi = mb_first + slot;
+      d[k]              = (gi < value_count)
+                            ? unpack_bitpacked_field(body + my_off, block_end, slot * width, width) + min_delta
+                            : 0;
+    }
+
+    // Scan within the mini-block; `mine` ends as this mini-block's total delta. The scanned value
+    // overwrites the raw delta rather than going to a second array: only the scanned values live
+    // across the barrier below, and keeping both alive doubles the live int64s, which is register
+    // pressure this split exists to remove.
+    zigzag128_t mine = 0;
+#pragma unroll
+    for (int k = 0; k < VPL; ++k) {
+      auto const incl = cg::inclusive_scan(warp, d[k], cg::plus<int64_t>{});
+      d[k]            = mine + incl;
+      mine += warp.shfl(incl, warp_size - 1);
+    }
+    if (lane == 0) { mb_totals[w] = mine; }
+    block.sync();
+
+    // Second level of the scan: this warp's base is the running carry plus every preceding
+    // mini-block's total. nmb is 4 on real pages, so doing it redundantly in registers beats a
+    // scan primitive and leaves every thread holding the same new carry.
+    zigzag128_t base = carry;
+    zigzag128_t all  = 0;
+    for (int j = 0; j < nmb; ++j) {
+      auto const t = mb_totals[j];
+      if (j < w) { base += t; }
+      all += t;
+    }
+
+#pragma unroll
+    for (int k = 0; k < VPL; ++k) {
+      uint32_t const gi = mb_first + k * warp_size + lane;
+      if (gi < value_count) { store(gi, base + d[k]); }
+    }
+
+    int total_body = 0;
+    for (int j = 0; j < nmb; ++j) {
+      total_body += vpm * widths[j] / CHAR_BIT;
+    }
+    carry += all;
+    cur_block_start = body + total_body;
+    value_idx += block_size;
+    // the next round overwrites mb_totals, so it must not begin before every warp has read this
+    // round's out of it
+    block.sync();
+  }
+
   inline __device__ void decode_next_pass(
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
   {

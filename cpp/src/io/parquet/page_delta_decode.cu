@@ -26,9 +26,14 @@ namespace {
 
 namespace cg = cooperative_groups;
 
-constexpr int decode_block_size                   = 128;
-constexpr int decode_delta_binary_block_size      = 96;
-constexpr int decode_delta_binary_flat_block_size = 32;
+constexpr int decode_block_size              = 128;
+constexpr int decode_delta_binary_block_size = 96;
+// Flat DELTA_BINARY pages run one warp per mini-block, so the block is as wide as the
+// mini-block count real encoders emit (4). A one-warp block cannot exceed 50% occupancy no
+// matter how few registers it uses, because the SM admits at most 32 blocks.
+constexpr int decode_delta_binary_flat_block_size = 128;
+constexpr int decode_delta_binary_flat_warps =
+  decode_delta_binary_flat_block_size / cudf::detail::warp_size;
 
 // Size of the ring buffer that maps leaf-value ordinals to output rows (nz_idx). The level
 // decoder runs up to two batches ahead of the value consumer and, on nested pages, overshoots
@@ -334,12 +339,25 @@ struct delta_byte_array_decoder {
 // Decode page data that is DELTA_BINARY_PACKED encoded. This encoding is
 // only used for int32 and int64 physical types (and appears to only be used
 // with V2 page headers; see https://www.mail-archive.com/dev@parquet.apache.org/msg11826.html).
-// this kernel is instantiated for two block sizes: 64 threads (Flat=true) for flat DELTA_BINARY
+// this kernel is instantiated for two block sizes: 128 threads (Flat=true) for flat DELTA_BINARY
 // pages using the global nz_idx pre-pass, and 96 threads (Flat=false) for all other cases.
 // Pages are partitioned host-side and dispatched via filter_indices.
+//
+// Ask ptxas for a register budget that fits 10 blocks/SM (65536 / (128 * 10) = 51), which takes
+// the flat path from 9 resident blocks to 10, i.e. 36 -> 40 warps. Guarded by arch because the
+// bound is a hard error where it cannot be met: sm_75 caps at 1024 threads/SM, so 128 x 10
+// threads is rejected outright rather than ignored.
+#if defined(__CUDA_ARCH__) && \
+  (__CUDA_ARCH__ == 800 || __CUDA_ARCH__ == 900 || __CUDA_ARCH__ >= 1000)
+#define CUDF_DELTA_FLAT_MIN_BLOCKS 10
+#else
+#define CUDF_DELTA_FLAT_MIN_BLOCKS 1
+#endif
+
 template <typename level_t, bool Flat>
 CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
-                                        : decode_delta_binary_block_size)
+                                        : decode_delta_binary_block_size,
+                                   Flat ? CUDF_DELTA_FLAT_MIN_BLOCKS : 1)
   decode_delta_binary_kernel(PageInfo* pages,
                              device_span<ColumnChunkDesc const> chunks,
                              size_t min_row,
@@ -355,11 +373,13 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
                                              page_state_buffers_s<delta_nz_buf_size, 1, 1>>;
   __shared__ __align__(16) state_buffers_t state_buffers;
 
-  // Only the flat path streams its mini-block bodies through a cp.async ring; an empty struct
-  // keeps the nested instantiation's shared footprint unchanged.
-  struct empty_ring_t {};
-  using ring_storage_t = std::conditional_t<Flat, delta_stream_ring, empty_ring_t>;
-  __shared__ __align__(16) ring_storage_t ring_state;
+  // The cp.async ring is gone from this kernel. It existed to feed the single-warp whole-block
+  // decoder, which the multi-warp path replaced; with one warp per mini-block each warp reads a
+  // contiguous mini-block body directly, and the ring only ever served the cold fallback below.
+  // Dropping it frees 4 KB of shared memory and the per-thread pipeline state.
+
+  // per mini-block delta totals, the only state the cooperating warps exchange
+  __shared__ __align__(16) zigzag128_t mb_totals[Flat ? decode_delta_binary_flat_warps : 1];
 
   auto* const s         = &state_g;
   auto* const sb        = &state_buffers;
@@ -399,7 +419,9 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       s->progress.nz_count          = static_cast<int>(pp->prepass_nz_count);
       s->progress.input_value_count = static_cast<int>(pp->prepass_input_value_count);
     }
-    warp.sync();
+    // block-wide: the flat path is multi-warp now, so a warp barrier would leave warps 1..3
+    // reading stale nz_count
+    cg::sync(block);
   }
 
   // Capture initial valid_map_offset before any processing that might modify it
@@ -426,11 +448,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 
   // initialize delta state
   if (block.thread_rank() == 0) { db->init_binary_block(s->stream.data_start, s->stream.data_end); }
-  if constexpr (Flat) {
-    warp.sync();
-  } else {
-    cg::sync(block);
-  }
+  cg::sync(block);
 
   if (db->error) {
     if (block.thread_rank() == 0) {
@@ -486,67 +504,89 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       }
     };
 
-    if (!is_skip_resume) {
-      // Stream the mini-block bodies through the async ring. The pipeline is per-thread state,
-      // so it stays in registers here rather than in the shared ring object.
-      auto pipe = cuda::make_pipeline();
-      ring_state.attach(s->stream.data_start, s->stream.data_end, warp, pipe);
-      warp.sync();
+    if (!is_skip_resume && db->block_decode_multiwarp_supported(decode_delta_binary_flat_warps)) {
+      // One warp per mini-block: four warps split each block's values instead of one warp taking
+      // all of them. See decode_block_multiwarp() for why this is the split that buys occupancy.
+      //
+      // The decoder's cursors live in registers here, replicated across every thread, so the
+      // round needs no shared state beyond the mini-block totals and no write-back barrier.
+      if (block.thread_rank() == 0) { store_value(0, db->first_value); }
 
-      // Value index 0 is the header value; no pass produces it.
-      if (warp.thread_rank() == 0) { store_value(0, db->first_value); }
+      auto const* cur_block_start = db->block_start;
+      zigzag128_t carry           = db->last_value;
+      uint32_t value_idx          = 1;  // index 0 is the header value, which no block produces
 
-      if (db->block_decode_supported()) {
-        // Whole block per warp iteration: each lane carries block_size/warp_size values, so the
-        // ring's prefetch has enough decode work to overlap with.
-        //
-        // Values-per-lane is a template parameter so the unrolled unpack and scan loops carry no
-        // trip-count predicate; block_decode_supported() guarantees it is 4 or 8.
-        auto const decode_all = [&]<int VPL>() {
-          uint32_t value_idx = 1;
-          while (s->setup.error == 0 && value_idx < db->value_count &&
-                 value_idx < static_cast<uint32_t>(nz_count)) {
-            db->template decode_block<VPL>(
-              warp, ring_state, pipe, value_idx, [&](uint32_t gi, zigzag128_t v) {
-                store_value(static_cast<int32_t>(gi), v);
-              });
+      // Values-per-lane is a template parameter so the unrolled unpack and scan loops carry no
+      // trip-count predicate; block_decode_multiwarp_supported() guarantees it is 1 or 2.
+      auto const decode_all_mw = [&]<int VPL>() {
+        while (s->setup.error == 0 && value_idx < db->value_count &&
+               value_idx < static_cast<uint32_t>(nz_count)) {
+          db->template decode_block_multiwarp<VPL>(
+            block,
+            warp,
+            mb_totals,
+            cur_block_start,
+            carry,
+            value_idx,
+            [&](uint32_t gi, zigzag128_t v) { store_value(static_cast<int32_t>(gi), v); });
+        }
+      };
+      if (db->values_per_mb / cudf::detail::warp_size == 1) {
+        decode_all_mw.template operator()<1>();
+      } else {
+        decode_all_mw.template operator()<2>();
+      }
+
+      // publish the cursors the rest of the kernel and the copier expect to find in shared state
+      if (block.thread_rank() == 0) {
+        db->block_start = cur_block_start;
+        db->last_value  = carry;
+      }
+      cg::sync(block);
+    } else if (warp.meta_group_rank() == 0) {
+      // Fallbacks: skip-resume, and shapes whose mini-block count does not match the warp count.
+      // Both are cold paths -- every flat page in the profiled workload takes the branch above --
+      // so they stay on the original single-warp decoder and warps 1..3 simply exit.
+      if (!is_skip_resume) {
+        // Value index 0 is the header value; no pass produces it.
+        if (warp.thread_rank() == 0) { store_value(0, db->first_value); }
+
+        // Pass at a time, one value per lane. The whole-block single-warp decoder that used to run
+        // here is gone: it held block_size/warp_size (8) int64 deltas per lane, and since ptxas
+        // budgets registers over every path in the kernel, that dead-on-real-pages path alone put
+        // the multi-warp path at 72 registers -- 7 blocks/SM, i.e. *worse* occupancy than the
+        // one-warp kernel it replaced. This decoder handles every shape, just more slowly.
+        {
+          zigzag128_t val;
+          uint32_t value_idx;
+          while (s->setup.error == 0) {
+            // publish the previous pass's lane-0 decoder state to the rest of the warp
+            warp.sync();
+            if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
+            if (not db->decode_next_pass_value(warp, val, value_idx)) { break; }
+            store_value(static_cast<int32_t>(value_idx), val);
           }
-        };
-        if (db->block_size / cudf::detail::warp_size == 4) {
-          decode_all.template operator()<4>();
-        } else {
-          decode_all.template operator()<8>();
         }
       } else {
-        zigzag128_t val;
-        uint32_t value_idx;
-        while (s->setup.error == 0) {
-          // publish the previous pass's lane-0 decoder state to the rest of the warp
+        // skip_values() deliberately leaves up to a warp of already-decoded values resident in the
+        // rolling buffer, so a resume keeps the buffered schedule. skipped_leaf_values is always 0
+        // for flat hierarchies today; this path is a safety net, not a hot path.
+        while (s->setup.error == 0 && s->progress.src_pos < s->progress.nz_count) {
+          uint32_t const src_pos    = s->progress.src_pos;
+          uint32_t const target_pos = min(s->progress.nz_count, src_pos + batch_size);
           warp.sync();
-          if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
-          if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state, &pipe)) { break; }
-          store_value(static_cast<int32_t>(value_idx), val);
+          for (uint32_t i = 0; i < passes_per_batch; i++) {
+            if (i > 0) { warp.sync(); }
+            db->decode_next_pass(warp);
+          }
+          warp.sync();
+          for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos;
+               sp += cudf::detail::warp_size) {
+            store_value(static_cast<int32_t>(sp), db->value_at(sp + skipped_leaf_values));
+          }
+          if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
+          warp.sync();
         }
-      }
-    } else {
-      // skip_values() deliberately leaves up to a warp of already-decoded values resident in the
-      // rolling buffer, so a resume keeps the buffered schedule. skipped_leaf_values is always 0
-      // for flat hierarchies today; this path is a safety net, not a hot path.
-      while (s->setup.error == 0 && s->progress.src_pos < s->progress.nz_count) {
-        uint32_t const src_pos    = s->progress.src_pos;
-        uint32_t const target_pos = min(s->progress.nz_count, src_pos + batch_size);
-        warp.sync();
-        for (uint32_t i = 0; i < passes_per_batch; i++) {
-          if (i > 0) { warp.sync(); }
-          db->decode_next_pass(warp);
-        }
-        warp.sync();
-        for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos;
-             sp += cudf::detail::warp_size) {
-          store_value(static_cast<int32_t>(sp), db->value_at(sp + skipped_leaf_values));
-        }
-        if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
-        warp.sync();
       }
     }
   } else {

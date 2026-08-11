@@ -496,14 +496,27 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       // Value index 0 is the header value; no pass produces it.
       if (warp.thread_rank() == 0) { store_value(0, db->first_value); }
 
-      zigzag128_t val;
-      uint32_t value_idx;
-      while (s->setup.error == 0) {
-        // publish the previous pass's lane-0 decoder state to the rest of the warp
-        warp.sync();
-        if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
-        if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state, &pipe)) { break; }
-        store_value(static_cast<int32_t>(value_idx), val);
+      if (db->block_decode_supported()) {
+        // Whole block per warp iteration: each lane carries block_size/warp_size values, so the
+        // ring's prefetch has enough decode work to overlap with and the inclusive scan is paid
+        // once per block instead of once per 32 values.
+        uint32_t value_idx = 1;
+        while (s->setup.error == 0 && value_idx < db->value_count &&
+               value_idx < static_cast<uint32_t>(nz_count)) {
+          db->decode_block(warp, ring_state, pipe, value_idx, [&](uint32_t gi, zigzag128_t v) {
+            store_value(static_cast<int32_t>(gi), v);
+          });
+        }
+      } else {
+        zigzag128_t val;
+        uint32_t value_idx;
+        while (s->setup.error == 0) {
+          // publish the previous pass's lane-0 decoder state to the rest of the warp
+          warp.sync();
+          if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
+          if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state, &pipe)) { break; }
+          store_value(static_cast<int32_t>(value_idx), val);
+        }
       }
     } else {
       // skip_values() deliberately leaves up to a warp of already-decoded values resident in the

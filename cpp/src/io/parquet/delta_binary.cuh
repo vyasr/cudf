@@ -148,6 +148,11 @@ inline __device__ zigzag128_t unpack_bitpacked_field(uint8_t const* d_start,
 // Bytes copied per cp.async group, and the number of those the ring holds. One group is kept in
 // flight, so the ring only needs the chunk being read, the one being copied, and slack; four keeps
 // the modular addressing a mask and leaves room for a pass that straddles a chunk boundary.
+// Upper bound on values decoded per lane when a warp takes a whole block at a time
+// (block_size / warp_size). 128-value blocks give 4; arrow-rs uses 256 for 64-bit ints, giving 8.
+// Larger blocks fall back to the pass-at-a-time path.
+constexpr int delta_max_values_per_lane = 8;
+
 constexpr int delta_ring_chunk_bytes = 1024;
 constexpr int delta_ring_chunks      = 4;
 constexpr int delta_ring_bytes       = delta_ring_chunk_bytes * delta_ring_chunks;
@@ -614,6 +619,124 @@ struct delta_binary_decoder {
       }
     }
     return true;
+  }
+
+  /**
+   * @brief Can this page be decoded a whole block at a time?
+   *
+   * Lane L takes `vpl = block_size / warp_size` consecutive values. They share a bit width and a
+   * body pointer only if they all fall in one mini-block, which needs `values_per_mb % vpl == 0`,
+   * i.e. `warp_size % mini_block_count == 0`. Encoders in the wild use 4 mini-blocks.
+   */
+  inline __device__ bool block_decode_supported() const
+  {
+    using cudf::detail::warp_size;
+    return not error and mini_block_count > 0 and block_size >= warp_size and
+           (warp_size % mini_block_count) == 0 and
+           (block_size / warp_size) <= delta_max_values_per_lane;
+  }
+
+  /**
+   * @brief Decode one whole block, handing each value to `store` as it is produced.
+   *
+   * A pass-at-a-time decoder spends a warp-wide inclusive scan, a sync and a header walk on only
+   * 32 values, which leaves nothing for the ring's prefetch to overlap with. Taking a whole block
+   * gives each lane `vpl` independent unpacks in flight and amortizes the scan over `block_size`
+   * values instead of 32.
+   *
+   * Advances `block_start`, `last_value` and `value_idx`. Only valid when
+   * block_decode_supported(); callers with a skip-resume or an unusual mini-block count must use
+   * decode_next_pass_value() instead.
+   *
+   * @param store Called as `store(value_index, value)` for every value this block produces.
+   */
+  template <typename StoreFn>
+  inline __device__ void decode_block(
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    delta_stream_ring& ring,
+    delta_pipeline& pipe,
+    uint32_t& value_idx,
+    StoreFn store)
+  {
+    using cudf::detail::warp_size;
+
+    auto const lane = static_cast<int>(warp.thread_rank());
+    int const vpm   = static_cast<int>(values_per_mb);
+    int const vpl   = static_cast<int>(block_size) / warp_size;
+
+    // Step k of the block covers values [k * warp_size, (k+1) * warp_size), so consecutive lanes
+    // stay on consecutive values and the nz_idx loads and output stores keep the coalescing the
+    // pass-at-a-time decoder had. Giving each lane vpl *consecutive* values instead would spread
+    // the warp vpl apart and turn both into strided scatters -- measured ~9% slower than the
+    // pass-at-a-time decoder on 64-bit columns, wiping out the ILP win.
+    int const k_per_mb = vpm / warp_size;  // steps before the mini-block advances
+
+    // block header (min_delta varint + one width byte per mini-block) stays on global: it is a
+    // handful of bytes per block and L1 broadcasts it across the warp
+    zigzag128_t min_delta = 0;
+    int hdr_len           = 0;
+    if (lane == 0) {
+      auto cur  = block_start;
+      min_delta = get_zz128(cur, block_end);
+      hdr_len   = static_cast<int>(cur - block_start);
+    }
+    min_delta = warp.shfl(min_delta, 0);
+    hdr_len   = warp.shfl(hdr_len, 0);
+
+    auto const* const widths = block_start + hdr_len;
+    auto const* const body   = widths + mini_block_count;
+
+    // a mini-block body is values_per_mb * width bits, which only coincides with
+    // warp_size * width when values_per_mb == 32
+    int total_body = 0;
+    for (int j = 0; j < static_cast<int>(mini_block_count); ++j) {
+      total_body += vpm * widths[j] / CHAR_BIT;
+    }
+
+    int const body_pos = static_cast<int>(body - ring.page_base);
+    ring.reach(body_pos + total_body + 8, warp, pipe);
+
+    zigzag128_t d[delta_max_values_per_lane];
+
+    // mini-block index is lane-uniform at every step and advances by at most one, so the body
+    // offset can be carried rather than re-summed
+    int mb = 0, body_off = 0;
+#pragma unroll
+    for (int k = 0; k < delta_max_values_per_lane; ++k) {
+      if (k < vpl) {
+        int const mb_k = k / k_per_mb;
+        if (mb_k != mb) {
+          body_off += vpm * widths[mb] / CHAR_BIT;
+          mb = mb_k;
+        }
+        int const width   = widths[mb];
+        int const slot    = k * warp_size + lane - mb * vpm;
+        uint32_t const gi = value_idx + k * warp_size + lane;
+        d[k]              = (gi < value_count)
+                              ? ring.extract((body_pos + body_off) * CHAR_BIT + slot * width, width) + min_delta
+                              : 0;
+      }
+    }
+
+    // All vpl unpacks above are independent and already issued, which is the ILP that matters:
+    // they are the memory-latency side. The scans below cannot be collapsed into one per block --
+    // that would require each lane to own a contiguous value range, which is exactly the layout
+    // that destroys store coalescing -- so they stay one per warp_size values, as before.
+    auto carry = last_value;
+#pragma unroll
+    for (int k = 0; k < delta_max_values_per_lane; ++k) {
+      if (k < vpl) {
+        auto const incl   = cg::inclusive_scan(warp, d[k], cg::plus<int64_t>{});
+        uint32_t const gi = value_idx + k * warp_size + lane;
+        if (gi < value_count) { store(gi, carry + incl); }
+        carry += warp.shfl(incl, warp_size - 1);
+      }
+    }
+
+    last_value  = carry;
+    block_start = body + total_body;
+    value_idx += block_size;
+    warp.sync();
   }
 
   inline __device__ void decode_next_pass(

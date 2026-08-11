@@ -153,10 +153,49 @@ inline __device__ zigzag128_t unpack_bitpacked_field(uint8_t const* d_start,
 // Larger blocks fall back to the pass-at-a-time path.
 constexpr int delta_max_values_per_lane = 8;
 
-constexpr int delta_ring_chunk_bytes = 1024;
-constexpr int delta_ring_chunks      = 4;
-constexpr int delta_ring_bytes       = delta_ring_chunk_bytes * delta_ring_chunks;
-constexpr int delta_ring_words       = delta_ring_bytes / sizeof(uint32_t);
+// Per-SM shared memory differs by a factor of 3.5 across the architectures this TU is built for,
+// and the ring is charged against it once per resident block. Sizing it for Hopper would make
+// shared the binding occupancy limiter everywhere else:
+//
+//   arch                        shared/SM   blocks at 3.3 KB   at 7.3 KB
+//   T4 (sm_75)                     64 KB           19               8
+//   V100 (sm_70)                   96 KB           29              13
+//   A10/L40S/RTX 50xx (86/89/120) 100 KB           30              13
+//   A100 (sm_80)                  164 KB           32 (capped)     22
+//   H100/B200 (sm_90/100)         228 KB           32 (capped)     31
+//
+// So: full ring on the 228 KB parts, half on A100, and none below that -- sm_70 and sm_75 have no
+// cp.async either, and their fallback (a synchronous copy) measured slower than reading global
+// directly. Chunk *count* is fixed so the addressing and span guarantees below are unchanged;
+// only the chunk size varies.
+#if !defined(__CUDA_ARCH__)
+#define CUDF_PARQUET_DELTA_RING_CHUNK_BYTES 512  // host pass; device value is what matters
+#elif __CUDA_ARCH__ == 900 || (__CUDA_ARCH__ >= 1000 && __CUDA_ARCH__ < 1100)
+#define CUDF_PARQUET_DELTA_RING_CHUNK_BYTES 512  // 228 KB/SM -> 4 KB ring
+#elif __CUDA_ARCH__ == 800
+#define CUDF_PARQUET_DELTA_RING_CHUNK_BYTES 256  // 164 KB/SM -> 2 KB ring
+#else
+#define CUDF_PARQUET_DELTA_RING_CHUNK_BYTES 0  // disabled; decode reads global
+#endif
+
+constexpr bool delta_ring_enabled = CUDF_PARQUET_DELTA_RING_CHUNK_BYTES > 0;
+// Keep the chunk size non-zero even when disabled: the ring's arithmetic is still compiled for
+// those architectures (it is just never reached), and a zero divisor is a hard error.
+constexpr int delta_ring_chunk_bytes =
+  delta_ring_enabled ? CUDF_PARQUET_DELTA_RING_CHUNK_BYTES : 512;
+// More, smaller chunks rather than fewer large ones: the span below scales with (chunks - 2), so
+// this covers a wider block body for the same total shared.
+constexpr int delta_ring_chunks = 8;
+
+// A block body may straddle chunk boundaries, so the ring must hold the chunk the read starts in,
+// the one it ends in, and one more in flight. Blocks whose body exceeds this fall back to reading
+// global -- on the 512 B configuration that is anything past a ~1 KB body, which the common
+// 128-value/4-mini-block shape (~416 B at typical widths) stays well inside.
+constexpr int delta_ring_span_bytes =
+  delta_ring_enabled ? (delta_ring_chunks - 2) * delta_ring_chunk_bytes : 0;
+constexpr int delta_ring_bytes = delta_ring_chunk_bytes * delta_ring_chunks;
+// one word when disabled: the struct still has to be a valid type, it is just never used
+constexpr int delta_ring_words = delta_ring_enabled ? delta_ring_bytes / sizeof(uint32_t) : 1;
 
 /**
  * @brief A shared-memory ring over one page's encoded bytes, refilled asynchronously.
@@ -194,6 +233,7 @@ struct delta_stream_ring {
     delta_pipeline& pipe)
   {
     using cudf::detail::warp_size;
+    if constexpr (not delta_ring_enabled) { return; }  // `buf` is a stub on these architectures
     int const slot        = c & (delta_ring_chunks - 1);
     auto* const dst_base  = reinterpret_cast<uint8_t*>(buf) + slot * delta_ring_chunk_bytes;
     auto const* const src = page_base + static_cast<size_t>(c) * delta_ring_chunk_bytes;
@@ -227,6 +267,10 @@ struct delta_stream_ring {
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
     delta_pipeline& pipe)
   {
+    if constexpr (not delta_ring_enabled) {
+      active = false;
+      return;
+    }
     auto const misalign = static_cast<int>(reinterpret_cast<uintptr_t>(data_start) & 15);
     page_base           = data_start - misalign;
     page_len            = static_cast<int>(data_end - page_base);
@@ -631,9 +675,15 @@ struct delta_binary_decoder {
   inline __device__ bool block_decode_supported() const
   {
     using cudf::detail::warp_size;
+    // Worst-case block body is block_size values at the widest legal field (64 bits). When the
+    // ring is in use that must fit its span, so the choice stays compile-time inside decode_block;
+    // pages that do not fit keep the pass-at-a-time decoder, which handles the ring dynamically.
+    bool const body_fits =
+      not delta_ring_enabled or
+      (static_cast<int>(block_size) * sizeof(uint64_t) + 8 <= delta_ring_span_bytes);
     return not error and mini_block_count > 0 and block_size >= warp_size and
            (warp_size % mini_block_count) == 0 and
-           (block_size / warp_size) <= delta_max_values_per_lane;
+           (block_size / warp_size) <= delta_max_values_per_lane and body_fits;
   }
 
   /**
@@ -693,29 +743,47 @@ struct delta_binary_decoder {
       total_body += vpm * widths[j] / CHAR_BIT;
     }
 
-    int const body_pos = static_cast<int>(body - ring.page_base);
-    ring.reach(body_pos + total_body + 8, warp, pipe);
+    // block_decode_supported() already guaranteed the worst-case body fits the ring's span, so
+    // there is no runtime ring/global choice here -- keeping one would put a branch inside the
+    // unrolled unpack below, which measured 7 extra registers and ~11% runtime.
+    [[maybe_unused]] int body_pos = 0;
+    if constexpr (delta_ring_enabled) {
+      body_pos = static_cast<int>(body - ring.page_base);
+      ring.reach(body_pos + total_body + 8, warp, pipe);
+    }
 
     zigzag128_t d[delta_max_values_per_lane];
 
+    // `fetch` is bound outside the loop so the ring/global choice never becomes a per-value
+    // branch: leaving it inside costs 7 registers and, measured earlier, ~11% runtime.
     // mini-block index is lane-uniform at every step and advances by at most one, so the body
-    // offset can be carried rather than re-summed
-    int mb = 0, body_off = 0;
+    // offset can be carried rather than re-summed.
+    auto const unpack_all = [&](auto&& fetch) {
+      int mb = 0, body_off = 0;
 #pragma unroll
-    for (int k = 0; k < delta_max_values_per_lane; ++k) {
-      if (k < vpl) {
-        int const mb_k = k / k_per_mb;
-        if (mb_k != mb) {
-          body_off += vpm * widths[mb] / CHAR_BIT;
-          mb = mb_k;
+      for (int k = 0; k < delta_max_values_per_lane; ++k) {
+        if (k < vpl) {
+          int const mb_k = k / k_per_mb;
+          if (mb_k != mb) {
+            body_off += vpm * widths[mb] / CHAR_BIT;
+            mb = mb_k;
+          }
+          int const width   = widths[mb];
+          int const slot    = k * warp_size + lane - mb * vpm;
+          uint32_t const gi = value_idx + k * warp_size + lane;
+          d[k]              = (gi < value_count) ? fetch(body_off, slot, width) + min_delta : 0;
         }
-        int const width   = widths[mb];
-        int const slot    = k * warp_size + lane - mb * vpm;
-        uint32_t const gi = value_idx + k * warp_size + lane;
-        d[k]              = (gi < value_count)
-                              ? ring.extract((body_pos + body_off) * CHAR_BIT + slot * width, width) + min_delta
-                              : 0;
       }
+    };
+
+    if constexpr (delta_ring_enabled) {
+      unpack_all([&](int off, int slot, int width) {
+        return ring.extract((body_pos + off) * CHAR_BIT + slot * width, width);
+      });
+    } else {
+      unpack_all([&](int off, int slot, int width) {
+        return unpack_bitpacked_field(body + off, block_end, slot * width, width);
+      });
     }
 
     // All vpl unpacks above are independent and already issued, which is the ILP that matters:

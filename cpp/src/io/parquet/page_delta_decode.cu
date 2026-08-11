@@ -498,14 +498,24 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
 
       if (db->block_decode_supported()) {
         // Whole block per warp iteration: each lane carries block_size/warp_size values, so the
-        // ring's prefetch has enough decode work to overlap with and the inclusive scan is paid
-        // once per block instead of once per 32 values.
-        uint32_t value_idx = 1;
-        while (s->setup.error == 0 && value_idx < db->value_count &&
-               value_idx < static_cast<uint32_t>(nz_count)) {
-          db->decode_block(warp, ring_state, pipe, value_idx, [&](uint32_t gi, zigzag128_t v) {
-            store_value(static_cast<int32_t>(gi), v);
-          });
+        // ring's prefetch has enough decode work to overlap with.
+        //
+        // Values-per-lane is a template parameter so the unrolled unpack and scan loops carry no
+        // trip-count predicate; block_decode_supported() guarantees it is 4 or 8.
+        auto const decode_all = [&]<int VPL>() {
+          uint32_t value_idx = 1;
+          while (s->setup.error == 0 && value_idx < db->value_count &&
+                 value_idx < static_cast<uint32_t>(nz_count)) {
+            db->template decode_block<VPL>(
+              warp, ring_state, pipe, value_idx, [&](uint32_t gi, zigzag128_t v) {
+                store_value(static_cast<int32_t>(gi), v);
+              });
+          }
+        };
+        if (db->block_size / cudf::detail::warp_size == 4) {
+          decode_all.template operator()<4>();
+        } else {
+          decode_all.template operator()<8>();
         }
       } else {
         zigzag128_t val;

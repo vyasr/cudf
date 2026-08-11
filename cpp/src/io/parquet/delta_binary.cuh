@@ -681,9 +681,12 @@ struct delta_binary_decoder {
     bool const body_fits =
       not delta_ring_enabled or
       (static_cast<int>(block_size) * sizeof(uint64_t) + 8 <= delta_ring_span_bytes);
+    // Only 4 and 8 values-per-lane are instantiated; the spec's "block_size is a multiple of 128"
+    // makes those the shapes that actually occur, and anything else keeps the pass-at-a-time
+    // decoder rather than growing a third instantiation.
+    auto const vpl = block_size / warp_size;
     return not error and mini_block_count > 0 and block_size >= warp_size and
-           (warp_size % mini_block_count) == 0 and
-           (block_size / warp_size) <= delta_max_values_per_lane and body_fits;
+           (warp_size % mini_block_count) == 0 and (vpl == 4 or vpl == 8) and body_fits;
   }
 
   /**
@@ -700,7 +703,7 @@ struct delta_binary_decoder {
    *
    * @param store Called as `store(value_index, value)` for every value this block produces.
    */
-  template <typename StoreFn>
+  template <int VPL, typename StoreFn>
   inline __device__ void decode_block(
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
     delta_stream_ring& ring,
@@ -709,10 +712,10 @@ struct delta_binary_decoder {
     StoreFn store)
   {
     using cudf::detail::warp_size;
+    static_assert(VPL > 0 and VPL <= delta_max_values_per_lane);
 
     auto const lane = static_cast<int>(warp.thread_rank());
     int const vpm   = static_cast<int>(values_per_mb);
-    int const vpl   = static_cast<int>(block_size) / warp_size;
 
     // Step k of the block covers values [k * warp_size, (k+1) * warp_size), so consecutive lanes
     // stay on consecutive values and the nz_idx loads and output stores keep the coalescing the
@@ -752,7 +755,7 @@ struct delta_binary_decoder {
       ring.reach(body_pos + total_body + 8, warp, pipe);
     }
 
-    zigzag128_t d[delta_max_values_per_lane];
+    zigzag128_t d[VPL];
 
     // `fetch` is bound outside the loop so the ring/global choice never becomes a per-value
     // branch: leaving it inside costs 7 registers and, measured earlier, ~11% runtime.
@@ -761,18 +764,16 @@ struct delta_binary_decoder {
     auto const unpack_all = [&](auto&& fetch) {
       int mb = 0, body_off = 0;
 #pragma unroll
-      for (int k = 0; k < delta_max_values_per_lane; ++k) {
-        if (k < vpl) {
-          int const mb_k = k / k_per_mb;
-          if (mb_k != mb) {
-            body_off += vpm * widths[mb] / CHAR_BIT;
-            mb = mb_k;
-          }
-          int const width   = widths[mb];
-          int const slot    = k * warp_size + lane - mb * vpm;
-          uint32_t const gi = value_idx + k * warp_size + lane;
-          d[k]              = (gi < value_count) ? fetch(body_off, slot, width) + min_delta : 0;
+      for (int k = 0; k < VPL; ++k) {
+        int const mb_k = k / k_per_mb;
+        if (mb_k != mb) {
+          body_off += vpm * widths[mb] / CHAR_BIT;
+          mb = mb_k;
         }
+        int const width   = widths[mb];
+        int const slot    = k * warp_size + lane - mb * vpm;
+        uint32_t const gi = value_idx + k * warp_size + lane;
+        d[k]              = (gi < value_count) ? fetch(body_off, slot, width) + min_delta : 0;
       }
     };
 
@@ -792,13 +793,11 @@ struct delta_binary_decoder {
     // that destroys store coalescing -- so they stay one per warp_size values, as before.
     auto carry = last_value;
 #pragma unroll
-    for (int k = 0; k < delta_max_values_per_lane; ++k) {
-      if (k < vpl) {
-        auto const incl   = cg::inclusive_scan(warp, d[k], cg::plus<int64_t>{});
-        uint32_t const gi = value_idx + k * warp_size + lane;
-        if (gi < value_count) { store(gi, carry + incl); }
-        carry += warp.shfl(incl, warp_size - 1);
-      }
+    for (int k = 0; k < VPL; ++k) {
+      auto const incl   = cg::inclusive_scan(warp, d[k], cg::plus<int64_t>{});
+      uint32_t const gi = value_idx + k * warp_size + lane;
+      if (gi < value_count) { store(gi, carry + incl); }
+      carry += warp.shfl(incl, warp_size - 1);
     }
 
     last_value  = carry;

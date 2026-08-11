@@ -450,35 +450,81 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
   // that has a value we need.
   if (is_skip_resume) { db->skip_values(skipped_leaf_values, block, warp); }
 
-  while (s->setup.error == 0 &&
-         (s->progress.input_value_count < s->setup.num_input_values || s->progress.src_pos < s->progress.nz_count)) {
-    uint32_t target_pos;
-    uint32_t const src_pos = s->progress.src_pos;
+  if constexpr (Flat) {
+    // A flat page is decoded by a single warp, so the warp that decodes a value is also the warp
+    // that stores it. The rolling buffer, the producer/consumer batching and the per-iteration
+    // barriers below it all existed only because warp 2 used to read what warp 1 wrote; with the
+    // level warp fissioned out into compute_nz_idx_kernel none of that is needed here.
+    //
+    // The loop is driven by the decoder's own value index rather than by a separate output
+    // cursor. That is what removes the round trip: index 0 of the value stream is the header
+    // value, which no pass produces, so a cursor-driven consumer always trails the producer by
+    // one value and needs somewhere to park the overhang.
+    int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
+    auto* const base = static_cast<uint8_t*>(s->setup.col.column_data_base[leaf_level_index]);
+    auto const page_start_row = s->setup.col.start_row + s->setup.page.chunk_row;
+    auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
+    int const nz_count        = s->progress.nz_count;
 
-    if constexpr (Flat) {
-      target_pos = min(s->progress.nz_count, src_pos + batch_size);
+    // Store the value whose position in the page's non-null stream is `sp`.
+    auto const store_value = [&](int32_t sp, zigzag128_t val) {
+      if (sp < 0 || sp >= nz_count || sp >= pp->num_input_values) { return; }
+      size_type const dst_pos = pp->nz_idx_buf[sp] - s->setup.first_row;
+      if (base == nullptr || dst_pos < 0) { return; }
+      void* const dst = base + (output_offset + dst_pos) * s->output_cvt.dtype_len;
+      switch (s->output_cvt.dtype_len) {
+        case 1: *static_cast<int8_t*>(dst) = val; break;
+        case 2: *static_cast<int16_t*>(dst) = val; break;
+        case 4: *static_cast<int32_t*>(dst) = val; break;
+        case 8: *static_cast<int64_t*>(dst) = val; break;
+      }
+    };
+
+    if (!is_skip_resume) {
+      // Value index 0 is the header value; no pass produces it.
+      if (warp.thread_rank() == 0) { store_value(0, db->first_value); }
+
+      zigzag128_t val;
+      uint32_t value_idx;
+      while (s->setup.error == 0) {
+        // publish the previous pass's lane-0 decoder state to the rest of the warp
+        warp.sync();
+        if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
+        if (not db->decode_next_pass_value(warp, val, value_idx)) { break; }
+        store_value(static_cast<int32_t>(value_idx), val);
+      }
     } else {
+      // skip_values() deliberately leaves up to a warp of already-decoded values resident in the
+      // rolling buffer, so a resume keeps the buffered schedule. skipped_leaf_values is always 0
+      // for flat hierarchies today; this path is a safety net, not a hot path.
+      while (s->setup.error == 0 && s->progress.src_pos < s->progress.nz_count) {
+        uint32_t const src_pos    = s->progress.src_pos;
+        uint32_t const target_pos = min(s->progress.nz_count, src_pos + batch_size);
+        warp.sync();
+        for (uint32_t i = 0; i < passes_per_batch; i++) {
+          if (i > 0) { warp.sync(); }
+          db->decode_next_pass(warp);
+        }
+        warp.sync();
+        for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos;
+             sp += cudf::detail::warp_size) {
+          store_value(static_cast<int32_t>(sp), db->value_at(sp + skipped_leaf_values));
+        }
+        if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
+        warp.sync();
+      }
+    }
+  } else {
+    while (s->setup.error == 0 &&
+           (s->progress.input_value_count < s->setup.num_input_values || s->progress.src_pos < s->progress.nz_count)) {
+      uint32_t const src_pos = s->progress.src_pos;
       // 3-warp layout: warps 0+1 produce, warp 2 consumes
-      if (warp.meta_group_rank() < 2) {
-        target_pos = min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size);
-      } else {
-        target_pos = min(s->progress.nz_count, src_pos + batch_size);
-      }
-    }
-    // This needs to be here before the consumer updates src_pos.
-    if constexpr (Flat) {
-      warp.sync();
-    } else {
+      uint32_t const target_pos = (warp.meta_group_rank() < 2)
+                                    ? min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size)
+                                    : min(s->progress.nz_count, src_pos + batch_size);
+      // This needs to be here before the consumer updates src_pos.
       cg::sync(block);
-    }
 
-    if constexpr (Flat) {
-      for (uint32_t i = 0; i < passes_per_batch; i++) {
-        if (i > 0) { warp.sync(); }
-        db->decode_next_pass(warp);
-      }
-    } else {
-      // 3-warp nested layout
       if (warp.meta_group_rank() == 0) {
         // warp 0: decode rep/def levels
         gpuDecodeLevels<delta_nz_buf_size, level_t>(s, sb, target_pos, rep, def, warp);
@@ -489,38 +535,10 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
           db->decode_next_pass(warp);
         }
       }
-    }
 
-    if constexpr (Flat) {
-      warp.sync();
-    } else {
       cg::sync(block);
-    }
 
-    // Value stuffer: same warp in flat, warp 2 in nested
-    if constexpr (Flat) {
-      if (src_pos < target_pos) {
-        int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
-        auto* const base = static_cast<uint8_t*>(s->setup.col.column_data_base[leaf_level_index]);
-        auto const page_start_row = s->setup.col.start_row + s->setup.page.chunk_row;
-        auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
-        for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos;
-             sp += cudf::detail::warp_size) {
-          if (sp >= pp->num_input_values) { continue; }
-          size_type dst_pos = pp->nz_idx_buf[sp] - s->setup.first_row;
-          if (base != nullptr && dst_pos >= 0) {
-            void* const dst = base + (output_offset + dst_pos) * s->output_cvt.dtype_len;
-            switch (s->output_cvt.dtype_len) {
-              case 1: *static_cast<int8_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
-              case 2: *static_cast<int16_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
-              case 4: *static_cast<int32_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
-              case 8: *static_cast<int64_t*>(dst) = db->value_at(sp + skipped_leaf_values); break;
-            }
-          }
-        }
-        if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
-      }
-    } else {
+      // Value stuffer: warp 2
       if (warp.meta_group_rank() == 2 && src_pos < target_pos) {
         int const leaf_level_index = s->setup.col.max_nesting_depth - 1;
         for (uint32_t sp = src_pos + warp.thread_rank(); sp < src_pos + batch_size;
@@ -540,11 +558,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
         }
         if (warp.thread_rank() == 0) { s->progress.src_pos = src_pos + batch_size; }
       }
-    }
 
-    if constexpr (Flat) {
-      warp.sync();
-    } else {
       cg::sync(block);
     }
   }

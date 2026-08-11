@@ -87,6 +87,63 @@ inline __device__ zigzag128_t get_zz128(uint8_t const*& cur, uint8_t const* end)
   return static_cast<zigzag128_t>((u >> 1u) ^ -static_cast<zigzag128_t>(u & 1));
 }
 
+/**
+ * @brief Extract one bit-packed field from a mini-block body.
+ *
+ * Reads the `width`-bit little-endian field whose least significant bit sits at bit offset
+ * `bit_pos` relative to `d_start`. `bit_pos` may be negative: callers position `d_start` past the
+ * end of the values they are unpacking and index backwards, so the shift/mask below must floor
+ * toward negative infinity (a plain `/` and `%` would round toward zero).
+ *
+ * Reads are clamped to `end`. A field that would read past it contributes zero bits, matching the
+ * byte-at-a-time behaviour this replaces.
+ *
+ * The common case is served by one (or two) unaligned 64-bit loads instead of up to nine dependent
+ * byte loads. Only the final bytes of a block, where a wide load would run past `end`, fall back to
+ * the byte loop.
+ */
+inline __device__ zigzag128_t unpack_bitpacked_field(uint8_t const* d_start,
+                                                     uint8_t const* end,
+                                                     int32_t bit_pos,
+                                                     uint32_t width)
+{
+  if (width == 0) { return 0; }
+
+  int32_t const ofs = bit_pos & 7;
+  uint8_t const* p  = d_start + (bit_pos >> 3);
+  if (p >= end) { return 0; }
+
+  // Computed in unsigned to keep the wide-width edges well defined; the caller reinterprets the
+  // raw field as a signed delta exactly as the byte loop did.
+  uint64_t const mask = (width >= 64) ? ~uint64_t{0} : ((uint64_t{1} << width) - 1);
+
+  if (width <= 64) {
+    if (ofs + width <= 64) {
+      if (p + sizeof(uint64_t) <= end) {
+        uint64_t w;
+        memcpy(&w, p, sizeof(w));
+        return static_cast<zigzag128_t>((w >> ofs) & mask);
+      }
+    } else if (p + 2 * sizeof(uint64_t) <= end) {
+      // ofs > 0 here: ofs + width > 64 with width <= 64 implies ofs >= 1, so the shift below is
+      // in [1, 63] and never the undefined shift-by-64.
+      uint64_t lo, hi;
+      memcpy(&lo, p, sizeof(lo));
+      memcpy(&hi, p + sizeof(lo), sizeof(hi));
+      return static_cast<zigzag128_t>(((lo >> ofs) | (hi << (64 - ofs))) & mask);
+    }
+  }
+
+  // Tail of a block (and malformed widths): byte at a time, bounded by `end`.
+  uint64_t acc = static_cast<uint64_t>(*p++) >> ofs;
+  uint32_t c   = CHAR_BIT - ofs;
+  while (c < width && p < end) {
+    acc |= static_cast<uint64_t>(*p++) << c;
+    c += CHAR_BIT;
+  }
+  return static_cast<zigzag128_t>(acc & mask);
+}
+
 struct delta_binary_decoder {
   uint8_t const* block_start;  // start of data, but updated as data is read
   uint8_t const* block_end;    // end of data
@@ -261,8 +318,13 @@ struct delta_binary_decoder {
   }
 
   // decode a single warp_size-wide pass (indexed by `pass`) of the current mini-block and convert
-  // the deltas to values (see decode_next_pass). called by all threads in a single warp `warp`.
-  inline __device__ void calc_mini_block_pass(
+  // the deltas to values, returning this lane's value rather than publishing it to the rolling
+  // buffer. called by all threads in a single warp `warp`.
+  //
+  // On return `last_value` has been advanced and published to the whole warp, so the caller may
+  // immediately start the next pass. Callers that need the value in the rolling buffer should use
+  // calc_mini_block_pass() instead.
+  inline __device__ zigzag128_t calc_mini_block_pass_value(
     uint32_t pass, cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
   {
     using cudf::detail::warp_size;
@@ -273,30 +335,10 @@ struct delta_binary_decoder {
     // position at the end of this pass's values since the following calculates negative indexes
     auto const d_start = cur_mb_start + (pass + 1) * (warp_size * mb_bits / CHAR_BIT);
 
-    // unpack deltas. modified from version in decode_dictionary_indices(), but
-    // that one only unpacks up to bitwidths of 24. simplified some since this
-    // will always do batches of 32.
-    // NOTE: because this needs to handle up to 64 bits, the branching used in the other
-    // implementation has been replaced with a loop. While this uses more registers, the
-    // looping version is just as fast and easier to read.
     zigzag128_t delta = 0;
     if (current_value_idx + pass * warp_size + lane_id < value_count) {
-      // ofs is non-positive, so the arithmetic shift and mask compute the byte offset and leading
-      // bit position as floored division/modulo by CHAR_BIT (a plain / and % would round
-      // toward 0)
-      int32_t ofs      = (lane_id - warp_size) * mb_bits;
-      uint8_t const* p = d_start + (ofs >> 3);
-      ofs &= 7;
-      if (p < block_end) {
-        uint32_t c = CHAR_BIT - ofs;  // 0 - 7 bits
-        delta      = (*p++) >> ofs;
-
-        while (c < mb_bits && p < block_end) {
-          delta |= static_cast<zigzag128_t>(*p++) << c;
-          c += CHAR_BIT;
-        }
-        delta &= (static_cast<zigzag128_t>(1) << mb_bits) - 1;
-      }
+      delta = unpack_bitpacked_field(
+        d_start, block_end, (lane_id - warp_size) * static_cast<int32_t>(mb_bits), mb_bits);
     }
 
     // add min delta to get true delta
@@ -310,14 +352,27 @@ struct delta_binary_decoder {
 
     // now add first value from header or last value from previous pass to get true value
     delta += last_value;
-    int const value_idx =
-      rolling_index<delta_rolling_buf_size>(current_value_idx + warp_size * pass + lane_id);
-    value[value_idx] = delta;
 
     // save value from last lane in warp. this will become the 'first value' added to the
     // deltas calculated in the next pass (or invocation).
     if (lane_id == warp_size - 1) { last_value = delta; }
     warp.sync();
+    return delta;
+  }
+
+  // decode a single warp_size-wide pass (indexed by `pass`) of the current mini-block and publish
+  // the values to the rolling buffer (see decode_next_pass). called by all threads in a single
+  // warp `warp`.
+  inline __device__ void calc_mini_block_pass(
+    uint32_t pass, cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+  {
+    using cudf::detail::warp_size;
+
+    auto const lane_id = static_cast<int>(warp.thread_rank());
+    auto const delta   = calc_mini_block_pass_value(pass, warp);
+    int const value_idx =
+      rolling_index<delta_rolling_buf_size>(current_value_idx + warp_size * pass + lane_id);
+    value[value_idx] = delta;
   }
 
   // decodes and discards values so the decoder resumes at the pass boundary at or just past
@@ -386,6 +441,35 @@ struct delta_binary_decoder {
   // called by a single warp `warp`. NOTE: lane 0's state updates are not synchronized on exit;
   // the caller must synchronize the warp (or block) before the next call so all lanes observe
   // them.
+  // Decode the next warp_size-wide pass and hand this lane its value directly, bypassing the
+  // rolling buffer. `value_idx` receives the absolute index of the returned value in the page's
+  // value stream (index 0 is the header value, which is never produced by a pass).
+  //
+  // For the flat DELTA_BINARY path the warp that decodes a value is also the warp that stores it,
+  // so the round trip through shared `value[]` is pure overhead. Returns false when the stream is
+  // exhausted, in which case `out` and `value_idx` are untouched.
+  inline __device__ bool decode_next_pass_value(
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    zigzag128_t& out,
+    uint32_t& value_idx)
+  {
+    using cudf::detail::warp_size;
+
+    if (not advance_past_first_value(warp)) { return false; }
+
+    // must be read before the lane-0 update below advances current_value_idx / cur_pass
+    value_idx = current_value_idx + cur_pass * warp_size + warp.thread_rank();
+    out       = calc_mini_block_pass_value(cur_pass, warp);
+
+    if (warp.thread_rank() == 0) {
+      if (++cur_pass == values_per_mb / warp_size) {
+        cur_pass = 0;
+        setup_next_mini_block(true);
+      }
+    }
+    return true;
+  }
+
   inline __device__ void decode_next_pass(
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
   {

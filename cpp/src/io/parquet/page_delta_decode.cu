@@ -487,9 +487,10 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     };
 
     if (!is_skip_resume) {
-      // Stream the mini-block bodies through a cp.async ring. attach() reports false on
-      // pre-sm_80, where the decoder keeps reading them straight from global.
-      ring_state.attach(s->stream.data_start, s->stream.data_end, warp);
+      // Stream the mini-block bodies through the async ring. The pipeline is per-thread state,
+      // so it stays in registers here rather than in the shared ring object.
+      auto pipe = cuda::make_pipeline();
+      ring_state.attach(s->stream.data_start, s->stream.data_end, warp, pipe);
       warp.sync();
 
       // Value index 0 is the header value; no pass produces it.
@@ -501,7 +502,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
         // publish the previous pass's lane-0 decoder state to the rest of the warp
         warp.sync();
         if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
-        if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state)) { break; }
+        if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state, &pipe)) { break; }
         store_value(static_cast<int32_t>(value_idx), val);
       }
     } else {

@@ -9,6 +9,7 @@
 
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
+#include <cuda/pipeline>
 
 #include <climits>
 
@@ -164,84 +165,94 @@ constexpr int delta_ring_words       = delta_ring_bytes / sizeof(uint32_t);
  * Owned by the caller rather than embedded in `delta_binary_decoder`, so the DELTA_BYTE_ARRAY
  * decoders (which hold two `delta_binary_decoder`s each) do not pay for a ring they do not use.
  *
- * Requires `cp.async` (sm_80+). On older architectures `attach()` reports failure and the decoder
- * falls back to reading the bodies straight from global.
+ * Copies go through `cuda::memcpy_async` on a thread-scope `cuda::pipeline`, which selects the best
+ * available copy path (`cp.async` on sm_80+, plain loads below it) rather than hard-coding one, so
+ * no architecture guards are needed here. The pipeline is per-thread state and therefore lives in
+ * the caller's registers, not in this shared object.
  */
+using delta_pipeline = cuda::pipeline<cuda::thread_scope_thread>;
+
 struct delta_stream_ring {
-  uint8_t const* page_base;  // 16B-aligned; cp.async requires it on both ends
+  uint8_t const* page_base;  // 16B-aligned; the wide copy path requires it on both ends
   int page_len;              // valid bytes from page_base
   int issued_chunks;
+  int released_chunks;
   bool active;
 
-  // cp.async.cg needs 16B alignment; the enclosing struct's layout must not be allowed to
+  // the wide copy path needs 16B alignment; the enclosing struct's layout must not be allowed to
   // shift this to an 8-byte boundary.
   __align__(16) uint32_t buf[delta_ring_words];
 
   __device__ inline void issue_chunk(
-    int c, cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+    int c,
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    delta_pipeline& pipe)
   {
-#if __CUDA_ARCH__ >= 800
     using cudf::detail::warp_size;
     int const slot        = c & (delta_ring_chunks - 1);
     auto* const dst_base  = reinterpret_cast<uint8_t*>(buf) + slot * delta_ring_chunk_bytes;
     auto const* const src = page_base + static_cast<size_t>(c) * delta_ring_chunk_bytes;
     int const chunk_start = c * delta_ring_chunk_bytes;
 
+    pipe.producer_acquire();
     for (int i = warp.thread_rank(); i < delta_ring_chunk_bytes / 16; i += warp_size) {
       int const off    = i * 16;
       int const remain = page_len - (chunk_start + off);
-      auto const dst   = static_cast<uint32_t>(__cvta_generic_to_shared(dst_base + off));
-      // the size-bounded form zero-fills past the end of the page, matching the clamping the
-      // direct-from-global path does
-      int const bytes = remain >= 16 ? 16 : (remain > 0 ? remain : 0);
-      asm volatile(
-        "cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src + off), "r"(bytes));
+      auto* const dst  = dst_base + off;
+      if (remain >= 16) {
+        cuda::memcpy_async(dst, src + off, cuda::aligned_size_t<16>(16), pipe);
+      } else {
+        // Past the end of the page. memcpy_async has no short-source zero-fill, so do it here;
+        // this is one 16B unit per page and keeps the ring's out-of-range bytes reading as zero,
+        // matching the clamping the direct-from-global path does.
+        for (int k = 0; k < 16; ++k) {
+          dst[k] = (k < remain) ? src[off + k] : uint8_t{0};
+        }
+      }
     }
-    asm volatile("cp.async.commit_group;\n" ::);
-#endif
+    pipe.producer_commit();
   }
 
   /**
    * @brief Point the ring at a page and prime the pipeline. Called by the whole warp.
-   *
-   * @return true if the ring is usable; false on pre-sm_80, where the caller must read global.
    */
-  __device__ inline bool attach(
+  __device__ inline void attach(
     uint8_t const* data_start,
     uint8_t const* data_end,
-    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    delta_pipeline& pipe)
   {
-#if __CUDA_ARCH__ >= 800
     auto const misalign = static_cast<int>(reinterpret_cast<uintptr_t>(data_start) & 15);
     page_base           = data_start - misalign;
     page_len            = static_cast<int>(data_end - page_base);
     issued_chunks       = 0;
+    released_chunks     = 0;
     active              = true;
-    issue_chunk(0, warp);
-    issue_chunk(1, warp);
+    issue_chunk(0, warp, pipe);
+    issue_chunk(1, warp, pipe);
     issued_chunks = 2;
-    return true;
-#else
-    active = false;
-    return false;
-#endif
   }
 
   /// Ensure bytes up to `end_off` (relative to `page_base`) have landed, keeping one chunk in
   /// flight behind them. Called by the whole warp on a warp-uniform condition.
   __device__ inline void reach(
-    int end_off, cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+    int end_off,
+    cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
+    delta_pipeline& pipe)
   {
-#if __CUDA_ARCH__ >= 800
     int const need = end_off / delta_ring_chunk_bytes;
     while (issued_chunks <= need + 1) {
-      issue_chunk(issued_chunks, warp);
+      issue_chunk(issued_chunks, warp, pipe);
       issued_chunks++;
     }
-    // the wait count must be an immediate, which is why exactly one group is kept in flight
-    asm volatile("cp.async.wait_group 1;\n" ::);
+    // Batches are committed in chunk order, so draining up to `need` leaves exactly the chunks
+    // after it in flight.
+    while (released_chunks <= need) {
+      pipe.consumer_wait();
+      pipe.consumer_release();
+      released_chunks++;
+    }
     warp.sync();
-#endif
   }
 
   __device__ inline uint32_t word(int i) const { return buf[i & (delta_ring_words - 1)]; }
@@ -444,7 +455,8 @@ struct delta_binary_decoder {
   inline __device__ zigzag128_t calc_mini_block_pass_value(
     uint32_t pass,
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
-    delta_stream_ring* ring = nullptr)
+    delta_stream_ring* ring = nullptr,
+    delta_pipeline* pipe    = nullptr)
   {
     using cudf::detail::warp_size;
 
@@ -462,7 +474,7 @@ struct delta_binary_decoder {
     int const pass_off =
       (ring != nullptr && ring->active) ? static_cast<int>(pass_start - ring->page_base) : -1;
     bool const use_ring = (mb_bits <= 64) && (pass_off >= 0);
-    if (use_ring) { ring->reach(pass_off + body_bytes + 8, warp); }
+    if (use_ring) { ring->reach(pass_off + body_bytes + 8, warp, *pipe); }
 
     zigzag128_t delta = 0;
     if (current_value_idx + pass * warp_size + lane_id < value_count) {
@@ -584,7 +596,8 @@ struct delta_binary_decoder {
     cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp,
     zigzag128_t& out,
     uint32_t& value_idx,
-    delta_stream_ring* ring = nullptr)
+    delta_stream_ring* ring = nullptr,
+    delta_pipeline* pipe    = nullptr)
   {
     using cudf::detail::warp_size;
 
@@ -592,7 +605,7 @@ struct delta_binary_decoder {
 
     // must be read before the lane-0 update below advances current_value_idx / cur_pass
     value_idx = current_value_idx + cur_pass * warp_size + warp.thread_rank();
-    out       = calc_mini_block_pass_value(cur_pass, warp, ring);
+    out       = calc_mini_block_pass_value(cur_pass, warp, ring, pipe);
 
     if (warp.thread_rank() == 0) {
       if (++cur_pass == values_per_mb / warp_size) {

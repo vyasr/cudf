@@ -369,12 +369,13 @@ void reader_impl::allocate_level_decode_space()
     }
   }
 
-  subpass.nz_idx_decode_data =
-    rmm::device_buffer(total_nz_idx_size, _stream, cudf::get_current_device_resource_ref());
+  if (pass.nz_idx_decode_data.size() < total_nz_idx_size) {
+    pass.nz_idx_decode_data.resize(total_nz_idx_size, _stream);
+  }
 
   {
     size_t running_offset = 0;
-    auto* nz_base         = static_cast<uint8_t*>(subpass.nz_idx_decode_data.data());
+    auto* nz_base         = static_cast<uint8_t*>(pass.nz_idx_decode_data.data());
     for (size_t idx = 0; idx < num_pages; idx++) {
       if (nz_idx_size[idx] == 0) {
         pages[idx].nz_idx_buf = nullptr;

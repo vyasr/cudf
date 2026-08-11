@@ -654,9 +654,6 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
     for (int i = (count & ~3) + t; i < count; i += decode_block_size) {
       pp->nz_idx_buf[i] = i;
     }
-    for (int w = t; w < static_cast<int>(words_per_page); w += decode_block_size) {
-      scratch[w] = 0;
-    }
     if (t == 0) {
       pp->prepass_nz_count          = count;
       pp->prepass_input_value_count = num_input_values;
@@ -797,9 +794,6 @@ CUDF_KERNEL void compute_nz_idx_kernel_generic(device_span<PageInfo> pages,
     int const count = min(num_input_values, last_row);
     for (int i = t; i < count; i += decode_block_size) {
       pp->nz_idx_buf[i] = i;
-    }
-    for (int w = t; w < static_cast<int>(words_per_page); w += decode_block_size) {
-      scratch[w] = 0;
     }
     if (t == 0) {
       pp->prepass_nz_count          = count;
@@ -1055,11 +1049,7 @@ void compute_nz_idx(cudf::detail::hostdevice_span<PageInfo> pages,
   if (scratch == nullptr || words_per_page == 0) { return; }
 
   uint32_t const max_page_values = compute_nz_idx_max_page_values(pages);
-  CUDF_CUDA_TRY(
-    cudaMemsetAsync(scratch,
-                    0,
-                    static_cast<size_t>(words_per_page) * sizeof(uint32_t) * pages.size(),
-                    stream.value()));
+  // ponytail: scratch init removed — compute writes every word before merge reads it (T1 proof)
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
 #define LAUNCH_NZ_IDX(T, PAGE_VALUES, BLOCK)                             \

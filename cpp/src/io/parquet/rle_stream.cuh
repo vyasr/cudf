@@ -549,13 +549,17 @@ struct rle_stream {
             run_desc = static_cast<uint32_t>(cur - s_start);
             cur += value_width;
           }
-          // With max_output_values = INT_MAX in the current caller, no single
-          // parquet run can exceed the output window. This assert exists to
-          // catch a future caller that passes a smaller window: if it fires,
-          // restore the cross-call partial-run resume machinery removed in
-          // this commit (see commits 4dbde92dd1 / 3e349acb27 / feature branch
-          // opt/rle-def-rep-split for the prior implementation).
-          cudf_assert(run_len <= (out_end - (out_base + run_prefix_end)));
+          // Clamp the run to the remaining output window. A run can legally
+          // straddle out_end when row-range filtering makes output_count
+          // smaller than INT_MAX (e.g. skip_rows / num_rows / bounds-page
+          // filtering in preprocess_levels_kernel). Without clamping, Phase 2
+          // would write past the output buffer causing silent data corruption.
+          // `cur` has already been advanced past the full payload above, which
+          // is correct: we emit only `run_len` values but do not need to
+          // re-parse the header on any subsequent call (the outer loop exits
+          // after this chunk because out_pos_total will equal out_end).
+          int const room = out_end - (out_base + run_prefix_end);
+          run_len        = min(run_len, room);
           run_prefix_end += run_len;
           chunk_meta_v[num_runs]      = run_desc;
           chunk_out_off_v[++num_runs] = run_prefix_end;

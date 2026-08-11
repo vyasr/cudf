@@ -355,6 +355,12 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
                                              page_state_buffers_s<delta_nz_buf_size, 1, 1>>;
   __shared__ __align__(16) state_buffers_t state_buffers;
 
+  // Only the flat path streams its mini-block bodies through a cp.async ring; an empty struct
+  // keeps the nested instantiation's shared footprint unchanged.
+  struct empty_ring_t {};
+  using ring_storage_t = std::conditional_t<Flat, delta_stream_ring, empty_ring_t>;
+  __shared__ __align__(16) ring_storage_t ring_state;
+
   auto* const s         = &state_g;
   auto* const sb        = &state_buffers;
   int const page_idx    = static_cast<int>(filter_indices[cg::this_grid().block_rank()]);
@@ -481,6 +487,11 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     };
 
     if (!is_skip_resume) {
+      // Stream the mini-block bodies through a cp.async ring. attach() reports false on
+      // pre-sm_80, where the decoder keeps reading them straight from global.
+      ring_state.attach(s->stream.data_start, s->stream.data_end, warp);
+      warp.sync();
+
       // Value index 0 is the header value; no pass produces it.
       if (warp.thread_rank() == 0) { store_value(0, db->first_value); }
 
@@ -490,7 +501,7 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
         // publish the previous pass's lane-0 decoder state to the rest of the warp
         warp.sync();
         if (db->next_pass_start_idx() >= static_cast<uint32_t>(nz_count)) { break; }
-        if (not db->decode_next_pass_value(warp, val, value_idx)) { break; }
+        if (not db->decode_next_pass_value(warp, val, value_idx, &ring_state)) { break; }
         store_value(static_cast<int32_t>(value_idx), val);
       }
     } else {

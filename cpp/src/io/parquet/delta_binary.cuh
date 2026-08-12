@@ -54,6 +54,11 @@ constexpr int delta_max_batch_size = 2 * cudf::detail::warp_size;
 // avoid race conditions.
 constexpr int delta_rolling_buf_size = (2 * delta_max_batch_size) + 1;
 
+// The multi-warp decoder maps one warp to one mini-block and packs the mini-block widths into a
+// single 32-bit word for a __dp4a reduction, so it is specific to four mini-blocks -- which is
+// what encoders in the wild emit. block_decode_multiwarp_supported() enforces it.
+constexpr int delta_multiwarp_mini_blocks = 4;
+
 /**
  * @brief Read a ULEB128 varint integer
  *
@@ -86,6 +91,48 @@ inline __device__ zigzag128_t get_zz128(uint8_t const*& cur, uint8_t const* end)
 {
   uleb128_t u = get_uleb128(cur, end);
   return static_cast<zigzag128_t>((u >> 1u) ^ -static_cast<zigzag128_t>(u & 1));
+}
+
+/**
+ * @brief Read a ULEB128 zig-zag varint out of a single 64-bit window.
+ *
+ * get_zz128() walks the varint a byte at a time, and each byte is dependent on the last, so a
+ * block header costs a serialized chain of loads. Every warp parses the block header on the
+ * multi-warp path, once per block, so that chain sits on the decode loop's critical path.
+ *
+ * Pulls eight bytes once and finds the terminating byte with a single mask-and-ffs. A varint that
+ * does not terminate within those eight bytes (values needing more than 56 bits) and a window that
+ * would read past `end` both fall back to the byte walk, so this is exact for every input.
+ *
+ * @param d_start Start of the varint
+ * @param end End of the readable data
+ * @param[out] len Number of bytes consumed
+ * @return The decoded value
+ */
+inline __device__ zigzag128_t get_zz128_windowed(uint8_t const* d_start,
+                                                 uint8_t const* end,
+                                                 int& len)
+{
+  if (d_start + sizeof(uint64_t) <= end) {
+    uint64_t w;
+    memcpy(&w, d_start, sizeof(w));
+    // one bit set per byte whose continuation bit is clear; the lowest is the terminating byte
+    auto const term = (~w) & 0x8080'8080'8080'8080ull;
+    if (term != 0) {
+      int const n = __ffsll(static_cast<long long>(term)) >> 3;  // 1..8
+      uint64_t u  = 0;
+#pragma unroll
+      for (int i = 0; i < 8; ++i) {
+        if (i < n) { u |= ((w >> (i * CHAR_BIT)) & 0x7full) << (i * 7); }
+      }
+      len = n;
+      return static_cast<zigzag128_t>((u >> 1u) ^ -static_cast<zigzag128_t>(u & 1));
+    }
+  }
+  auto cur         = d_start;
+  auto const value = get_zz128(cur, end);
+  len              = static_cast<int>(cur - d_start);
+  return value;
 }
 
 /**
@@ -820,6 +867,7 @@ struct delta_binary_decoder {
     using cudf::detail::warp_size;
     auto const vpl = values_per_mb / warp_size;
     return not error and static_cast<int>(mini_block_count) == num_warps and
+           static_cast<int>(mini_block_count) == delta_multiwarp_mini_blocks and
            values_per_mb >= static_cast<uint32_t>(warp_size) and
            (values_per_mb % warp_size) == 0 and (vpl == 1 or vpl == 2);
   }
@@ -867,26 +915,30 @@ struct delta_binary_decoder {
 
     // Every warp parses the block header redundantly instead of one warp publishing it: it is a
     // varint plus mini_block_count width bytes broadcast out of L1, which is cheaper than the
-    // extra block-wide barrier a publish/consume split would cost.
-    zigzag128_t min_delta = 0;
-    int hdr_len           = 0;
-    if (lane == 0) {
-      auto cur  = cur_block_start;
-      min_delta = get_zz128(cur, block_end);
-      hdr_len   = static_cast<int>(cur - cur_block_start);
-    }
-    min_delta = warp.shfl(min_delta, 0);
-    hdr_len   = warp.shfl(hdr_len, 0);
+    // extra block-wide barrier a publish/consume split would cost. Every lane parses it too, for
+    // the same reason -- a shuffle to broadcast lane 0's result costs more than the redundant ALU.
+    int hdr_len                 = 0;
+    zigzag128_t const min_delta = get_zz128_windowed(cur_block_start, block_end, hdr_len);
 
     auto const* const widths = cur_block_start + hdr_len;
     auto const* const body   = widths + nmb;
 
+    // block_decode_multiwarp_supported() guarantees mini_block_count equals the warp count, which
+    // is 4, so the width bytes are exactly one 32-bit word. Read it once and reduce with __dp4a
+    // rather than reloading each byte and running a multiply-add chain over them -- the old form
+    // did up to two passes over the four bytes, once for this warp's offset and once for the
+    // block's total size.
+    static_assert(delta_multiwarp_mini_blocks == 4,
+                  "the __dp4a width reduction below assumes four mini-blocks per block");
+    uint32_t wb;
+    memcpy(&wb, widths, sizeof(wb));
+    // mini-block body bytes per bit of width: values_per_mb / 8, NOT a constant
+    int const mb_bytes_per_bit = vpm / CHAR_BIT;
+
     // this warp owns mini-block w, which starts after the w preceding mini-block bodies
-    int my_off = 0;
-    for (int j = 0; j < w; ++j) {
-      my_off += vpm * widths[j] / CHAR_BIT;
-    }
-    int const width = widths[w];
+    uint32_t const below = (w == 0) ? 0u : (wb & (0xffff'ffffu >> ((4 - w) * CHAR_BIT)));
+    int const my_off     = mb_bytes_per_bit * __dp4a(below, 0x0101'0101u, 0u);
+    int const width      = static_cast<int>((wb >> (w * CHAR_BIT)) & 0xffu);
 
     // Step k covers values [k * warp_size, (k+1) * warp_size) of this mini-block, so consecutive
     // lanes stay on consecutive values and the nz_idx loads and output stores stay coalesced.
@@ -933,10 +985,7 @@ struct delta_binary_decoder {
       if (gi < value_count) { store(gi, base + d[k]); }
     }
 
-    int total_body = 0;
-    for (int j = 0; j < nmb; ++j) {
-      total_body += vpm * widths[j] / CHAR_BIT;
-    }
+    int const total_body = mb_bytes_per_bit * __dp4a(wb, 0x0101'0101u, 0u);
     carry += all;
     cur_block_start = body + total_body;
     value_idx += block_size;

@@ -714,6 +714,32 @@ inline __device__ void get_nesting_bounds(int& start_depth,
 }
 
 /**
+ * @brief Store policies for the value-index mapping the level walk emits.
+ *
+ * The decode kernels consume `nz_idx` through a small cyclic buffer, so they index it modulo the
+ * buffer size. The `nz_idx` pre-pass instead keeps a whole page's mapping in a global buffer and
+ * indexes it directly. The modulo is applied *before* the subscript, so a proxy buffer type cannot
+ * undo it and the buffer size cannot be made large enough at compile time -- the choice has to sit
+ * at the store itself, which is why this is a policy rather than a bigger `rolling_buf_size`.
+ */
+template <int rolling_buf_size>
+struct rolling_nz_idx_store {
+  template <typename state_buf>
+  static __device__ void store(state_buf* sb, int src_pos, int dst_pos)
+  {
+    sb->nz_idx[rolling_index<rolling_buf_size>(src_pos)] = dst_pos;
+  }
+};
+
+struct linear_nz_idx_store {
+  template <typename state_buf>
+  static __device__ void store(state_buf* sb, int src_pos, int dst_pos)
+  {
+    sb->nz_idx[src_pos] = dst_pos;
+  }
+};
+
+/**
  * @brief Process a batch of incoming repetition/definition level values and generate
  *        validity, nested column offsets (where appropriate) and decoding indices.
  *
@@ -725,9 +751,10 @@ inline __device__ void get_nesting_bounds(int& start_depth,
  * @param[in] t Thread index
  * @tparam level_t Type used to store decoded repetition and definition levels
  * @tparam state_buf Typename of the `state_buf` (usually inferred)
- * @tparam rolling_buf_size Size of the cyclic buffer used to store value data
+ * @tparam NzStore Policy describing how the value-index mapping is stored (see
+ *         `rolling_nz_idx_store` / `linear_nz_idx_store`)
  */
-template <typename level_t, typename state_buf, int rolling_buf_size>
+template <typename level_t, typename state_buf, typename NzStore>
 __device__ void gpuUpdateValidityOffsetsAndRowIndices(int32_t target_input_value_count,
                                                       auto* s,
                                                       state_buf* sb,
@@ -820,7 +847,7 @@ __device__ void gpuUpdateValidityOffsetsAndRowIndices(int32_t target_input_value
         int const src_pos = nesting_info->valid_count + thread_valid_count;
         int const dst_pos = nesting_info->value_count + thread_value_count;
         // nz_idx is a mapping of src buffer indices to destination buffer indices
-        sb->nz_idx[rolling_index<rolling_buf_size>(src_pos)] = dst_pos;
+        NzStore::store(sb, src_pos, dst_pos);
       }
 
       // compute warp and thread value counts for the -next- nesting level. we need to
@@ -915,8 +942,8 @@ __device__ void gpuUpdateValidityOffsetsAndRowIndices(int32_t target_input_value
  * @tparam level_t Type used to store decoded repetition and definition levels
  * @tparam state_buf Typename of the `state_buf` (usually inferred)
  */
-template <int rolling_buf_size, typename level_t, typename state_buf>
-__device__ void gpuDecodeLevels(
+template <typename NzStore, typename level_t, typename state_buf>
+__device__ void gpuDecodeLevelsImpl(
   auto* s,
   state_buf* sb,
   int32_t target_leaf_count,
@@ -933,11 +960,48 @@ __device__ void gpuDecodeLevels(
     auto const actual_leaf_count = cuda::std::min(cur_leaf_count, s->setup.num_input_values);
 
     // process what we got back
-    gpuUpdateValidityOffsetsAndRowIndices<level_t, state_buf, rolling_buf_size>(
+    gpuUpdateValidityOffsetsAndRowIndices<level_t, state_buf, NzStore>(
       actual_leaf_count, s, sb, rep, def, warp.thread_rank());
     cur_leaf_count = actual_leaf_count + warp.size();
     warp.sync();
   }
+}
+
+/**
+ * @brief Decode levels into a cyclic `nz_idx` buffer. The form every decode kernel uses.
+ */
+template <int rolling_buf_size, typename level_t, typename state_buf>
+__device__ void gpuDecodeLevels(
+  auto* s,
+  state_buf* sb,
+  int32_t target_leaf_count,
+  level_t* const rep,
+  level_t* const def,
+  cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+{
+  gpuDecodeLevelsImpl<rolling_nz_idx_store<rolling_buf_size>, level_t, state_buf>(
+    s, sb, target_leaf_count, rep, def, warp);
+}
+
+/**
+ * @brief Decode levels into a directly-indexed `nz_idx` buffer, for the pre-pass.
+ *
+ * Identical to gpuDecodeLevels() except that `sb->nz_idx` is indexed by the value's own position
+ * rather than modulo a cyclic buffer, so the caller must supply a buffer covering the whole page.
+ * Everything else the level walk produces -- per-level validity, list offsets, null counts -- is
+ * written to global memory and is unaffected by the choice.
+ */
+template <typename level_t, typename state_buf>
+__device__ void gpuDecodeLevelsLinear(
+  auto* s,
+  state_buf* sb,
+  int32_t target_leaf_count,
+  level_t* const rep,
+  level_t* const def,
+  cg::thread_block_tile<cudf::detail::warp_size, cg::thread_block> const& warp)
+{
+  gpuDecodeLevelsImpl<linear_nz_idx_store, level_t, state_buf>(
+    s, sb, target_leaf_count, rep, def, warp);
 }
 
 /**

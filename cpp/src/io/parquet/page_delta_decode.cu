@@ -492,10 +492,31 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
     auto const output_offset  = page_start_row >= min_row ? page_start_row - min_row : 0;
     int const nz_count        = s->progress.nz_count;
 
+    // nz_idx maps a value's position in the non-null stream to its output row, and it is strictly
+    // increasing. So if the last entry is exactly nz_count-1 past the first, the page has no nulls
+    // in range and the mapping is `sp + nz_first` -- every per-value load from it is redundant.
+    // Two loads per page then replace one per value, which removes the scatter's dependent global
+    // load from the decode loop; the remaining stores stay coalesced because the step-strided lane
+    // mapping already gives consecutive lanes consecutive sp.
+    //
+    // The branch below is page-uniform, so it costs a predicated select rather than divergence,
+    // and it is deliberately not a template parameter: a second instantiation would raise the
+    // register budget ptxas picks for the whole kernel (see the VPL=4 note above).
+    // The nz_count <= num_input_values bound mirrors the one store_value applies per value: it
+    // keeps the probe below in range, and it keeps the identity claim covering every index the
+    // store path can actually reach.
+    bool nz_is_identity = false;
+    int32_t nz_first    = 0;
+    if (nz_count > 0 && nz_count <= pp->num_input_values && pp->nz_idx_buf != nullptr) {
+      nz_first       = pp->nz_idx_buf[0];
+      nz_is_identity = (pp->nz_idx_buf[nz_count - 1] - nz_first) == (nz_count - 1);
+    }
+
     // Store the value whose position in the page's non-null stream is `sp`.
     auto const store_value = [&](int32_t sp, zigzag128_t val) {
       if (sp < 0 || sp >= nz_count || sp >= pp->num_input_values) { return; }
-      size_type const dst_pos = pp->nz_idx_buf[sp] - s->setup.first_row;
+      size_type const dst_pos =
+        (nz_is_identity ? nz_first + sp : pp->nz_idx_buf[sp]) - s->setup.first_row;
       if (base == nullptr || dst_pos < 0) { return; }
       void* const dst = base + (output_offset + dst_pos) * s->output_cvt.dtype_len;
       switch (s->output_cvt.dtype_len) {

@@ -33,10 +33,10 @@
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/iterator>
+#include <cuda/stream_ref>
 
 #include <fstream>
 #include <optional>
@@ -2417,7 +2417,7 @@ TEST_F(ParquetReaderTest, ManyLargeLists)
                  bools_iter + (num_rows * bools_per_row),
                  bools_col->mutable_view().begin<bool>());
 
-    stream.synchronize();
+    stream.wait();
 
     // list<bool> column
     auto list_col = cudf::make_lists_column(

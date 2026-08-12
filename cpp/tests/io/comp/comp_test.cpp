@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -89,7 +89,7 @@ struct DecompressTest
 
     static_cast<Decompressor*>(this)->device_dispatch(inf_in, inf_out, inf_stat);
     CUDF_CUDA_TRY(cudaMemcpyAsync(
-      decompressed.data(), dst.data(), dst.size(), cudaMemcpyDefault, stream.value()));
+      decompressed.data(), dst.data(), dst.size(), cudaMemcpyDefault, stream.get()));
     inf_stat.device_to_host(stream);
     CUDF_EXPECTS(inf_stat[0].status == codec_status::SUCCESS, "Failure in device decompression");
 

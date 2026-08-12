@@ -581,17 +581,17 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
   constexpr int NWARPS = decode_block_size / cudf::detail::warp_size;
   constexpr int CW     = (WORDS + NWARPS - 1) / NWARPS;
 
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ __align__(16) uint32_t smask[WORDS];
   __shared__ uint32_t sred[NWARPS];
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = static_cast<int>(block.thread_rank());
-  int const lane        = t & 31;
-  int const warp_idx    = t >> 5;
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = static_cast<int>(block.thread_rank());
+  int const lane     = t & 31;
+  int const warp_idx = t >> 5;
+  PageInfo* pp       = &pages[page_idx];
 
   // Only process pages that had an nz_idx_buf allocated (flat DELTA_BINARY pilot pages).
   if (pp->nz_idx_buf == nullptr) { return; }
@@ -621,7 +621,7 @@ CUDF_KERNEL void compute_nz_idx_kernel(device_span<PageInfo> pages,
   }
 
   int const max_depth      = s->setup.col.max_nesting_depth;
-  int const max_def_level  = s->nesting_info[max_depth - 1].max_def_level;
+  int const max_def_level  = s->nesting.nesting_info[max_depth - 1].max_def_level;
   bool const process_nulls = should_process_nulls(s);
 
   // Pre-decoded definition levels (nullptr if page has no nulls / no def stream).
@@ -744,17 +744,17 @@ CUDF_KERNEL void compute_nz_idx_kernel_generic(device_span<PageInfo> pages,
                                                kernel_error::pointer /*error_code*/)
 {
   constexpr int NWARPS = decode_block_size / cudf::detail::warp_size;
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ uint32_t wsum[NWARPS + 1];
   __shared__ uint32_t carry;
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = static_cast<int>(block.thread_rank());
-  int const lane        = t & 31;
-  int const warp_idx    = t >> 5;
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = static_cast<int>(block.thread_rank());
+  int const lane     = t & 31;
+  int const warp_idx = t >> 5;
+  PageInfo* pp       = &pages[page_idx];
 
   if (pp->nz_idx_buf == nullptr) { return; }
   if (not page_mask.empty() and not page_mask[page_idx]) { return; }
@@ -775,7 +775,7 @@ CUDF_KERNEL void compute_nz_idx_kernel_generic(device_span<PageInfo> pages,
   }
 
   int const max_depth      = s->setup.col.max_nesting_depth;
-  int const max_def_level  = s->nesting_info[max_depth - 1].max_def_level;
+  int const max_def_level  = s->nesting.nesting_info[max_depth - 1].max_def_level;
   bool const process_nulls = should_process_nulls(s);
   level_t const* const def =
     process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
@@ -881,13 +881,13 @@ CUDF_KERNEL void merge_nz_idx_scratch_kernel(device_span<PageInfo> pages,
                                              uint32_t const* scratch_valid_map,
                                              uint32_t words_per_page)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ int null_count;
 
-  page_state_s* const s = &state_g;
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = static_cast<int>(threadIdx.x);
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = static_cast<int>(threadIdx.x);
+  PageInfo* pp       = &pages[page_idx];
 
   if (pp->nz_idx_buf == nullptr) { return; }
   if (not page_mask.empty() and not page_mask[page_idx]) { return; }
@@ -903,7 +903,7 @@ CUDF_KERNEL void merge_nz_idx_scratch_kernel(device_span<PageInfo> pages,
   }
 
   int const max_depth      = s->setup.col.max_nesting_depth;
-  auto& ni                 = s->nesting_info[max_depth - 1];
+  auto& ni                 = s->nesting.nesting_info[max_depth - 1];
   bool const process_nulls = should_process_nulls(s);
   int const first_src      = static_cast<int>(s->setup.first_row);
   int const actual_values  = (pp->num_decoded_level_values > 0)

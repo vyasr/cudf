@@ -11,6 +11,7 @@
 
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
+#include <cudf/detail/utilities/vector_factories.hpp>
 
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
@@ -381,12 +382,12 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
   // per mini-block delta totals, the only state the cooperating warps exchange
   __shared__ __align__(16) zigzag128_t mb_totals[Flat ? decode_delta_binary_flat_warps : 1];
 
-  auto* const s         = &state_g;
-  auto* const sb        = &state_buffers;
-  int const page_idx    = static_cast<int>(filter_indices[cg::this_grid().block_rank()]);
-  auto const block      = cg::this_thread_block();
-  auto const warp       = cg::tiled_partition<cudf::detail::warp_size>(block);
-  auto* const db        = &db_state;
+  auto* const s      = &state_g;
+  auto* const sb     = &state_buffers;
+  int const page_idx = static_cast<int>(filter_indices[cg::this_grid().block_rank()]);
+  auto const block   = cg::this_thread_block();
+  auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
+  auto* const db     = &db_state;
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
@@ -427,7 +428,8 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
   // Capture initial valid_map_offset before any processing that might modify it
   [[maybe_unused]] int init_valid_map_offset = 0;
   if constexpr (!Flat) {
-    init_valid_map_offset = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_map_offset;
+    init_valid_map_offset =
+      s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_map_offset;
   }
 
   // copying logic from gpuDecodePageData.
@@ -590,13 +592,14 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
       }
     }
   } else {
-    while (s->setup.error == 0 &&
-           (s->progress.input_value_count < s->setup.num_input_values || s->progress.src_pos < s->progress.nz_count)) {
+    while (s->setup.error == 0 && (s->progress.input_value_count < s->setup.num_input_values ||
+                                   s->progress.src_pos < s->progress.nz_count)) {
       uint32_t const src_pos = s->progress.src_pos;
       // 3-warp layout: warps 0+1 produce, warp 2 consumes
-      uint32_t const target_pos = (warp.meta_group_rank() < 2)
-                                    ? min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size)
-                                    : min(s->progress.nz_count, src_pos + batch_size);
+      uint32_t const target_pos =
+        (warp.meta_group_rank() < 2)
+          ? min(src_pos + 2 * batch_size, s->progress.nz_count + batch_size)
+          : min(s->progress.nz_count, src_pos + batch_size);
       // This needs to be here before the consumer updates src_pos.
       cg::sync(block);
 
@@ -621,8 +624,9 @@ CUDF_KERNEL void __launch_bounds__(Flat ? decode_delta_binary_flat_block_size
           size_type dst_pos = sb->nz_idx[rolling_index<delta_nz_buf_size>(sp)];
           if (!has_repetition) { dst_pos -= s->setup.first_row; }
           if (dst_pos >= 0 && sp < target_pos) {
-            void* const dst = nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
-            auto const val  = db->value_at(sp + skipped_leaf_values);
+            void* const dst =
+              nesting_info_base[leaf_level_index].data_out + dst_pos * s->output_cvt.dtype_len;
+            auto const val = db->value_at(sp + skipped_leaf_values);
             switch (s->output_cvt.dtype_len) {
               case 1: *static_cast<int8_t*>(dst) = val; break;
               case 2: *static_cast<int16_t*>(dst) = val; break;
@@ -1123,13 +1127,18 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
   // Partition pages into flat (nz_idx_buf != nullptr && max_nesting_depth == 1) and nested.
-  auto const num_pages = pages.size();
-  auto const* h_pages  = pages.host_ptr();
-  auto const* h_chunks = chunks.host_ptr();
-  std::vector<uint32_t> h_flat_indices;
-  std::vector<uint32_t> h_nested_indices;
-  h_flat_indices.reserve(num_pages);
-  h_nested_indices.reserve(num_pages);
+  //
+  // The index lists are built in host_vectors rather than std::vectors because they are copied to
+  // the device below. cuda_memcpy_async falls back to copy_pageable() for pageable source memory,
+  // and a device copy issued from pageable memory is not actually asynchronous: the driver has to
+  // stage it through its own pinned buffer, which blocks the host. This function runs once per
+  // subpass, so the stall lands on the critical path of every subpass.
+  // make_empty_host_vector hands back pinned memory, so the copies below are genuinely async.
+  auto const num_pages  = pages.size();
+  auto const* h_pages   = pages.host_ptr();
+  auto const* h_chunks  = chunks.host_ptr();
+  auto h_flat_indices   = cudf::detail::make_empty_host_vector<uint32_t>(num_pages, stream);
+  auto h_nested_indices = cudf::detail::make_empty_host_vector<uint32_t>(num_pages, stream);
   for (size_t i = 0; i < num_pages; ++i) {
     if (h_pages[i].nz_idx_buf != nullptr && h_chunks[h_pages[i].chunk_idx].max_nesting_depth == 1) {
       h_flat_indices.push_back(static_cast<uint32_t>(i));

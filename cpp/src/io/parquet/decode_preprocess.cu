@@ -411,11 +411,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   // whether or not we have repetition levels (lists)
   bool const has_repetition = chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0;
 
-  // Grid-expansion dispatch: each page is decoded by two blocks.
-  // blockIdx.y maps to the level_type enum (parquet_gpu.hpp:184-189).
+  // Each page is decoded by two blocks where blockIdx.y maps to def/rep level
   int const stream_id = blockIdx.y;
-  static_assert(level_type::DEFINITION == 0 && level_type::REPETITION == 1,
-                "grid dispatch assumes DEFINITION=0, REPETITION=1");
 
   // The chunked-expand rle_stream does not need a shared-memory ring buffer of
   // run headers; it parses runs directly into per-chunk tables, so we

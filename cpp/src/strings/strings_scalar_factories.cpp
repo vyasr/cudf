@@ -6,7 +6,7 @@
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/scalar/scalar_factories.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 // Create a strings-type column from array of pointer/size pairs

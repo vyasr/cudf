@@ -11,7 +11,7 @@
 #include <cudf/io/types.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <optional>
 

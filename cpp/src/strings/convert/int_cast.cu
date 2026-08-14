@@ -22,7 +22,7 @@
 #include <cuda/iterator>
 #include <cuda/std/algorithm>
 #include <cuda/std/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 #include <thrust/transform_reduce.h>
 

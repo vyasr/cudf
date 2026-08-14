@@ -9,7 +9,7 @@
 #include <cudf/lists/list_view.hpp>
 #include <cudf/lists/lists_column_view.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 

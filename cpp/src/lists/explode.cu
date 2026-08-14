@@ -20,7 +20,7 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/std/optional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
 #include <thrust/for_each.h>

@@ -13,7 +13,7 @@
 
 #include <rmm/device_uvector.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace CUDF_EXPORT cudf {
 namespace strings::detail {

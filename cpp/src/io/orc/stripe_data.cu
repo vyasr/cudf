@@ -11,7 +11,7 @@
 
 #include <cub/cub.cuh>
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::orc::detail {
 

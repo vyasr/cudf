@@ -22,7 +22,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/std/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/gather.h>
 #include <thrust/reduce.h>

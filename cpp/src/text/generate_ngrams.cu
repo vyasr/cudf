@@ -30,7 +30,7 @@
 #include <cooperative_groups/reduce.h>
 #include <cuda/functional>
 #include <cuda/std/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/copy.h>
 
 #include <stdexcept>

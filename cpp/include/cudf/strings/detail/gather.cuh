@@ -24,7 +24,7 @@
 #include <cub/cub.cuh>
 #include <cuda/functional>
 #include <cuda/std/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
 #include <thrust/iterator/transform_iterator.h>

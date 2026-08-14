@@ -23,7 +23,7 @@
 #include <cuda/atomic>
 #include <cuda/std/limits>
 #include <cuda/std/optional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <cuda_runtime.h>
 
 #include <type_traits>

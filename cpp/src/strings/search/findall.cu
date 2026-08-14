@@ -22,7 +22,7 @@
 
 #include <rmm/exec_policy.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace strings {

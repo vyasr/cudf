@@ -11,7 +11,7 @@
 #include <cuda/bit>
 #include <cuda/std/array>
 #include <cuda/std/optional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstddef>
 #include <cstdint>

@@ -29,7 +29,7 @@
 #include <cuda/std/limits>
 #include <cuda/std/tuple>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/gather.h>
 #include <thrust/iterator/transform_iterator.h>

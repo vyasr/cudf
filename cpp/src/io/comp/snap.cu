@@ -6,7 +6,7 @@
 #include "gpuinflate.hpp"
 #include "io/utilities/block_utils.cuh"
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::detail {
 constexpr int hash_bits = 12;

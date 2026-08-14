@@ -11,7 +11,7 @@
 #include <cudf/detail/utilities/integer_utils.hpp>
 
 #include <cub/cub.cuh>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::detail {
 constexpr int32_t batch_size    = (1 << 5);

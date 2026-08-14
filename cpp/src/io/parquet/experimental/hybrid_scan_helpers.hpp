@@ -14,7 +14,7 @@
 #include <cudf/io/types.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <memory>
 #include <optional>

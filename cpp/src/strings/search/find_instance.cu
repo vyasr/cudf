@@ -21,7 +21,7 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <cooperative_groups/scan.h>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace strings {

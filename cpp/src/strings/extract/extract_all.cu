@@ -21,7 +21,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/transform_scan.h>
 
 namespace cudf {

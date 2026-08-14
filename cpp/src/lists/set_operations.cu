@@ -25,7 +25,7 @@
 
 #include <cuda/std/functional>
 #include <cuda/std/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/scatter.h>
 #include <thrust/uninitialized_fill.h>
 

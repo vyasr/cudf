@@ -47,7 +47,7 @@ Mark Adler    madler@alumni.caltech.edu
 #include <cuda/std/algorithm>
 #include <cuda/std/cmath>
 #include <cuda/std/tuple>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/gather.h>
 #include <thrust/sequence.h>
 #include <thrust/sort.h>

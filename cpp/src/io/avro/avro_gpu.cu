@@ -5,7 +5,7 @@
 #include "avro_gpu.hpp"
 #include "io/utilities/block_utils.cuh"
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 using cudf::device_span;
 

@@ -41,7 +41,7 @@
 
 #include <cuda/iterator>
 #include <cuda/numeric>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/fill.h>
 #include <thrust/for_each.h>
 

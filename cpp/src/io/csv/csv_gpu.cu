@@ -28,7 +28,7 @@
 
 #include <cuda/atomic>
 #include <cuda/std/algorithm>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/count.h>
 #include <thrust/detail/copy.h>
 #include <thrust/remove.h>

@@ -9,7 +9,7 @@
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::detail {
 

@@ -11,7 +11,7 @@
 #include <cudf/hashing/detail/murmurhash3_x86_32.cuh>
 #include <cudf/io/orc_types.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::orc::detail {
 

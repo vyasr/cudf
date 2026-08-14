@@ -20,7 +20,7 @@
 #include <rmm/mr/polymorphic_allocator.hpp>
 
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <fstream>
 #include <functional>

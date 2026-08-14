@@ -10,7 +10,7 @@
 #include <cudf/types.hpp>
 
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/logical.h>
 
 #include <future>

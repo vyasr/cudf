@@ -11,7 +11,7 @@
 #include <cudf/strings/string_view.cuh>
 #include <cudf/types.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <cuda_runtime.h>
 
 #include <functional>

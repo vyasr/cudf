@@ -8,7 +8,7 @@
 #include <cudf/io/csv.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace io::detail::csv {

@@ -53,7 +53,7 @@ THE SOFTWARE.
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/utilities/error.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::detail {
 

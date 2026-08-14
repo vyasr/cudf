@@ -27,7 +27,7 @@
 
 #include <cuco/bloom_filter_ref.cuh>
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/tabulate.h>
 
 #include <functional>

@@ -9,7 +9,7 @@
 #include "io/orc/orc.hpp"
 #include "io/utilities/column_buffer.hpp"
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <memory>
 #include <vector>

@@ -19,7 +19,7 @@
 #include <cuda/std/cstring>
 #include <cuda/std/iterator>
 #include <cuda/std/tuple>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 
 namespace cudf::io::parquet::detail {

@@ -11,7 +11,7 @@
 
 #include <kvikio/file_handle.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <cuda_runtime_api.h>
 
 namespace cudf {

@@ -17,7 +17,7 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace strings {

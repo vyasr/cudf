@@ -8,7 +8,7 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/export.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstdint>
 

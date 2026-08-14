@@ -16,7 +16,7 @@
 #include <cudf/table/table_view.hpp>
 
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/sequence.h>
 
 #include <roaring/roaring.h>

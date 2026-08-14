@@ -20,7 +20,7 @@
 #include <rmm/mr/polymorphic_allocator.hpp>
 
 #include <cuco/static_map.cuh>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::orc::detail {
 

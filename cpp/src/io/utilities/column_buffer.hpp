@@ -19,7 +19,7 @@
 #include <rmm/device_uvector.hpp>
 
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <optional>
 

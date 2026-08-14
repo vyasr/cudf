@@ -19,7 +19,7 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <cuda/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 #include <thrust/scan.h>
 #include <thrust/transform.h>

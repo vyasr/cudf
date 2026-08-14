@@ -26,7 +26,7 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/equal.h>
 #include <thrust/tabulate.h>
 

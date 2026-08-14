@@ -30,7 +30,7 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/std/tuple>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>

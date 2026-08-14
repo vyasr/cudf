@@ -9,7 +9,7 @@
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::strings::detail {
 

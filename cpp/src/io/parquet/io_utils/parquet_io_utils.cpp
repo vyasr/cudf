@@ -24,7 +24,7 @@
 
 #include <cuda/iterator>
 #include <cuda/std/tuple>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <algorithm>
 #include <array>

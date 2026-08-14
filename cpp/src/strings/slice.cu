@@ -28,7 +28,7 @@
 #include <cuda/std/algorithm>
 #include <cuda/std/limits>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/transform.h>
 
 namespace cudf {

@@ -14,7 +14,7 @@
 #include <cudf/utilities/roaring_bitmap.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <functional>
 #include <optional>

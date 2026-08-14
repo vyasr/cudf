@@ -41,7 +41,7 @@
 #include <cuda/std/limits>
 #include <cuda/std/optional>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/execution_policy.h>
 #include <thrust/extrema.h>
 #include <thrust/for_each.h>

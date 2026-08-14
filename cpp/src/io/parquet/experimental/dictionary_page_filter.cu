@@ -28,7 +28,7 @@
 #include <cuco/extent.cuh>
 #include <cuco/static_set.cuh>
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <optional>
 

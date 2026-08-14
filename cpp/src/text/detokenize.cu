@@ -25,7 +25,7 @@
 #include <rmm/device_uvector.hpp>
 
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace nvtext {
 namespace detail {

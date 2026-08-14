@@ -33,7 +33,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/std/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 #include <thrust/logical.h>

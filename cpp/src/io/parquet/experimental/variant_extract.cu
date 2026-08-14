@@ -40,7 +40,7 @@
 #include <cuda/std/optional>
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstdint>
 #include <limits>

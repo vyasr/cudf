@@ -24,7 +24,7 @@
 #include <cub/cub.cuh>
 #include <cuda/functional>
 #include <cuda/std/limits>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 #include <thrust/transform.h>
 

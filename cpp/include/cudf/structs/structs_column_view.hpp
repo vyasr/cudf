@@ -8,7 +8,7 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/utilities/default_stream.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 /**
  * @file

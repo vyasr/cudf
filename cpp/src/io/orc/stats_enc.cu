@@ -10,7 +10,7 @@
 #include <cudf/strings/detail/convert/fixed_point_to_string.cuh>
 
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::io::orc::detail {
 

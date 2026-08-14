@@ -23,7 +23,7 @@
 #include <cuda/std/algorithm>
 #include <cuda/std/iterator>
 #include <cuda/std/tuple>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/transform_reduce.h>
 
 namespace cudf {

@@ -27,7 +27,7 @@
 #include <cooperative_groups/scan.h>
 #include <cub/cub.cuh>
 #include <cuda/std/algorithm>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace strings {

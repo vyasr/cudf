@@ -24,7 +24,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 #include <thrust/iterator/constant_iterator.h>
 

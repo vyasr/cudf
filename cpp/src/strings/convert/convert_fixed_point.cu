@@ -25,7 +25,7 @@
 #include <cuda/std/climits>
 #include <cuda/std/limits>
 #include <cuda/std/type_traits>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/execution_policy.h>
 #include <thrust/transform.h>
 

@@ -7,7 +7,7 @@
 
 #include "io/utilities/hostdevice_vector.hpp"
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstdint>
 #include <sstream>

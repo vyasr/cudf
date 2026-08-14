@@ -23,7 +23,7 @@
 #include <cub/device/device_transform.cuh>
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/sequence.h>
 
 #include <numeric>

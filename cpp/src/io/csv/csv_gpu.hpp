@@ -10,7 +10,7 @@
 #include <cudf/detail/utilities/host_vector.hpp>
 #include <cudf/types.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 using cudf::device_span;
 

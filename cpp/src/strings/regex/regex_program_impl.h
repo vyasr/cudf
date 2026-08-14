@@ -12,7 +12,7 @@
 #include <cudf/strings/regex/regex_program.hpp>
 #include <cudf/utilities/error.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <memory>
 

@@ -15,7 +15,7 @@
 
 #include <cuda/iterator>
 #include <cuda/std/cmath>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 #include <thrust/iterator/transform_iterator.h>
 

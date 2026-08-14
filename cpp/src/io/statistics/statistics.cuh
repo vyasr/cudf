@@ -17,7 +17,7 @@
 #include <cudf/strings/string_view.hpp>
 #include <cudf/types.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstdint>
 

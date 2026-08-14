@@ -477,7 +477,7 @@ void scan_null_counts(cudf::detail::hostdevice_2dvector<column_desc> const& chun
                      thrust::inclusive_scan(thrust::seq, psums, psums + num_stripes, psums);
                    });
   // `prefix_sums_to_update` goes out of scope, copy has to be done before we return
-  stream.wait();
+  stream.sync();
 }
 
 /**

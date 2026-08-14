@@ -605,7 +605,7 @@ void infer_column_types(parse_options const& parse_opts,
     row_offsets,
     num_inferred_columns,
     stream);
-  stream.wait();
+  stream.sync();
 
   auto inf_col_idx = 0;
   for (auto col_idx = 0u; col_idx < column_flags.size(); ++col_idx) {

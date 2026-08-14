@@ -147,7 +147,7 @@ std::unique_ptr<gkprog_device, std::function<void(gkprog_device*)>> gkprog_devic
     delete d_buffer;
   };
 
-  stream.wait();  // wait for h_buffer to finish copying
+  stream.sync();  // wait for h_buffer to finish copying
 
   auto result =
     std::unique_ptr<gkprog_device, std::function<void(gkprog_device*)>>(d_prog.get(), deleter);

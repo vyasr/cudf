@@ -95,7 +95,7 @@ auto create_strings_device_views(host_span<column_view const> views, cuda::strea
     chars_size_transform{},
     cuda::std::plus{});
   auto const output_chars_size = d_partition_offsets.back_element(stream);
-  stream.wait();  // ensure copy of output_chars_size is complete before returning
+  stream.sync();  // ensure copy of output_chars_size is complete before returning
 
   return std::make_tuple(std::move(device_view_owners),
                          device_views_ptr,

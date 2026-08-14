@@ -443,7 +443,7 @@ std::
                          inbuf_offsets.begin(),
                          0);
 
-  stream.wait();
+  stream.sync();
   return std::tuple{std::move(inbuf), std::move(inbuf_offsets), std::move(inbuf_lengths)};
 }
 

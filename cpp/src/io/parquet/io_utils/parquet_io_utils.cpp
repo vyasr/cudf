@@ -423,7 +423,7 @@ fetch_byte_ranges_to_device_async_impl(
   }
 
   // `device_read_async` is not guaranteed to follow stream-ordering (see datasource API docs)
-  stream.wait();
+  stream.sync();
 
   // Schedule device reads holding the `device_read_mutex` so that all reads for a caller thread
   // are scheduled without interleaving with reads from other threads yielding better pipelining
@@ -452,7 +452,7 @@ fetch_byte_ranges_to_device_async_impl(
   }
 
   // Synchronize stream if `memcpy_batch_async` was called to safely discard the host buffers
-  if (not host_buffers.empty()) { stream.wait(); }
+  if (not host_buffers.empty()) { stream.sync(); }
 
   auto sync_function = [](decltype(device_read_tasks) device_read_tasks) {
     for (auto& task : device_read_tasks) {
@@ -637,7 +637,7 @@ fetch_bloom_filters_to_device_impl(
       CUDF_CUDA_TRY(cudf::detail::memcpy_batch_async(
         copy_dsts.data(), copy_srcs.data(), copy_sizes.data(), total_filters, stream));
     }
-    stream.wait();
+    stream.sync();
   }
 
   std::vector<rmm::device_buffer> bitset_buffers;

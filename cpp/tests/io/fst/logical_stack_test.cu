@@ -232,7 +232,7 @@ TEST_F(LogicalStackTest, GroundTruth)
                   std::back_inserter(top_of_stack_cpu));
 
   // Make sure results have been copied back to host
-  stream.synchronize();
+  stream.sync();
 
   // Verify results
   ASSERT_EQ(string_size, top_of_stack_cpu.size());

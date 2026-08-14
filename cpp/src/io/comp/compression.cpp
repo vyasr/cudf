@@ -322,7 +322,7 @@ void host_compress(compression_type compression,
   auto const num_chunks = inputs.size();
   auto const h_inputs   = cudf::detail::make_host_vector_async(inputs, stream);
   auto const h_outputs  = cudf::detail::make_host_vector_async(outputs, stream);
-  stream.wait();
+  stream.sync();
 
   auto h_results = cudf::detail::make_pinned_vector<codec_exec_result>(results, stream);
 

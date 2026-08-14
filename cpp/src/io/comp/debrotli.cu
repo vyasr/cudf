@@ -2110,7 +2110,7 @@ void gpu_debrotli(device_span<device_span<uint8_t const> const> inputs,
   while (cur < fb_heap_size && !(cur & 3)) {
     CUDF_CUDA_TRY(
       cudf::detail::memcpy_async(&dump[0], scratch.data() + cur, 2 * sizeof(uint32_t), stream));
-    stream.wait();
+    stream.sync();
     printf("@%d: next = %d, size = %d\n", cur, dump[0], dump[1]);
     cur = (dump[0] > cur) ? dump[0] : 0xffff'ffffu;
   }

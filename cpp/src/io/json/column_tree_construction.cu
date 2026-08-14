@@ -35,7 +35,7 @@ using row_offset_t = size_type;
 template <typename T>
 void print(device_span<T const> d_vec, std::string name, cuda::stream_ref stream)
 {
-  stream.wait();
+  stream.sync();
   auto h_vec = cudf::detail::make_std_vector(d_vec, stream);
   std::cout << name << " = ";
   for (auto e : h_vec) {

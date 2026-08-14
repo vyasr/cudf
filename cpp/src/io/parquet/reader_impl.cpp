@@ -492,7 +492,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
     }
   }
 
-  _stream.wait();
+  _stream.sync();
 }
 
 reader_impl::reader_impl() : _options{} {}

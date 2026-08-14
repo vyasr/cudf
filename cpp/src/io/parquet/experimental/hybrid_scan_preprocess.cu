@@ -93,7 +93,7 @@ void decode_dictionary_page_headers(
 
   pages.device_to_host_async(stream);
   chunks.device_to_host_async(stream);
-  stream.wait();
+  stream.sync();
 }
 
 }  // namespace

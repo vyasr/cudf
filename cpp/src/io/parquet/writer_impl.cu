@@ -1098,7 +1098,7 @@ parquet_column_view::parquet_column_view(schema_tree_node const& schema_node,
     _def_level      = std::move(dremel.def_level);
     _data_count     = dremel.leaf_data_size;  // Needed for knowing what size dictionary to allocate
 
-    stream.wait();
+    stream.sync();
   } else {
     // For non-list struct, the size of the root column is the same as the size of the leaf column
     _data_count = cudf_col.size();
@@ -1194,7 +1194,7 @@ void gather_fragment_statistics(device_span<statistics_chunk> frag_stats,
   InitFragmentStatistics(frag_stats_group, frags, stream);
   detail::calculate_group_statistics<detail::io_file_format::PARQUET>(
     frag_stats.data(), frag_stats_group.data(), frag_stats.size(), stream, int96_timestamps);
-  stream.wait();
+  stream.sync();
 }
 
 auto init_page_sizes(hostdevice_2dvector<EncColumnChunk>& chunks,
@@ -1478,7 +1478,7 @@ void init_encoder_pages(hostdevice_2dvector<EncColumnChunk>& chunks,
         stream);
     }
   }
-  stream.wait();
+  stream.sync();
 }
 
 /**
@@ -1549,7 +1549,7 @@ void encode_pages(hostdevice_2dvector<EncColumnChunk>& chunks,
   if (comp_stats.has_value()) {
     comp_stats.value() += collect_compression_statistics(comp_in, comp_res, stream);
   }
-  stream.wait();
+  stream.sync();
 }
 
 /**
@@ -2218,7 +2218,7 @@ auto convert_table_to_parquet_data(table_input_metadata& table_meta,
     }
 
     // Sync before calling the next `encode_pages` which may alter the stats data.
-    if (need_sync) { stream.wait(); }
+    if (need_sync) { stream.sync(); }
 
     // now add to the column chunk SizeStatistics if necessary
     if (stats_granularity == statistics_freq::STATISTICS_COLUMN) {
@@ -2579,7 +2579,7 @@ void writer::impl::write_parquet_data_to_sink(
 
           if (is_byte_arr) { offset_idx.unencoded_byte_array_data_bytes = std::move(var_bytes); }
 
-          _stream.wait();
+          _stream.sync();
           _agg_meta->file(p).offset_indexes.emplace_back(std::move(offset_idx));
           _agg_meta->file(p).column_indexes.emplace_back(std::move(column_idx));
         }

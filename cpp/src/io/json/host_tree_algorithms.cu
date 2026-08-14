@@ -131,7 +131,7 @@ std::vector<std::string> copy_strings_to_host_sync(
                  d_offsets.begin());
     auto const h_offsets = cudf::detail::make_host_vector_async(
       cudf::device_span<int64_t const>(d_offsets.data(), d_offsets.size()), stream);
-    stream.wait();
+    stream.sync();
 
     // build std::string vector from chars and offsets
     std::vector<std::string> host_data;
@@ -445,7 +445,7 @@ void make_device_json_column(device_span<SymbolT const> input,
       cudf::detail::make_pinned_vector_async(d_column_tree.parent_node_ids, stream);
     auto const h_node_categories =
       cudf::detail::make_pinned_vector_async(tree.node_categories, stream);
-    stream.wait();
+    stream.sync();
 
     std::map<std::string, std::set<size_type>> rows_by_top_level_column;
     for (size_type node_id = 0; node_id < static_cast<size_type>(h_col_ids.size()); ++node_id) {
@@ -520,7 +520,7 @@ void make_device_json_column(device_span<SymbolT const> input,
     cudf::detail::make_host_vector_async(d_column_tree.node_range_begin, stream);
   auto const max_row_offsets = cudf::detail::make_host_vector_async(d_max_row_offsets, stream);
   auto num_columns           = d_unique_col_ids.size();
-  stream.wait();
+  stream.sync();
 
   auto to_json_col_type = [](auto category) {
     switch (category) {
@@ -1164,7 +1164,7 @@ void scatter_offsets(tree_meta_t const& tree,
         cuda::maximum<int32_t>{});
     }
   }
-  stream.wait();
+  stream.sync();
 }
 
 }  // namespace cudf::io::json::detail

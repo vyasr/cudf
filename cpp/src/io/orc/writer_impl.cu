@@ -2368,7 +2368,7 @@ stripe_dictionaries build_dictionaries(orc_table_view& orc_table,
   get_dictionary_indices(stripe_dicts, orc_table.d_columns, stream);
 
   // synchronize to ensure the copy is complete before we clear `map_slots`
-  stream.wait();
+  stream.sync();
 
   // deallocate hash map storage, unused after this point
   map_storage.reset();

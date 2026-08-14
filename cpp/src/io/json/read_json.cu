@@ -180,7 +180,7 @@ class compressed_host_buffer_source final : public datasource {
     return thread_pool.submit_task([this, offset, size, dst, stream] {
       auto hbuf = host_read(offset, size);
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(dst, hbuf->data(), hbuf->size(), stream));
-      stream.wait();
+      stream.sync();
       return hbuf->size();
     });
   }
@@ -492,7 +492,7 @@ std::pair<table_with_metadata, std::optional<table_with_metadata>> read_batch(
                             reader_opts.get_delimiter(),
                             stream,
                             cudf::get_current_device_resource_ref());
-    stream.wait();
+    stream.sync();
   }
 
   // Helper: parse one buffer, optionally appending schema-mismatch diagnostics. The two call sites
@@ -519,7 +519,7 @@ std::pair<table_with_metadata, std::optional<table_with_metadata>> read_batch(
                             reader_opts.get_delimiter(),
                             stream,
                             cudf::get_current_device_resource_ref());
-    stream.wait();
+    stream.sync();
   }
   buffer = cudf::device_span<char const>(
     reinterpret_cast<char const*>(owning_buffers.second.value().data()),
@@ -821,7 +821,7 @@ device_span<char> ingest_raw_input(device_span<char> buffer,
                     d_delimiter_map.data(),
                     buffer.data());
   }
-  stream.wait();
+  stream.sync();
 
   if (thread_tasks.size()) {
     auto const bytes_read = std::accumulate(

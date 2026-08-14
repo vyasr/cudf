@@ -452,7 +452,7 @@ void write_json(data_sink* out_sink,
     std::vector<char> hbuf;
     auto hbuf_sink_ptr = data_sink::create(&hbuf);
     write_json_uncompressed(hbuf_sink_ptr.get(), table, options, stream);
-    stream.wait();
+    stream.sync();
     auto comp_hbuf = cudf::io::detail::compress(
       options.get_compression(),
       host_span<uint8_t>(reinterpret_cast<uint8_t*>(hbuf.data()), hbuf.size()));

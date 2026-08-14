@@ -114,7 +114,7 @@ std::vector<std::unique_ptr<column>> make_strings_column_batch(
 
   // Except for other stream syncs in `CUB` that we cannot control,
   // this should be the only stream sync we need in the entire API.
-  stream.wait();
+  stream.sync();
 
   auto const threshold = cudf::strings::get_offset64_threshold();
   auto const overflow_count =

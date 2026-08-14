@@ -470,7 +470,7 @@ void reader_impl::compute_page_string_offset_indices(size_t skip_rows, size_t nu
 
   // Transfer the updated chunks to device
   pass.chunks.host_to_device_async(_stream);
-  _stream.wait();
+  _stream.sync();
 
   // Pre-process string offsets for non-dictionary string columns
   kernel_error error_code(_stream);
@@ -717,7 +717,7 @@ void reader_impl::generate_list_column_row_counts(is_estimate_row_counts is_esti
 
   pass.chunks.device_to_host_async(_stream);
   pass.pages.device_to_host_async(_stream);
-  _stream.wait();
+  _stream.sync();
 }
 
 void reader_impl::preprocess_subpass_pages(read_mode mode, size_t chunk_read_limit)
@@ -870,7 +870,7 @@ void reader_impl::preprocess_subpass_pages(read_mode mode, size_t chunk_read_lim
   // retrieve pages back
   pass.pages.device_to_host_async(_stream);
   if (!subpass.single_subpass) { subpass.pages.device_to_host_async(_stream); }
-  _stream.wait();
+  _stream.sync();
 
   // at this point we have an accurate row count so we can compute how many rows we will actually be
   // able to decode for this pass. we will have selected a set of pages for each column in the
@@ -1227,7 +1227,7 @@ std::unique_ptr<column> reader_impl::synthesize_row_index_column(row_range const
       map_global_to_local_row_index{
         rg_global_offsets.data(), rg_local_offsets.data(), rg_global_offsets.size()},
       stream.get()));
-    stream.wait();
+    stream.sync();
   }
 
   return std::make_unique<cudf::column>(std::move(col_data), rmm::device_buffer{0, stream, mr}, 0);
@@ -1271,7 +1271,7 @@ std::unique_ptr<column> reader_impl::synthesize_source_index_column(
       host_row_offsets, stream, cudf::get_current_device_resource_ref());
     cudf::detail::label_segments(
       row_offsets.begin(), row_offsets.end(), col_data.begin(), col_data.end(), stream);
-    stream.wait();
+    stream.sync();
   }
 
   return std::make_unique<cudf::column>(std::move(col_data), rmm::device_buffer{0, stream, mr}, 0);

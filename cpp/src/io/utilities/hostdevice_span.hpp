@@ -162,7 +162,7 @@ class hostdevice_span {
     cuda::stream_ref stream) const
   {
     host_to_device_async(stream);
-    stream.wait();
+    stream.sync();
   }
 
   void device_to_host_async(cuda::stream_ref stream) const
@@ -175,7 +175,7 @@ class hostdevice_span {
   void device_to_host(cuda::stream_ref stream) const
   {
     device_to_host_async(stream);
-    stream.wait();
+    stream.sync();
   }
 
  private:

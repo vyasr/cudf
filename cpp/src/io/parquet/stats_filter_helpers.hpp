@@ -270,7 +270,7 @@ class stats_caster_base {
       auto d_chars   = cudf::detail::make_device_uvector_async(host_chars, stream, mr);
       auto d_offsets = cudf::detail::make_device_uvector_async(offsets, stream, mr);
       auto d_sizes   = cudf::detail::make_device_uvector_async(sizes, stream, mr);
-      stream.wait();  // ensures the vectors are not destroyed before the copy is completed
+      stream.sync();  // ensures the vectors are not destroyed before the copy is completed
       return {std::move(d_chars), std::move(d_offsets), std::move(d_sizes)};
     }
 
@@ -282,7 +282,7 @@ class stats_caster_base {
         auto [d_chars, d_offsets, _] = make_strings_children(val, chars, stream, mr);
         auto null_mask_buffer        = rmm::device_buffer{
           null_mask.data(), cudf::bitmask_allocation_size_bytes(val.size()), stream, mr};
-        stream.wait();
+        stream.sync();
         return cudf::make_strings_column(
           val.size(),
           std::make_unique<column>(std::move(d_offsets), rmm::device_buffer{0, stream, mr}, 0),
@@ -293,7 +293,7 @@ class stats_caster_base {
       auto data             = cudf::detail::make_device_uvector_async(val, stream, mr);
       auto null_mask_buffer = rmm::device_buffer{
         null_mask.data(), cudf::bitmask_allocation_size_bytes(val.size()), stream, mr};
-      stream.wait();
+      stream.sync();
       return std::make_unique<column>(
         dtype, val.size(), data.release(), std::move(null_mask_buffer), null_count);
     }

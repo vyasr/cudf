@@ -314,7 +314,7 @@ std::unique_ptr<cudf::column> replace_helper(ReplacerFn replacer,
                   sub_offsets.begin() + sub_count,
                   tmp_offsets.begin());
     tmp_offsets.resize(sub_count + input.size() + 1, stream);
-    stream.wait();  // protect against destruction of sub_offsets
+    stream.sync();  // protect against destruction of sub_offsets
   }
 
   // cobble together a column_view of type STRING using the original data and the tmp offsets

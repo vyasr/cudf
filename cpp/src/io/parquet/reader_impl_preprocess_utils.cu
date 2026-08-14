@@ -305,7 +305,7 @@ void fill_in_page_info(host_span<ColumnChunkDesc> chunks,
                    iter,
                    iter + num_pages,
                    copy_page_info{d_page_indexes, pages});
-  stream.wait();  // ensures the page_indexes is not destroyed before the copy is completed
+  stream.sync();  // ensures the page_indexes is not destroyed before the copy is completed
 }
 
 std::string encoding_to_string(Encoding encoding)
@@ -407,7 +407,7 @@ cudf::detail::hostdevice_vector<PageInfo> sort_pages(device_span<PageInfo const>
                  sort_indices.end(),
                  unsorted_pages.data(),
                  pass_pages.d_begin());
-  stream.wait();
+  stream.sync();
   return pass_pages;
 }
 
@@ -621,7 +621,7 @@ void decode_page_headers_impl(pass_intermediate_data& pass,
 
   pass.pages.device_to_host_async(stream);
   pass.chunks.device_to_host_async(stream);
-  stream.wait();
+  stream.sync();
 }
 
 }  // namespace

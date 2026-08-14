@@ -255,7 +255,7 @@ dremel_data get_encoding(column_view h_col,
 
   auto column_offsets = cudf::detail::make_host_vector_async(d_column_offsets, stream);
   auto column_ends    = cudf::detail::make_host_vector_async(d_column_ends, stream);
-  stream.wait();
+  stream.sync();
 
   size_t max_vals_size = 0;
   for (size_t l = 0; l < column_offsets.size(); ++l) {
@@ -462,7 +462,7 @@ dremel_data get_encoding(column_view h_col,
   rep_level.resize(level_vals_size, stream);
   def_level.resize(level_vals_size, stream);
 
-  stream.wait();
+  stream.sync();
 
   size_type leaf_data_size = column_ends.back() - column_offsets.back();
 

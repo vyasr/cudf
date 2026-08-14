@@ -479,7 +479,7 @@ std::unique_ptr<column> convert_case(strings_column_view const& input,
                   sub_offsets.begin(),
                   sub_offsets.end(),
                   tmp_offsets.begin());
-    stream.wait();  // protect against destruction of sub_offsets
+    stream.sync();  // protect against destruction of sub_offsets
   }
 
   // run case conversion over the new sub-strings

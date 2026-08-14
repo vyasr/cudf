@@ -554,7 +554,7 @@ table_with_metadata read_avro(std::unique_ptr<cudf::io::datasource>&& source,
         d_global_dict_data = cudf::detail::make_device_uvector_async(
           h_global_dict_data, stream, cudf::get_current_device_resource_ref());
 
-        stream.wait();
+        stream.sync();
       }
 
       auto out_buffers = decode_data(meta,

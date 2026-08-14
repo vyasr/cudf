@@ -64,7 +64,7 @@ class file_sink : public data_sink {
 
     size_t const offset = _bytes_written;
     _bytes_written += size;
-    stream.wait();
+    stream.sync();
 
     // Start the write now via the capture-initializer; only the `.get()` wait is deferred.
     return std::async(std::launch::deferred,
@@ -120,7 +120,7 @@ class host_buffer_sink : public data_sink {
     // stream ordering or pre-reserve buffer to avoid reallocation.
     CUDF_CUDA_TRY(cudaMemcpyAsync(
       buffer_->data() + current_size, gpu_data, size, cudaMemcpyDeviceToHost, stream.get()));
-    return std::async(std::launch::deferred, [stream]() -> void { stream.wait(); });
+    return std::async(std::launch::deferred, [stream]() -> void { stream.sync(); });
   }
 
   void flush() override {}

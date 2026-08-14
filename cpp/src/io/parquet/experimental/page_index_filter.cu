@@ -1178,7 +1178,7 @@ thrust::host_vector<bool> aggregate_reader_metadata::compute_data_page_mask(
   auto const total_pages = pinned_page_offsets.size() - num_columns;
   auto data_page_mask    = thrust::host_vector<bool>(total_pages);
   auto host_results_iter = host_results.begin();
-  stream.wait();
+  stream.sync();
 
   // Discard results for invalid ranges. i.e. ranges starting at the last page of a column and
   // ending at the first page of the next column

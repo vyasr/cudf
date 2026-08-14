@@ -100,7 +100,7 @@ class hostdevice_vector {
   [[deprecated("Use host_to_device_async instead")]] void host_to_device(cuda::stream_ref stream)
   {
     host_to_device_async(stream);
-    stream.wait();
+    stream.sync();
   }
   void device_to_host_async(cuda::stream_ref stream)
   {
@@ -110,7 +110,7 @@ class hostdevice_vector {
   void device_to_host(cuda::stream_ref stream)
   {
     device_to_host_async(stream);
-    stream.wait();
+    stream.sync();
   }
 
   /**

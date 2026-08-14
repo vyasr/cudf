@@ -557,7 +557,7 @@ void host_decompress(compression_type compression,
   auto const num_chunks = inputs.size();
   auto const h_inputs   = cudf::detail::make_host_vector_async(inputs, stream);
   auto const h_outputs  = cudf::detail::make_host_vector_async(outputs, stream);
-  stream.wait();
+  stream.sync();
 
   std::vector<std::future<size_t>> tasks;
   auto const num_streams =

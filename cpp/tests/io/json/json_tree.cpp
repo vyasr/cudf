@@ -40,7 +40,7 @@ tree_meta_t2 to_cpu_tree(cuio_json::tree_meta_t const& d_value, cuda::stream_ref
                       cudf::detail::make_std_vector_async(d_value.node_levels, stream),
                       cudf::detail::make_std_vector_async(d_value.node_range_begin, stream),
                       cudf::detail::make_std_vector_async(d_value.node_range_end, stream)};
-  stream.wait();
+  stream.sync();
   return result;
 }
 
@@ -227,7 +227,7 @@ tree_meta_t2 get_tree_representation_cpu(
   auto token_indices = cudf::detail::make_host_vector_async(token_indices_gpu1, stream);
 
   // Make sure tokens have been copied to the host
-  stream.wait();
+  stream.sync();
 
 #if LIBCUDF_JSON_DEBUG_DUMP
   // DEBUG print

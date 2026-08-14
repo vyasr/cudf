@@ -101,7 +101,7 @@ int64_t find_next_split(int64_t cur_pos,
  * By doing this, we can now look at row X and know the total
  * byte cost for all pages that span row X, not just the cost up to row X itself.
  *
- * This function is asynchronous. Call stream.wait() before using the
+ * This function is asynchronous. Call stream.sync() before using the
  * results.
  */
 std::pair<rmm::device_uvector<cumulative_page_info>, rmm::device_uvector<int32_t>>

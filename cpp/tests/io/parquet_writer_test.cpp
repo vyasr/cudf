@@ -318,7 +318,7 @@ class custom_test_data_sink : public cudf::io::data_sink {
       char* ptr = nullptr;
       CUDF_CUDA_TRY(cudaMallocHost(&ptr, size));
       CUDF_CUDA_TRY(cudaMemcpyAsync(ptr, gpu_data, size, cudaMemcpyDefault, stream.get()));
-      stream.wait();
+      stream.sync();
       outfile_.write(ptr, size);
       CUDF_CUDA_TRY(cudaFreeHost(ptr));
     });
@@ -2450,7 +2450,7 @@ class custom_test_memmap_sink : public cudf::io::data_sink {
       char* ptr = nullptr;
       CUDF_CUDA_TRY(cudaMallocHost(&ptr, size));
       CUDF_CUDA_TRY(cudaMemcpyAsync(ptr, gpu_data, size, cudaMemcpyDefault, stream.get()));
-      stream.wait();
+      stream.sync();
       mm_writer->host_write(ptr, size);
       CUDF_CUDA_TRY(cudaFreeHost(ptr));
     });

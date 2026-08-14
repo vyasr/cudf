@@ -122,7 +122,7 @@ packed_table read_cudftable(datasource* source,
     auto host_buffer = source->host_read(data_offset, header.data_length);
     CUDF_CUDA_TRY(cudf::detail::memcpy_async(
       packed.gpu_data->data(), host_buffer->data(), header.data_length, stream));
-    stream.wait();
+    stream.sync();
   }
 
   auto unpacked_view = cudf::unpack(packed);

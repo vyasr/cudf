@@ -61,7 +61,7 @@ bool check_equality(cuio_json::tree_meta_t& d_a,
                     cuda::stream_ref stream)
 {
   // convert from tree_meta_t to column_tree_csr
-  stream.wait();
+  stream.sync();
 
   h_tree_meta_t a{cudf::detail::make_std_vector_async(d_a.node_categories, stream),
                   cudf::detail::make_std_vector_async(d_a.parent_node_ids, stream),
@@ -76,7 +76,7 @@ bool check_equality(cuio_json::tree_meta_t& d_a,
   auto a_max_row_offsets = cudf::detail::make_std_vector_async(d_a_max_row_offsets, stream);
   auto b_max_row_offsets = cudf::detail::make_std_vector_async(d_b_ctp.max_row_offsets, stream);
 
-  stream.wait();
+  stream.sync();
 
   auto num_nodes = a.parent_node_ids.size();
   if (num_nodes > 1) {
@@ -148,7 +148,7 @@ void run_test(std::string const& input, bool enable_lines = true)
                                   sizeof(cuio_json::node_t) * size_to_copy,
                                   cudaMemcpyDefault,
                                   stream.get()));
-    stream.wait();
+    stream.sync();
     if (options.is_enabled_lines()) return h_node_categories[0] == cuio_json::NC_LIST;
     return h_node_categories[0] == cuio_json::NC_LIST and
            h_node_categories[1] == cuio_json::NC_LIST;
@@ -187,7 +187,7 @@ void run_test(std::string const& input, bool enable_lines = true)
                                   sizeof(cudf::size_type),
                                   cudaMemcpyDefault,
                                   stream.get()));
-    stream.wait();
+    stream.sync();
     return value;
   }();
 

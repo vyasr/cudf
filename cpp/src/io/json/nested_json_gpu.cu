@@ -1616,7 +1616,7 @@ std::pair<rmm::device_uvector<PdaTokenT>, rmm::device_uvector<SymbolOffsetT>> ge
                                         stream);
 
     // Make sure memory of the FST's lookup tables isn't freed before the FST completes
-    stream.wait();
+    stream.sync();
   }
 
   constexpr auto max_translation_table_size =
@@ -1708,7 +1708,7 @@ void make_json_column(json_column& root_column,
   auto token_indices_gpu = cudf::detail::make_host_vector_async(d_token_indices_gpu, stream);
 
   // Make sure tokens have been copied to the host
-  stream.wait();
+  stream.sync();
 
   // Whether this token is the valid token to begin the JSON document with
   auto is_valid_root_token = [](PdaTokenT const token) {

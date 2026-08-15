@@ -127,7 +127,7 @@ namespace io::parquet::experimental {
  */
 [[nodiscard]] std::unique_ptr<column> get_variant_type_id(
   column_view const& values,
-  rmm::cuda_stream_view stream      = cudf::get_default_stream(),
+  cuda::stream_ref stream           = cudf::get_default_stream(),
   rmm::device_async_resource_ref mr = cudf::get_current_device_resource_ref());
 
 /** @} */

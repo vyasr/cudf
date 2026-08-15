@@ -1000,7 +1000,7 @@ std::unique_ptr<column> cast_variant(column_view const& values,
 }
 
 std::unique_ptr<column> get_variant_type_id(column_view const& values,
-                                            rmm::cuda_stream_view stream,
+                                            cuda::stream_ref stream,
                                             rmm::device_async_resource_ref mr)
 {
   validate_variant_child(values);
@@ -1059,7 +1059,7 @@ std::unique_ptr<column> cast_variant(column_view const& values,
 }
 
 std::unique_ptr<column> get_variant_type_id(column_view const& values,
-                                            rmm::cuda_stream_view stream,
+                                            cuda::stream_ref stream,
                                             rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();

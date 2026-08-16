@@ -195,7 +195,7 @@ TEST_F(FstTest, GroundTruth)
                std::back_inserter(out_index_cpu));
 
   // Make sure results have been copied back to host
-  stream.sync();
+  stream.synchronize();
 
   // Verify results
   ASSERT_EQ(output_gpu_size[0], output_cpu.size());

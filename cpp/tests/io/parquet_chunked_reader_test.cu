@@ -2417,7 +2417,7 @@ TEST_F(ParquetReaderTest, ManyLargeLists)
                  bools_iter + (num_rows * bools_per_row),
                  bools_col->mutable_view().begin<bool>());
 
-    stream.sync();
+    stream.synchronize();
 
     // list<bool> column
     auto list_col = cudf::make_lists_column(

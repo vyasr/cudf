@@ -1189,7 +1189,7 @@ TEST_F(HybridScanTest, RowGroupPassesMatchesChunkedReader)
       writer.write(chunk_table);
     }
     writer.close();
-    stream.sync();
+    stream.synchronize();
   }
 
   // Pick a pass_read_limit that forces multiple passes but groups some row groups together

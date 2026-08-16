@@ -1,15 +1,24 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
+
+import warnings
 
 import numpy as np
 import pandas as pd
 import pytest
 import scipy.sparse
-import xgboost as xgb
 from sklearn.datasets import make_regression
-from xgboost.testing import IteratorForTest, make_categorical
+
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        category=FutureWarning,
+        message="`rapids-xgboost` will no longer be published.*",
+    )
+    import xgboost as xgb
+    from xgboost.testing import IteratorForTest, make_categorical
 
 n_samples = 128
 n_features = 16

@@ -8,7 +8,7 @@
 #include <cudf/detail/row_operator/lexicographic.cuh>
 #include <cudf/table/table_view.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <vector>
 

@@ -19,7 +19,7 @@
 #include <cub/device/device_transform.cuh>
 #include <cuda/iterator>
 #include <cuda/std/functional>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace detail {

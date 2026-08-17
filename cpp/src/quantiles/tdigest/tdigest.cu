@@ -25,7 +25,7 @@
 #include <cuda/iterator>
 #include <cuda/std/cmath>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>

@@ -12,7 +12,7 @@
 #include <cudf/stream_compaction.hpp>
 #include <cudf/transform.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <jit/helpers.hpp>
 

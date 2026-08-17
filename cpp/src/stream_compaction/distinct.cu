@@ -27,7 +27,7 @@
 #include <rmm/resource_ref.hpp>
 
 #include <cuco/types.cuh>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <memory>
 #include <type_traits>

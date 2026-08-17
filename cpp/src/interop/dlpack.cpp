@@ -12,7 +12,7 @@
 #include <cudf/utilities/type_checks.hpp>
 #include <cudf/utilities/type_dispatcher.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <dlpack/dlpack.h>
 

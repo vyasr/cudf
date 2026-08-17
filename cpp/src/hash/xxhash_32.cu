@@ -10,7 +10,7 @@
 #include <cudf/utilities/error.hpp>
 
 #include <cub/device/device_for.cuh>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf {
 namespace hashing {

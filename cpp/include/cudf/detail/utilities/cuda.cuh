@@ -13,7 +13,7 @@
 
 #include <cub/cub.cuh>
 #include <cuda/std/type_traits>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #endif
 

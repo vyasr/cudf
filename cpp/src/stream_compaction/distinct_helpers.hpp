@@ -23,7 +23,7 @@
 #include <cuco/static_set.cuh>
 #include <cuco/storage.cuh>
 #include <cuda/atomic>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 #include <cstdint>
 #include <limits>

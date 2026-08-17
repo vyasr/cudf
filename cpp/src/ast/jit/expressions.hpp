@@ -8,6 +8,8 @@
 #include <cudf/detail/row_ir/opcode.hpp>
 #include <cudf/table/table_view.hpp>
 
+#include <cuda/stream>
+
 #include <cstdint>
 #include <memory>
 #include <optional>

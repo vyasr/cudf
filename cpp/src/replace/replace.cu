@@ -50,7 +50,7 @@
 
 #include <cuda/std/iterator>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/execution_policy.h>
 #include <thrust/find.h>
 #include <thrust/tuple.h>

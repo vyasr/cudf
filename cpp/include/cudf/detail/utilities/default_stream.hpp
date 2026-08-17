@@ -9,7 +9,7 @@
 
 #include <rmm/cuda_stream.hpp>
 
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace CUDF_EXPORT cudf {
 

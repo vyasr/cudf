@@ -15,7 +15,6 @@
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
-#include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/iterator/transform_iterator.h>
 

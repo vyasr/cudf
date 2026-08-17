@@ -8,6 +8,8 @@
 
 #include <cudf/ast/expressions.hpp>
 
+#include <cuda/stream>
+
 namespace cudf {
 namespace ast {
 namespace jit {

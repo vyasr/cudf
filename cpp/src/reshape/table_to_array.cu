@@ -20,7 +20,7 @@
 #include <cub/device/device_memcpy.cuh>
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 

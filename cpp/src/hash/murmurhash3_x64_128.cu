@@ -15,7 +15,7 @@
 #include <cuda/iterator>
 #include <cuda/std/array>
 #include <cuda/std/limits>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/for_each.h>
 
 namespace cudf {

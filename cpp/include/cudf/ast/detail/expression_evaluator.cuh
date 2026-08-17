@@ -18,7 +18,7 @@
 
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 
 namespace cudf::ast::detail {
 

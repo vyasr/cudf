@@ -15,7 +15,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/stream>
-#include <cuda/stream_ref>
+#include <cuda/stream>
 #include <thrust/copy.h>
 
 namespace cudf::detail {

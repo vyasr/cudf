@@ -548,7 +548,7 @@ TEST_F(FromArrowDeviceTest, StringViewType)
                                 items,
                                 input.length * sizeof(ArrowBinaryView),
                                 cudaMemcpyDefault,
-                                stream.value()));
+                                stream.get()));
   auto variadics     = std::vector<rmm::device_buffer>();
   auto variadic_ptrs = std::vector<char*>();
   for (auto i = 0L; i < view.n_variadic_buffers; ++i) {
@@ -556,7 +556,7 @@ TEST_F(FromArrowDeviceTest, StringViewType)
     variadic_ptrs.push_back(static_cast<char*>(variadics.back().data()));
   }
 
-  stream.synchronize();
+  stream.sync();
 
   NANOARROW_THROW_NOT_OK(ArrowSchemaSetTypeStruct(&schema, 1));
   NANOARROW_THROW_NOT_OK(ArrowSchemaInitFromType(schema.children[0], NANOARROW_TYPE_STRING_VIEW));
@@ -650,14 +650,14 @@ TEST_F(FromArrowDeviceTest, StringViewTypeWithProducerOwnedPrivateData)
                                 items,
                                 input->length * sizeof(ArrowBinaryView),
                                 cudaMemcpyDefault,
-                                stream.value()));
+                                stream.get()));
   auto variadics     = std::vector<rmm::device_buffer>();
   auto variadic_ptrs = std::vector<char*>();
   for (auto i = 0L; i < view.n_variadic_buffers; ++i) {
     variadics.emplace_back(view.variadic_buffers[i], view.variadic_buffer_sizes[i], stream);
     variadic_ptrs.push_back(static_cast<char*>(variadics.back().data()));
   }
-  stream.synchronize();
+  stream.sync();
 
   auto variadic_sizes = std::vector<int64_t>();
   for (auto i = 0L; i < view.n_variadic_buffers; ++i) {

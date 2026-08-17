@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,10 +8,10 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/column/column_view.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/iterator>
+#include <cuda/stream_ref>
 #include <thrust/transform.h>
 
 // Including this declaration/defintion in two_table_comparison_utilities.cu causes
@@ -22,7 +22,7 @@ std::unique_ptr<cudf::column> self_comparison(cudf::table_view input,
                                               std::vector<cudf::order> const& column_order,
                                               PhysicalElementComparator comparator)
 {
-  rmm::cuda_stream_view stream{cudf::get_default_stream()};
+  cuda::stream_ref stream{cudf::get_default_stream()};
 
   auto const table_comparator =
     cudf::detail::row::lexicographic::self_comparator{input, column_order, {}, stream};

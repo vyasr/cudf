@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -17,10 +17,10 @@
 #include <cudf/hashing/detail/xxhash_64.cuh>
 #include <cudf/strings/strings_column_view.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/iterator>
+#include <cuda/stream_ref>
 #include <thrust/transform.h>
 
 template <typename T>
@@ -50,7 +50,7 @@ std::unique_ptr<cudf::column> sorted_order(
   cudf::size_type num_rows,
   bool has_nested,
   PhysicalElementComparator comparator,
-  rmm::cuda_stream_view stream);
+  cuda::stream_ref stream);
 
 TYPED_TEST(TypedTableViewTest, TestLexicographicalComparatorTwoTables)
 {
@@ -291,7 +291,7 @@ struct RowOperatorTest : public cudf::test::BaseFixture {};
 
 TEST_F(RowOperatorTest, TestTwoTableComparatorColumnCountCheck)
 {
-  rmm::cuda_stream_view stream{cudf::get_default_stream()};
+  cuda::stream_ref stream{cudf::get_default_stream()};
 
   auto left_col1         = cudf::test::fixed_width_column_wrapper<int32_t>{{1, 2}};
   auto left_col2         = cudf::test::fixed_width_column_wrapper<int32_t>{{3, 4}};
@@ -311,7 +311,7 @@ TEST_F(RowOperatorTest, TestTwoTableComparatorColumnCountCheck)
 
 TEST_F(RowOperatorTest, TestCheckShapeCompatibility)
 {
-  rmm::cuda_stream_view stream{cudf::get_default_stream()};
+  cuda::stream_ref stream{cudf::get_default_stream()};
 
   auto left_col1_2       = cudf::test::fixed_width_column_wrapper<int32_t>{{1, 2}};
   auto left_col2_2       = cudf::test::fixed_width_column_wrapper<int32_t>{{3, 4}};

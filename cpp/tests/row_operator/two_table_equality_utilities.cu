@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,9 +8,9 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/column/column_view.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/exec_policy.hpp>
 
+#include <cuda/stream_ref>
 #include <thrust/transform.h>
 
 template <typename PhysicalElementComparator>
@@ -19,7 +19,7 @@ std::unique_ptr<cudf::column> two_table_equality(cudf::table_view lhs,
                                                  std::vector<cudf::order> const& column_order,
                                                  PhysicalElementComparator comparator)
 {
-  rmm::cuda_stream_view stream{cudf::get_default_stream()};
+  cuda::stream_ref stream{cudf::get_default_stream()};
 
   auto const table_comparator = cudf::detail::row::equality::two_table_comparator{lhs, rhs, stream};
 

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
@@ -8,7 +8,7 @@
 #include <cudf/detail/row_operator/lexicographic.cuh>
 #include <cudf/table/table_view.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
+#include <cuda/stream_ref>
 
 #include <vector>
 
@@ -37,4 +37,4 @@ std::unique_ptr<cudf::column> sorted_order(
   cudf::size_type num_rows,
   bool has_nested,
   PhysicalElementComparator comparator,
-  rmm::cuda_stream_view stream);
+  cuda::stream_ref stream);

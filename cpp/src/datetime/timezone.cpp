@@ -452,7 +452,7 @@ static int64_t get_transition_time(dst_transition_s const& trans, int year)
 
 std::unique_ptr<table> make_timezone_transition_table(std::optional<std::string_view> tzif_dir,
                                                       std::string_view timezone_name,
-                                                      rmm::cuda_stream_view stream,
+                                                      cuda::stream_ref stream,
                                                       rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();
@@ -463,7 +463,7 @@ namespace detail {
 
 std::unique_ptr<table> make_timezone_transition_table(std::optional<std::string_view> tzif_dir,
                                                       std::string_view timezone_name,
-                                                      rmm::cuda_stream_view stream,
+                                                      cuda::stream_ref stream,
                                                       rmm::device_async_resource_ref mr)
 {
   if (timezone_name == "UTC" || timezone_name.empty()) {
@@ -576,7 +576,7 @@ std::unique_ptr<table> make_timezone_transition_table(std::optional<std::string_
     std::make_unique<cudf::column>(std::move(d_offsets), rmm::device_buffer{}, 0));
 
   // Need to finish copies before transition_times and offsets go out of scope
-  stream.synchronize();
+  stream.sync();
 
   return std::make_unique<cudf::table>(std::move(tz_table_columns));
 }

@@ -408,7 +408,7 @@ class self_comparator {
    * @param stream The stream to construct this object on. Not the stream that will be used for
    * comparisons using this object.
    */
-  self_comparator(table_view const& t, rmm::cuda_stream_view stream)
+  self_comparator(table_view const& t, cuda::stream_ref stream)
     : d_t(preprocessed_table::create(t, stream))
   {
   }
@@ -516,9 +516,7 @@ class two_table_comparator {
    * @param stream The stream to construct this object on. Not the stream that will be used for
    * comparisons using this object.
    */
-  two_table_comparator(table_view const& left,
-                       table_view const& right,
-                       rmm::cuda_stream_view stream);
+  two_table_comparator(table_view const& left, table_view const& right, cuda::stream_ref stream);
 
   /**
    * @brief Construct an owning object for performing equality comparisons between two rows from two

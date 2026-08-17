@@ -7,9 +7,10 @@
 
 #include <cudf/table/table_device_view.cuh>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_buffer.hpp>
 #include <rmm/device_uvector.hpp>
+
+#include <cuda/stream_ref>
 
 #include <memory>
 #include <vector>
@@ -50,7 +51,7 @@ struct preprocessed_table {
    * @return A preprocessed table as shared pointer
    */
   static std::shared_ptr<preprocessed_table> create(table_view const& table,
-                                                    rmm::cuda_stream_view stream);
+                                                    cuda::stream_ref stream);
 
   /**
    * @brief Implicit conversion operator to a `table_device_view` of the preprocessed table.
@@ -70,7 +71,7 @@ struct preprocessed_table {
 
   using table_device_view_owner = std::invoke_result_t<decltype(table_device_view::create),
                                                        table_view,
-                                                       rmm::cuda_stream_view,
+                                                       cuda::stream_ref,
                                                        rmm::device_async_resource_ref>;
 
   preprocessed_table(table_device_view_owner&& table,

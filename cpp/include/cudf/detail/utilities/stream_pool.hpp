@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,7 +8,7 @@
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
+#include <cuda/stream_ref>
 
 #include <cstddef>
 #include <vector>
@@ -28,27 +28,27 @@ class cuda_stream_pool {
   cuda_stream_pool& operator=(cuda_stream_pool&&)      = delete;
 
   /**
-   * @brief Get a `cuda_stream_view` of a stream in the pool.
+   * @brief Get a `cuda::stream_ref` of a stream in the pool.
    *
    * This function is thread safe with respect to other calls to the same function.
    *
    * @return Stream view.
    */
-  virtual rmm::cuda_stream_view get_stream() = 0;
+  virtual cuda::stream_ref get_stream() = 0;
 
   /**
-   * @brief Get a `cuda_stream_view` of the stream associated with `stream_id`.
+   * @brief Get a `cuda::stream_ref` of the stream associated with `stream_id`.
    *
-   * Equivalent values of `stream_id` return a `cuda_stream_view` to the same underlying stream.
+   * Equivalent values of `stream_id` return a `cuda::stream_ref` to the same underlying stream.
    * This function is thread safe with respect to other calls to the same function.
    *
    * @param stream_id Unique identifier for the desired stream
    * @return Requested stream view.
    */
-  virtual rmm::cuda_stream_view get_stream(stream_id_type stream_id) = 0;
+  virtual cuda::stream_ref get_stream(stream_id_type stream_id) = 0;
 
   /**
-   * @brief Get a set of `cuda_stream_view` objects from the pool.
+   * @brief Get a set of `cuda::stream_ref` objects from the pool.
    *
    * An attempt is made to ensure that the returned vector does not contain duplicate
    * streams, but this cannot be guaranteed if `count` is greater than the value returned by
@@ -59,7 +59,7 @@ class cuda_stream_pool {
    * @param count The number of stream views to return.
    * @return Vector containing `count` stream views.
    */
-  virtual std::vector<rmm::cuda_stream_view> get_streams(std::size_t count) = 0;
+  virtual std::vector<cuda::stream_ref> get_streams(std::size_t count) = 0;
 
   /**
    * @brief Get the number of unique stream objects in the pool.
@@ -85,7 +85,7 @@ cuda_stream_pool* create_global_cuda_stream_pool();
 cuda_stream_pool& global_cuda_stream_pool();
 
 /**
- * @brief Acquire a set of `cuda_stream_view` objects and synchronize them to an event on another
+ * @brief Acquire a set of `cuda::stream_ref` objects and synchronize them to an event on another
  * stream.
  *
  * By default an underlying `rmm::cuda_stream_pool` is used to obtain the streams. The only other
@@ -106,11 +106,11 @@ cuda_stream_pool& global_cuda_stream_pool();
  * @endcode
  *
  * @param stream Stream that the returned streams will wait on.
- * @param count The number of `cuda_stream_view` objects to return.
+ * @param count The number of `cuda::stream_ref` objects to return.
  * @return Vector containing `count` stream views.
  */
-[[nodiscard]] std::vector<rmm::cuda_stream_view> fork_streams(rmm::cuda_stream_view stream,
-                                                              std::size_t count);
+[[nodiscard]] std::vector<cuda::stream_ref> fork_streams(cuda::stream_ref stream,
+                                                         std::size_t count);
 
 /**
  * @brief Synchronize a stream to an event on a set of streams.
@@ -118,7 +118,7 @@ cuda_stream_pool& global_cuda_stream_pool();
  * @param streams Streams to wait on.
  * @param stream Joined stream that synchronizes with the waited-on streams.
  */
-void join_streams(host_span<rmm::cuda_stream_view const> streams, rmm::cuda_stream_view stream);
+void join_streams(host_span<cuda::stream_ref const> streams, cuda::stream_ref stream);
 
 }  // namespace detail
 }  // namespace CUDF_EXPORT cudf

@@ -11,8 +11,9 @@
 #include <cudf/interop.hpp>
 #include <cudf/table/table.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/resource_ref.hpp>
+
+#include <cuda/stream_ref>
 
 #include <nanoarrow/nanoarrow.h>
 #include <nanoarrow/nanoarrow.hpp>
@@ -28,7 +29,7 @@ namespace detail {
 namespace {
 
 std::unique_ptr<column> make_empty_column_from_schema(ArrowSchema const* schema,
-                                                      rmm::cuda_stream_view stream,
+                                                      cuda::stream_ref stream,
                                                       rmm::device_async_resource_ref mr)
 {
   ArrowSchemaView schema_view;
@@ -66,7 +67,7 @@ std::unique_ptr<column> make_empty_column_from_schema(ArrowSchema const* schema,
 }  // namespace
 
 std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
-                                         rmm::cuda_stream_view stream,
+                                         cuda::stream_ref stream,
                                          rmm::device_async_resource_ref mr)
 {
   CUDF_EXPECTS(input != nullptr, "input ArrowArrayStream must not be NULL", std::invalid_argument);
@@ -114,7 +115,7 @@ std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
 
   // Ensure all host-to-device copies enqueued above have completed before `sources` releases the
   // host-side Arrow buffers.
-  stream.synchronize();
+  stream.sync();
 
   if (chunks.size() == 1) { return std::move(chunks[0]); }
   auto chunk_views = std::vector<table_view>{};
@@ -127,7 +128,7 @@ std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
 }
 
 std::unique_ptr<column> from_arrow_stream_column(ArrowArrayStream* input,
-                                                 rmm::cuda_stream_view stream,
+                                                 cuda::stream_ref stream,
                                                  rmm::device_async_resource_ref mr)
 {
   CUDF_EXPECTS(input != nullptr, "input ArrowArrayStream must not be NULL", std::invalid_argument);
@@ -163,7 +164,7 @@ std::unique_ptr<column> from_arrow_stream_column(ArrowArrayStream* input,
 
   // Ensure all host-to-device copies enqueued above have completed before `sources` releases the
   // host-side Arrow buffers.
-  stream.synchronize();
+  stream.sync();
 
   if (chunks.size() == 1) { return std::move(chunks[0]); }
   auto chunk_views = std::vector<column_view>{};
@@ -178,7 +179,7 @@ std::unique_ptr<column> from_arrow_stream_column(ArrowArrayStream* input,
 }  // namespace detail
 
 std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
-                                         rmm::cuda_stream_view stream,
+                                         cuda::stream_ref stream,
                                          rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();
@@ -186,7 +187,7 @@ std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
 }
 
 std::unique_ptr<column> from_arrow_stream_column(ArrowArrayStream* input,
-                                                 rmm::cuda_stream_view stream,
+                                                 cuda::stream_ref stream,
                                                  rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();

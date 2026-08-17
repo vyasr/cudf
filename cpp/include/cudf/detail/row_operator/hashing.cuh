@@ -241,7 +241,7 @@ class row_hasher {
    * @param stream The stream to construct this object on. Not the stream that will be used for
    * comparisons using this object.
    */
-  row_hasher(table_view const& t, rmm::cuda_stream_view stream)
+  row_hasher(table_view const& t, cuda::stream_ref stream)
     : d_t(preprocessed_table::create(t, stream))
   {
   }

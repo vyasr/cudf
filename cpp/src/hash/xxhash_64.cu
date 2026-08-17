@@ -9,9 +9,8 @@
 #include <cudf/hashing/detail/xxhash_64.cuh>
 #include <cudf/utilities/error.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
-
 #include <cub/device/device_for.cuh>
+#include <cuda/stream_ref>
 
 namespace cudf {
 namespace hashing {
@@ -21,7 +20,7 @@ using hash_value_type = uint64_t;
 
 std::unique_ptr<column> xxhash_64(table_view const& input,
                                   uint64_t seed,
-                                  rmm::cuda_stream_view stream,
+                                  cuda::stream_ref stream,
                                   rmm::device_async_resource_ref mr)
 {
   auto output = make_numeric_column(data_type(type_to_id<hash_value_type>()),
@@ -43,7 +42,7 @@ std::unique_ptr<column> xxhash_64(table_view const& input,
   CUDF_CUDA_TRY(cub::DeviceFor::Bulk(
     input.num_rows(),
     [output_begin, hasher] __device__(size_type i) mutable { output_begin[i] = hasher(i); },
-    stream.value()));
+    stream.get()));
 
   return output;
 }
@@ -52,7 +51,7 @@ std::unique_ptr<column> xxhash_64(table_view const& input,
 
 std::unique_ptr<column> xxhash_64(table_view const& input,
                                   uint64_t seed,
-                                  rmm::cuda_stream_view stream,
+                                  cuda::stream_ref stream,
                                   rmm::device_async_resource_ref mr)
 {
   CUDF_FUNC_RANGE();

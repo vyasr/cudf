@@ -1,14 +1,15 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
 
 #include <cudf/column/column.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_buffer.hpp>
 #include <rmm/resource_ref.hpp>
+
+#include <cuda/stream_ref>
 
 #include <nanoarrow/nanoarrow.hpp>
 
@@ -29,7 +30,7 @@ std::unique_ptr<column> string_column_from_arrow_host(ArrowSchemaView const* sch
                                                       ArrowArray const* input,
                                                       std::unique_ptr<rmm::device_buffer>&& mask,
                                                       size_type null_count,
-                                                      rmm::cuda_stream_view stream,
+                                                      cuda::stream_ref stream,
                                                       rmm::device_async_resource_ref mr);
 
 /**
@@ -45,7 +46,7 @@ std::unique_ptr<column> string_column_from_arrow_host(ArrowSchemaView const* sch
 std::tuple<std::unique_ptr<column>, int64_t, int64_t> get_offsets_column(
   ArrowSchemaView const* schema,
   ArrowArray const* input,
-  rmm::cuda_stream_view stream,
+  cuda::stream_ref stream,
   rmm::device_async_resource_ref mr);
 
 }  // namespace detail

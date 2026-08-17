@@ -15,12 +15,12 @@
 #include <cudf/utilities/type_checks.hpp>
 #include <cudf/utilities/type_dispatcher.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_uvector.hpp>
 
 #include <cub/device/device_memcpy.cuh>
 #include <cuda/functional>
 #include <cuda/iterator>
+#include <cuda/stream_ref>
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 
@@ -31,7 +31,7 @@ namespace {
 template <typename T>
 void table_to_array_impl(table_view const& input,
                          device_span<cuda::std::byte> output,
-                         rmm::cuda_stream_view stream)
+                         cuda::stream_ref stream)
 {
   auto const num_columns = input.num_columns();
   auto const num_rows    = input.num_rows();
@@ -65,14 +65,14 @@ void table_to_array_impl(table_view const& input,
   cuda::constant_iterator<size_t> sizes(static_cast<size_t>(item_size * num_rows));
 
   cudf::detail::batched_memcpy_async(
-    d_srcs.begin(), d_dsts.begin(), sizes, num_columns, stream.value());
-  stream.synchronize();  // ensures h_srcs and h_dsts are not destroyed before the copy is done
+    d_srcs.begin(), d_dsts.begin(), sizes, num_columns, stream.get());
+  stream.sync();  // ensures h_srcs and h_dsts are not destroyed before the copy is done
 }
 
 struct table_to_array_dispatcher {
   table_view const& input;
   device_span<cuda::std::byte> output;
-  rmm::cuda_stream_view stream;
+  cuda::stream_ref stream;
 
   template <typename T, CUDF_ENABLE_IF(is_fixed_width<T>())>
   void operator()() const
@@ -91,7 +91,7 @@ struct table_to_array_dispatcher {
 
 void table_to_array(table_view const& input,
                     device_span<cuda::std::byte> output,
-                    rmm::cuda_stream_view stream)
+                    cuda::stream_ref stream)
 {
   if (input.num_columns() == 0) return;
 
@@ -105,7 +105,7 @@ void table_to_array(table_view const& input,
 
 void table_to_array(table_view const& input,
                     device_span<cuda::std::byte> output,
-                    rmm::cuda_stream_view stream)
+                    cuda::stream_ref stream)
 {
   CUDF_FUNC_RANGE();
   cudf::detail::table_to_array(input, output, stream);

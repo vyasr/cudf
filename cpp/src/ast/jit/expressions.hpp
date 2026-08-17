@@ -86,7 +86,7 @@ struct operation : public ast::expression {
 
   [[nodiscard]] bool may_evaluate_null(table_view const& left,
                                        table_view const& right,
-                                       rmm::cuda_stream_view stream) const override;
+                                       cuda::stream_ref stream) const override;
 
   /**
    * @copydoc expression::accept

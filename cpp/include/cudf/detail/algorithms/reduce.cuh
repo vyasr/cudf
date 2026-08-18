@@ -15,7 +15,6 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/stream>
-#include <cuda/stream>
 
 namespace cudf::detail {
 

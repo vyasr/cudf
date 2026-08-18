@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION.
+ * SPDX-FileCopyrightText: Copyright (c) 2022-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -48,7 +48,7 @@ std::unique_ptr<cudf::column> arrow_percentile_approx(cudf::column_view const& _
                                 sorted_values.data<double>(),
                                 sizeof(double) * sorted_values.size(),
                                 cudaMemcpyDefault,
-                                stream.value()));
+                                stream.get()));
   std::vector<char> h_validity(sorted_values.size());
   if (sorted_values.null_mask() != nullptr) {
     auto validity = cudf::mask_to_bools(sorted_values.null_mask(), 0, sorted_values.size(), stream);
@@ -56,7 +56,7 @@ std::unique_ptr<cudf::column> arrow_percentile_approx(cudf::column_view const& _
                                   (validity->view().data<char>()),
                                   sizeof(char) * sorted_values.size(),
                                   cudaMemcpyDefault,
-                                  stream.value()));
+                                  stream.get()));
   }
 
   // generate the tdigest
@@ -86,7 +86,7 @@ std::unique_ptr<cudf::column> arrow_percentile_approx(cudf::column_view const& _
   cudf::test::fixed_width_column_wrapper<double> result(h_result.begin(), h_result.end());
   cudf::test::fixed_width_column_wrapper<cudf::size_type> offsets{
     0, static_cast<cudf::size_type>(percentages.size())};
-  stream.synchronize();
+  stream.sync();
   return cudf::make_lists_column(1, offsets.release(), result.release(), 0, {});
 }
 
@@ -180,7 +180,7 @@ void percentile_approx_test(cudf::column_view const& _keys,
         aggregations.push_back(cudf::make_tdigest_aggregation<cudf::groupby_aggregation>(delta));
         requests.push_back({values, std::move(aggregations)});
         auto result = std::move(gb.aggregate(requests, stream).second[0].results[0]);
-        stream.synchronize();
+        stream.sync();
         return result;
       };
       groupby_parts.push_back(cudf::type_dispatcher(values[v_idx].type(),
@@ -200,7 +200,7 @@ void percentile_approx_test(cudf::column_view const& _keys,
                        cudf::data_type{cudf::type_id::STRUCT},
                        stream);
         auto tbl = static_cast<cudf::struct_scalar const*>(scalar_result.get())->view();
-        stream.synchronize();
+        stream.sync();
         std::vector<std::unique_ptr<cudf::column>> cols;
         std::transform(
           tbl.begin(), tbl.end(), std::back_inserter(cols), [](cudf::column_view const& col) {
@@ -216,7 +216,7 @@ void percentile_approx_test(cudf::column_view const& _keys,
                                                    delta,
                                                    percentages,
                                                    ulps));
-      stream.synchronize();
+      stream.sync();
     }
 
     // second pass. run the percentile_approx with all the keys in one pass and make sure we get the
@@ -239,7 +239,7 @@ void percentile_approx_test(cudf::column_view const& _keys,
                                                                  percentages.end());
     cudf::tdigest::tdigest_column_view tdv(*(gb_result.second[0].results[0]));
     auto result = cudf::percentile_approx(tdv, g_percentages, stream);
-    stream.synchronize();
+    stream.sync();
 
     CUDF_TEST_EXPECT_COLUMNS_EQUIVALENT(*expected, *result);
   }
@@ -253,7 +253,7 @@ void simple_test(cudf::data_type input_type, std::vector<std::pair<int, int>> pa
   auto keys = cudf::make_fixed_width_column(
     cudf::data_type{cudf::type_id::INT32}, values->size(), cudf::mask_state::UNALLOCATED);
   CUDF_CUDA_TRY(cudaMemsetAsync(
-    keys->mutable_view().data<int32_t>(), 0, values->size() * sizeof(int32_t), stream.value()));
+    keys->mutable_view().data<int32_t>(), 0, values->size() * sizeof(int32_t), stream.get()));
 
   // runs both groupby and reduce paths
   std::for_each(params.begin(), params.end(), [&](std::pair<int, int> const& params) {
@@ -280,7 +280,7 @@ void grouped_test(cudf::data_type input_type, std::vector<std::pair<int, int>> p
                                 h_keys.data(),
                                 h_keys.size() * sizeof(int32_t),
                                 cudaMemcpyDefault,
-                                stream.value()));
+                                stream.get()));
 
   std::for_each(params.begin(), params.end(), [&](std::pair<int, int> const& params) {
     percentile_approx_test(
@@ -327,7 +327,7 @@ void grouped_with_nulls_test(cudf::data_type input_type, std::vector<std::pair<i
                                 h_keys.data(),
                                 h_keys.size() * sizeof(int32_t),
                                 cudaMemcpyDefault,
-                                stream.value()));
+                                stream.get()));
 
   // add a null mask
   auto mask = make_null_mask(*values);

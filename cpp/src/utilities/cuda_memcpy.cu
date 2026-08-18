@@ -51,6 +51,15 @@ void copy_pageable(void* dst, void const* src, std::size_t size, cuda::stream_re
   CUDF_CUDA_TRY(cudf::detail::memcpy_async(dst, src, size, stream));
 }
 
+#if CUDART_VERSION >= 13000
+bool is_default_stream(cuda::stream_ref stream)
+{
+  auto const cstream = stream.get();
+  return cstream == cudaStreamDefault || cstream == cudaStreamLegacy ||
+         cstream == cudaStreamPerThread;
+}
+#endif  // CUDART_VERSION >= 13000
+
 };  // namespace
 
 cudaError_t memcpy_batch_async(void* const* dsts,
@@ -62,7 +71,7 @@ cudaError_t memcpy_batch_async(void* const* dsts,
 // Uses cudaMemcpyBatchAsync for CUDA 13.0+ to avoid driver-side locking overhead.
 // cudaMemcpyBatchAsync does not support the default stream.
 #if CUDART_VERSION >= 13000
-  if (!stream.is_default()) {
+  if (!is_default_stream(stream)) {
     // Filter out invalid copies (nullptr dst/src or size==0);
     // cudaMemcpyBatchAsync does not support these inputs
     auto is_invalid = [&](auto i) {

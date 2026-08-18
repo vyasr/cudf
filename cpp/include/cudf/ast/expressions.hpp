@@ -12,6 +12,8 @@
 #include <cudf/types.hpp>
 #include <cudf/utilities/error.hpp>
 
+#include <cuda/stream>
+
 #include <cstdint>
 #include <functional>
 #include <initializer_list>

@@ -17,6 +17,7 @@ from pylibcudf.libcudf.table.table_view cimport table_view
 from pylibcudf.libcudf.types cimport size_type
 
 from rmm.librmm.device_buffer cimport device_buffer
+from rmm.librmm.cuda_stream_view cimport cuda_stream_view
 from cuda.bindings.cyruntime cimport cudaStream_t
 from rmm.librmm.memory_resource cimport device_async_resource_ref
 
@@ -121,13 +122,13 @@ cdef extern from "cudf/copying.hpp" namespace "cudf" nogil:
     cdef vector[column_view] slice (
         const column_view& input_column,
         vector[size_type] indices,
-        cudaStream_t stream
+        cuda_stream_view stream
     ) except +libcudf_exception_handler
 
     cdef vector[table_view] slice (
         const table_view& input_table,
         vector[size_type] indices,
-        cudaStream_t stream
+        cuda_stream_view stream
     ) except +libcudf_exception_handler
 
     cdef vector[column_view] split (

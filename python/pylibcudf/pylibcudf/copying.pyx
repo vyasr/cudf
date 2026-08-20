@@ -33,6 +33,7 @@ from pylibcudf.libcudf.copying import \
 from pylibcudf.libcudf.copying import \
     sample_with_replacement as SampleWithReplacement  # no-cython-lint
 
+from rmm.librmm.cuda_stream_view cimport cuda_stream_view
 from rmm.pylibrmm.memory_resource cimport DeviceMemoryResource
 from rmm.pylibrmm.stream cimport Stream
 
@@ -533,7 +534,7 @@ cpdef list slice(
     cdef vector[table_view] c_tbl_result
     cdef int i
     cdef Stream _stream = _get_stream(stream)
-    cdef cudaStream_t _cs = _stream.view().value()
+    cdef cuda_stream_view _stream_view = _stream.view()
 
     cdef column_view c_input_column
     cdef table_view c_input_table
@@ -541,7 +542,7 @@ cpdef list slice(
     if ColumnOrTable is Column:
         c_input_column = input.view()
         with nogil:
-            c_col_result = cpp_copying.slice(c_input_column, c_indices, _cs)
+            c_col_result = cpp_copying.slice(c_input_column, c_indices, _stream_view)
 
         return [
             Column.from_column_view(c_col_result[i], input)
@@ -550,7 +551,7 @@ cpdef list slice(
     else:
         c_input_table = input.view()
         with nogil:
-            c_tbl_result = cpp_copying.slice(c_input_table, c_indices, _cs)
+            c_tbl_result = cpp_copying.slice(c_input_table, c_indices, _stream_view)
 
         return [
             Table.from_table_view(c_tbl_result[i], input)

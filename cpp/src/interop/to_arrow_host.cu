@@ -12,6 +12,7 @@
 #include <cudf/detail/null_mask.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/offsets_iterator_factory.cuh>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/detail/utilities/integer_utils.hpp>
 #include <cudf/dictionary/dictionary_column_view.hpp>
@@ -90,7 +91,8 @@ struct dispatch_to_arrow_host {
                             : column.null_mask(),
       bitmap->buffer.size_bytes,
       stream));
-    stream.sync();  // ensures the bitmap is not destroyed before the copy is completed
+    cudf::detail::sync_stream(
+      stream);  // ensures the bitmap is not destroyed before the copy is completed
     return NANOARROW_OK;
   }
 
@@ -351,7 +353,7 @@ unique_device_array_t to_arrow_host(cudf::table_view const& table,
   // wait for all the stream operations to complete before we return.
   // this ensures that the host memory that we're returning will be populated
   // before we return from this function.
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   return create_device_array(std::move(tmp));
 }
@@ -368,7 +370,7 @@ unique_device_array_t to_arrow_host(cudf::column_view const& col,
   // wait for all the stream operations to complete before we return.
   // this ensures that the host memory that we're returning will be populated
   // before we return from this function.
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   return create_device_array(std::move(tmp));
 }
@@ -462,7 +464,7 @@ unique_device_array_t to_arrow_host_stringview(cudf::strings_column_view const& 
         }));
     auto longer_strings = cudf::strings::detail::make_strings_column(
       indices, indices + col.size(), stream, cudf::get_current_device_resource_ref());
-    stream.sync();
+    cudf::detail::sync_stream(stream);
     auto const sv = cudf::strings_column_view(longer_strings->view());
     return std::pair{std::move(longer_strings), sv};
   }();
@@ -534,7 +536,7 @@ unique_device_array_t to_arrow_host_stringview(cudf::strings_column_view const& 
   out->null_count = col.null_count();
   out->offset     = 0;
 
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return create_device_array(std::move(out));
 }
 }  // namespace detail

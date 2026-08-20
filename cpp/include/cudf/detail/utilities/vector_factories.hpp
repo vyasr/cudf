@@ -10,6 +10,7 @@
  * @file vector_factories.hpp
  */
 
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/detail/utilities/host_memory.hpp>
 #include <cudf/detail/utilities/host_vector.hpp>
@@ -70,7 +71,7 @@ rmm::device_uvector<T> make_zeroed_device_uvector(std::size_t size,
 {
   rmm::device_uvector<T> ret(size, stream, mr);
   CUDF_CUDA_TRY(cudaMemsetAsync(ret.data(), 0, size * sizeof(T), stream.get()));
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return ret;
 }
 
@@ -198,7 +199,7 @@ rmm::device_uvector<T> make_device_uvector(host_span<T const> source_data,
                                            rmm::device_async_resource_ref mr)
 {
   auto ret = make_device_uvector_async(source_data, stream, mr);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return ret;
 }
 
@@ -260,7 +261,7 @@ rmm::device_uvector<T> make_device_uvector(device_span<T const> source_data,
                                            rmm::device_async_resource_ref mr)
 {
   auto ret = make_device_uvector_async(source_data, stream, mr);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return ret;
 }
 
@@ -339,7 +340,7 @@ template <typename T>
 std::vector<T> make_std_vector(device_span<T const> v, cuda::stream_ref stream)
 {
   auto result = make_std_vector_async(v, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return result;
 }
 
@@ -452,7 +453,7 @@ template <typename T>
 host_vector<T> make_host_vector(device_span<T const> v, cuda::stream_ref stream)
 {
   auto result = make_host_vector_async(v, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return result;
 }
 
@@ -521,7 +522,7 @@ template <typename T>
 host_vector<T> make_pinned_vector(size_t size, cuda::stream_ref stream)
 {
   auto result = make_pinned_vector_async<T>(size, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return result;
 }
 
@@ -578,7 +579,7 @@ template <typename T>
 host_vector<T> make_pinned_vector(device_span<T const> v, cuda::stream_ref stream)
 {
   auto result = make_pinned_vector_async(v, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
   return result;
 }
 

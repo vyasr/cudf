@@ -17,6 +17,7 @@
 #include <cudf/detail/sorting.hpp>
 #include <cudf/detail/tdigest/tdigest.hpp>
 #include <cudf/detail/utilities/cuda.cuh>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/grid_1d.cuh>
 #include <cudf/fixed_point/conv.hpp>
 #include <cudf/lists/lists_column_view.hpp>
@@ -791,7 +792,7 @@ cluster_info generate_group_cluster_info(int delta,
   cinfo.cluster_wl = rmm::device_uvector<double>(allocated_clusters, stream, temp_mr);
 
   // sync required after compute_cluster_starts() and before generate_cluster_limits()
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   // fill in the actual cluster weight limits.
   // if we are in the simple case, group_num_clusters will be updated here to reflect the accurate
@@ -822,7 +823,7 @@ cluster_info generate_group_cluster_info(int delta,
     // cluster_start is returned as part of the output, so make sure to use the user supplied mr
     // instead of the current resource.
     cinfo.cluster_start = rmm::device_uvector(p_cluster_start, stream, mr);
-    stream.sync();
+    cudf::detail::sync_stream(stream);
   }
 
   // if we are in the simple case we need to recompute the total clusters. allocated_cluster count
@@ -835,7 +836,7 @@ cluster_info generate_group_cluster_info(int delta,
                        cinfo.num_clusters.end())
       : allocated_clusters;
 
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   return cinfo;
 }
@@ -1150,7 +1151,7 @@ struct typed_group_tdigest {
           col.null_count() > 0,
           stream,
           mr);
-        stream.sync();
+        cudf::detail::sync_stream(stream);
         return ret;
       }
       return generate_group_cluster_info(
@@ -1559,7 +1560,7 @@ std::unique_ptr<column> merge_tdigests(tdigest_column_view const& tdv,
                    _p_group_labels.begin());
       cudf::device_span<size_type const> p_group_labels(_p_group_labels);
 
-      stream.sync();
+      cudf::detail::sync_stream(stream);
       return generate_group_cluster_info(
         delta,
         num_groups,

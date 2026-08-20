@@ -5,6 +5,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/interop.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/error.hpp>
@@ -274,7 +275,7 @@ DLManagedTensor* to_dlpack(table_view const& input,
 
   // synchronize the stream because after the return the data may be accessed from the host before
   // the above async copies have completed (especially if pinned host memory is used).
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   return managed_tensor.release();
 }

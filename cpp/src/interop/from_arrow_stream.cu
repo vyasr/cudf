@@ -8,6 +8,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/concatenate.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/interop.hpp>
 #include <cudf/table/table.hpp>
 
@@ -115,7 +116,7 @@ std::unique_ptr<table> from_arrow_stream(ArrowArrayStream* input,
 
   // Ensure all host-to-device copies enqueued above have completed before `sources` releases the
   // host-side Arrow buffers.
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   if (chunks.size() == 1) { return std::move(chunks[0]); }
   auto chunk_views = std::vector<table_view>{};
@@ -164,7 +165,7 @@ std::unique_ptr<column> from_arrow_stream_column(ArrowArrayStream* input,
 
   // Ensure all host-to-device copies enqueued above have completed before `sources` releases the
   // host-side Arrow buffers.
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   if (chunks.size() == 1) { return std::move(chunks[0]); }
   auto chunk_views = std::vector<column_view>{};

@@ -6,6 +6,7 @@
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/reshape.hpp>
 #include <cudf/detail/utilities/batched_memcpy.hpp>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/reshape.hpp>
 #include <cudf/types.hpp>
@@ -66,7 +67,8 @@ void table_to_array_impl(table_view const& input,
 
   cudf::detail::batched_memcpy_async(
     d_srcs.begin(), d_dsts.begin(), sizes, num_columns, stream.get());
-  stream.sync();  // ensures h_srcs and h_dsts are not destroyed before the copy is done
+  cudf::detail::sync_stream(
+    stream);  // ensures h_srcs and h_dsts are not destroyed before the copy is done
 }
 
 struct table_to_array_dispatcher {

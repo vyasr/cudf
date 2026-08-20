@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/export.hpp>
@@ -143,7 +144,7 @@ class rmm_host_allocator {
     auto const result = mr.allocate(stream, cnt * sizeof(value_type), alignof(value_type));
     // Synchronize to ensure the memory is allocated before thrust::host_vector initialization
     // TODO: replace thrust::host_vector with a type that does not require synchronization
-    stream.sync();
+    cudf::detail::sync_stream(stream);
     return static_cast<pointer>(result);
   }
 

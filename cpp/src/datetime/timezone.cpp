@@ -4,6 +4,7 @@
  */
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/detail/timezone.hpp>
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/table/table.hpp>
 
@@ -576,7 +577,7 @@ std::unique_ptr<table> make_timezone_transition_table(std::optional<std::string_
     std::make_unique<cudf::column>(std::move(d_offsets), rmm::device_buffer{}, 0));
 
   // Need to finish copies before transition_times and offsets go out of scope
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 
   return std::make_unique<cudf::table>(std::move(tz_table_columns));
 }

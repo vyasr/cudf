@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include <cudf/detail/utilities/cuda.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/span.hpp>
@@ -122,7 +123,7 @@ template <typename T>
 void cuda_memcpy(device_span<T> dst, host_span<T const> src, cuda::stream_ref stream)
 {
   cuda_memcpy_async(dst, src, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 }
 
 /**
@@ -138,7 +139,7 @@ template <typename T>
 void cuda_memcpy(host_span<T> dst, device_span<T const> src, cuda::stream_ref stream)
 {
   cuda_memcpy_async(dst, src, stream);
-  stream.sync();
+  cudf::detail::sync_stream(stream);
 }
 
 }  // namespace detail

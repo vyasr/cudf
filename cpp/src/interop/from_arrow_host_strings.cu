@@ -22,11 +22,11 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/cuda_device.hpp>
-#include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_buffer.hpp>
 #include <rmm/device_uvector.hpp>
 
 #include <cuda/iterator>
+#include <cuda/stream>
 #include <thrust/transform.h>
 
 #include <nanoarrow/nanoarrow.h>
@@ -46,7 +46,7 @@ std::unique_ptr<column> from_arrow_string(ArrowSchemaView const* schema,
                                           ArrowArray const* input,
                                           std::unique_ptr<rmm::device_buffer>&& mask,
                                           size_type null_count,
-                                          rmm::cuda_stream_view stream,
+                                          cuda::stream_ref stream,
                                           rmm::device_async_resource_ref mr)
 {
   auto [offsets_column, offset, char_data_length] = get_offsets_column(schema, input, stream, mr);
@@ -67,7 +67,7 @@ constexpr int stringview_vector_idx = 1;
 std::unique_ptr<column> from_arrow_stringview(ArrowSchemaView const* schema,
                                               ArrowArray const* input,
                                               std::unique_ptr<rmm::device_buffer>&& mask,
-                                              rmm::cuda_stream_view stream,
+                                              cuda::stream_ref stream,
                                               rmm::device_async_resource_ref mr)
 {
   ArrowArrayView view;
@@ -113,7 +113,7 @@ std::unique_ptr<column> from_arrow_stringview(ArrowSchemaView const* schema,
       return {data, size};
     });
 
-  stream.synchronize();
+  stream.sync();
   return cudf::make_strings_column(d_indices, stream, mr);
 }
 
@@ -123,7 +123,7 @@ std::unique_ptr<column> string_column_from_arrow_host(ArrowSchemaView const* sch
                                                       ArrowArray const* input,
                                                       std::unique_ptr<rmm::device_buffer>&& mask,
                                                       size_type null_count,
-                                                      rmm::cuda_stream_view stream,
+                                                      cuda::stream_ref stream,
                                                       rmm::device_async_resource_ref mr)
 {
   return schema->type == NANOARROW_TYPE_STRING_VIEW

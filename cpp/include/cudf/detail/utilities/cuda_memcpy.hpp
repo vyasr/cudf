@@ -9,7 +9,7 @@
 #include <cudf/utilities/export.hpp>
 #include <cudf/utilities/span.hpp>
 
-#include <rmm/cuda_stream_view.hpp>
+#include <cuda/stream>
 
 namespace CUDF_EXPORT cudf {
 namespace detail {
@@ -17,7 +17,7 @@ namespace detail {
 enum class host_memory_kind : uint8_t { PINNED, PAGEABLE };
 
 void cuda_memcpy_async_impl(
-  void* dst, void const* src, size_t size, host_memory_kind kind, rmm::cuda_stream_view stream);
+  void* dst, void const* src, size_t size, host_memory_kind kind, cuda::stream_ref stream);
 
 /**
  * @brief Wrapper around cudaMemcpyBatchAsync
@@ -44,7 +44,7 @@ void cuda_memcpy_async_impl(
                                              void const* const* srcs,
                                              std::size_t const* sizes,
                                              std::size_t count,
-                                             rmm::cuda_stream_view stream);
+                                             cuda::stream_ref stream);
 
 /**
  * @brief Asynchronously copies a single buffer, wrapping `memcpy_batch_async`.
@@ -65,7 +65,7 @@ void cuda_memcpy_async_impl(
 [[nodiscard]] cudaError_t memcpy_async(void* dst,
                                        void const* src,
                                        size_t count,
-                                       rmm::cuda_stream_view stream);
+                                       cuda::stream_ref stream);
 
 /**
  * @brief Asynchronously copies data from host to device memory.
@@ -77,7 +77,7 @@ void cuda_memcpy_async_impl(
  * @param stream CUDA stream used for the copy
  */
 template <typename T>
-void cuda_memcpy_async(device_span<T> dst, host_span<T const> src, rmm::cuda_stream_view stream)
+void cuda_memcpy_async(device_span<T> dst, host_span<T const> src, cuda::stream_ref stream)
 {
   CUDF_EXPECTS(dst.size() == src.size(), "Mismatched sizes in cuda_memcpy_async");
   auto const is_pinned = src.is_device_accessible();
@@ -98,7 +98,7 @@ void cuda_memcpy_async(device_span<T> dst, host_span<T const> src, rmm::cuda_str
  * @param stream CUDA stream used for the copy
  */
 template <typename T>
-void cuda_memcpy_async(host_span<T> dst, device_span<T const> src, rmm::cuda_stream_view stream)
+void cuda_memcpy_async(host_span<T> dst, device_span<T const> src, cuda::stream_ref stream)
 {
   CUDF_EXPECTS(dst.size() == src.size(), "Mismatched sizes in cuda_memcpy_async");
   auto const is_pinned = dst.is_device_accessible();
@@ -119,10 +119,10 @@ void cuda_memcpy_async(host_span<T> dst, device_span<T const> src, rmm::cuda_str
  * @param stream CUDA stream used for the copy
  */
 template <typename T>
-void cuda_memcpy(device_span<T> dst, host_span<T const> src, rmm::cuda_stream_view stream)
+void cuda_memcpy(device_span<T> dst, host_span<T const> src, cuda::stream_ref stream)
 {
   cuda_memcpy_async(dst, src, stream);
-  stream.synchronize();
+  stream.sync();
 }
 
 /**
@@ -135,10 +135,10 @@ void cuda_memcpy(device_span<T> dst, host_span<T const> src, rmm::cuda_stream_vi
  * @param stream CUDA stream used for the copy
  */
 template <typename T>
-void cuda_memcpy(host_span<T> dst, device_span<T const> src, rmm::cuda_stream_view stream)
+void cuda_memcpy(host_span<T> dst, device_span<T const> src, cuda::stream_ref stream)
 {
   cuda_memcpy_async(dst, src, stream);
-  stream.synchronize();
+  stream.sync();
 }
 
 }  // namespace detail

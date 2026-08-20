@@ -73,6 +73,7 @@ import array
 import functools
 import operator
 from cuda.bindings.cyruntime cimport cudaStream_t
+from rmm.librmm.cuda_stream_view cimport cuda_stream_view
 
 try:
     import pyarrow as pa
@@ -1300,11 +1301,11 @@ cdef class Column:
             and self.child(0).type().id() == type_id.INT64
         )
         cdef Stream _stream = _get_stream(None)
-        cdef cudaStream_t _cs = _stream.view().value()
+        cdef cuda_stream_view _stream_view = _stream.view()
         cdef ArrowArray* raw_host_array_ptr = NULL
         c_self = self.view()
         with nogil:
-            raw_host_array_ptr = to_arrow_host_raw(c_self, _cs)
+            raw_host_array_ptr = to_arrow_host_raw(c_self, _stream_view)
         try:
             return _arrow_to_pylist_impl(dtype, raw_host_array_ptr, large_offsets)
         finally:
@@ -1491,11 +1492,11 @@ cdef class Column:
     def _to_host_array(self, object stream: CudaStreamLike):
         cdef ArrowArray* raw_host_array_ptr
         cdef Stream _stream = _get_stream(stream)
-        cdef cudaStream_t _cs = _stream.view().value()
+        cdef cuda_stream_view _stream_view = _stream.view()
 
         cdef column_view c_self = self.view()
         with nogil:
-            raw_host_array_ptr = to_arrow_host_raw(c_self, _cs)
+            raw_host_array_ptr = to_arrow_host_raw(c_self, _stream_view)
 
         return PyCapsule_New(<void*>raw_host_array_ptr, "arrow_array", _release_array)
 

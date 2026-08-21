@@ -46,7 +46,7 @@ from pylibcudf._interop_helpers cimport (
     _metadata_to_libcudf,
 )
 from ._interop_helpers import ArrowLike, ColumnMetadata, _ObjectWithArrowMetadata
-from rmm.librmm.cuda_stream_view cimport cuda_stream_view
+from cuda.bindings.cyruntime cimport cudaStream_t
 
 try:
     import pyarrow as pa
@@ -182,7 +182,7 @@ cdef class Table:
         cdef unique_ptr[arrow_table] c_result
 
         cdef Stream _stream = _get_stream(stream)
-        cdef cuda_stream_view _stream_view = _stream.view()
+        cdef cudaStream_t _cs = _stream.view().value()
         mr = _get_memory_resource(mr)
 
         if hasattr(obj, "__arrow_c_device_array__"):
@@ -198,7 +198,7 @@ cdef class Table:
                 c_result = make_unique[arrow_table](
                     move(dereference(c_schema)),
                     move(dereference(c_array)),
-                    _stream_view,
+                    _cs,
                     result.mr.get_mr(),
                 )
             result.tbl.swap(c_result)
@@ -221,7 +221,7 @@ cdef class Table:
             with nogil:
                 c_result = make_unique[arrow_table](
                     move(dereference(c_stream)),
-                    _stream_view,
+                    _cs,
                     result.mr.get_mr(),
                 )
             result.tbl.swap(c_result)
@@ -412,11 +412,11 @@ cdef class Table:
     def _to_host_array(self, object stream: CudaStreamLike):
         cdef ArrowArray* raw_host_array_ptr
         cdef Stream _stream = _get_stream(stream)
-        cdef cuda_stream_view _stream_view = _stream.view()
+        cdef cudaStream_t _cs = _stream.view().value()
         cdef table_view c_self = self.view()
 
         with nogil:
-            raw_host_array_ptr = to_arrow_host_raw(c_self, _stream_view)
+            raw_host_array_ptr = to_arrow_host_raw(c_self, _cs)
 
         return PyCapsule_New(<void*>raw_host_array_ptr, "arrow_array", _release_array)
 

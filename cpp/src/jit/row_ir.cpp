@@ -463,7 +463,11 @@ int32_t instance_context::add_input(input in)
       return col->column.type();
     } else {
       auto& scalar = std::get<scalar_input>(in);
-      return scalar.scalar_column->type();
+      if (auto* s = std::get_if<std::unique_ptr<column>>(&scalar)) {
+        return (*s)->type();
+      } else {
+        return std::get<scalar_column_view>(scalar).type();
+      }
     }
   }();
   inputs_.emplace_back(std::move(in));
@@ -817,7 +821,8 @@ if(expected__{1}.has_value()) {{
 
 std::unique_ptr<row_ir::node> ast_converter::add_ir_node(ast::literal const& expr)
 {
-  auto id = instance_.add_input(expr.get_scalar());
+  auto id = expr.is_scalar_column_view() ? instance_.add_input(expr.get_scalar_column_view())
+                                         : instance_.add_input(expr.get_scalar());
   return std::make_unique<row_ir::node>(input_reference{id});
 }
 
@@ -868,7 +873,14 @@ std::unique_ptr<row_ir::node> ast_converter::add_ir_node(ast::jit::detail::opera
     expr.get_opcode(), expr.get_target_scale(), expr.get_error_policy(), std::move(args));
 }
 
-bool is_nullable(scalar_input const& in) { return in.scalar_column->view().nullable(); }
+bool is_nullable(scalar_input const& in)
+{
+  if (auto* s = std::get_if<std::unique_ptr<column>>(&in)) {
+    return (*s)->nullable();
+  } else {
+    return std::get<scalar_column_view>(in).nullable();
+  }
+}
 
 bool is_nullable(column_input const& in) { return in.column.nullable(); }
 
@@ -968,7 +980,11 @@ std::tuple<std::string, null_aware, std::vector<output_nullability>> ast_convert
 
 std::variant<column_view, scalar_column_view> get_column_view(scalar_input const& in)
 {
-  return scalar_column_view{in.scalar_column->view()};
+  if (auto* s = std::get_if<std::unique_ptr<column>>(&in)) {
+    return scalar_column_view{**s};
+  } else {
+    return std::get<scalar_column_view>(in);
+  }
 }
 
 std::variant<column_view, scalar_column_view> get_column_view(column_input const& in)
@@ -989,18 +1005,20 @@ transform_args ast_converter::compute_table(
 {
   ast_converter converter{stream, mr, left_table, right_table};
 
+  // TODO(lamarrr): consider deduplicating ast expression's input column references. See
+  // TransformTest/1.DeeplyNestedArithmeticLogicalExpression for reference
+
   auto [code, is_null_aware, output_nullabilities] =
     converter.generate_code(target_id, expressions, function_name);
-  std::vector<std::variant<column_view, scalar_column_view>> inputs;
+  std::vector<transform_input> inputs;
   std::vector<std::unique_ptr<column>> scalar_columns;
   std::vector<std::optional<int32_t>> table_sources;
   std::vector<std::optional<int32_t>> column_indices;
 
   for (auto& input : converter.instance_.inputs_) {
-    if (std::holds_alternative<column_input>(input)) {
-      auto& col = std::get<column_input>(input);
-      table_sources.emplace_back(col.table_source);
-      column_indices.emplace_back(col.column_index);
+    if (auto* col = std::get_if<column_input>(&input)) {
+      table_sources.emplace_back(col->table_source);
+      column_indices.emplace_back(col->column_index);
     } else {
       table_sources.emplace_back(std::nullopt);
       column_indices.emplace_back(std::nullopt);
@@ -1009,9 +1027,10 @@ transform_args ast_converter::compute_table(
     auto view = std::visit([](auto& in) { return get_column_view(in); }, input);
     inputs.emplace_back(view);
 
-    if (std::holds_alternative<scalar_input>(input)) {
-      auto& scalar = std::get<scalar_input>(input);
-      scalar_columns.emplace_back(std::move(scalar.scalar_column));
+    if (auto* scalar = std::get_if<scalar_input>(&input)) {
+      if (auto* c = std::get_if<std::unique_ptr<column>>(scalar)) {
+        scalar_columns.emplace_back(std::move(*c));
+      }
     }
   }
 

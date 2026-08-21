@@ -72,10 +72,9 @@ struct target_info {
   target id = target::CUDA;  ///< The target identifier
 };
 
-struct scalar_input {
-  std::unique_ptr<column> scalar_column =
-    nullptr;  ///< The scalar value represented as a column with a single element
-};
+///< The scalar value represented as a column with a single element or a prepared scalar column
+///< view.
+using scalar_input = std::variant<std::unique_ptr<column>, scalar_column_view>;
 
 struct column_input {
   column_view column                  = {};  ///< The column input
@@ -160,8 +159,12 @@ struct [[nodiscard]] instance_context {
 
   [[nodiscard]] int32_t add_input(scalar const& scalar)
   {
-    return add_input(
-      scalar_input{.scalar_column = make_column_from_scalar(scalar, 1, stream_, mr_)});
+    return add_input(scalar_input{make_column_from_scalar(scalar, 1, stream_, mr_)});
+  }
+
+  [[nodiscard]] int32_t add_input(scalar_column_view const& column)
+  {
+    return add_input(scalar_input{column});
   }
 
   [[nodiscard]] int32_t add_input(column_view const& column)

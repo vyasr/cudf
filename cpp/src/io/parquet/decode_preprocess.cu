@@ -388,7 +388,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                            device_span<ColumnChunkDesc const> chunks,
                            cudf::device_span<bool const> page_mask,
                            size_t min_row,
-                           size_t num_rows)
+                           size_t num_rows,
+                           kernel_error::pointer error_code)
 {
   __shared__ __align__(16) page_state_s state_g;
 
@@ -452,6 +453,16 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   // Initialize the stream decoders
   bool const process_nulls = should_process_nulls(s);
+  if ((has_repetition &&
+       s->abs_lvl_end[level_type::REPETITION] < s->abs_lvl_start[level_type::REPETITION]) ||
+      (process_nulls &&
+       s->abs_lvl_end[level_type::DEFINITION] < s->abs_lvl_start[level_type::DEFINITION])) {
+    if (t == 0) {
+      set_error(static_cast<kernel_error::value_type>(decode_error::LEVEL_STREAM_OVERRUN),
+                error_code);
+    }
+    return;
+  }
   if (has_repetition) {
     decoders[level_type::REPETITION].init(block,
                                           s->col.level_bits[level_type::REPETITION],
@@ -535,6 +546,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        size_t min_row,
                        size_t num_rows,
                        int level_type_size,
+                       kernel_error::pointer error_code,
                        rmm::cuda_stream_view stream)
 {
   CUDF_FUNC_RANGE();
@@ -547,12 +559,12 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
   if (level_type_size == 1) {
     preprocess_levels_kernel<uint8_t, level_decode_block_size>
       <<<dim_grid, dim_block, 0, stream.value()>>>(
-        pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+        pages.device_ptr(), chunks, page_mask, min_row, num_rows, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
     preprocess_levels_kernel<uint16_t, level_decode_block_size>
       <<<dim_grid, dim_block, 0, stream.value()>>>(
-        pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+        pages.device_ptr(), chunks, page_mask, min_row, num_rows, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 }

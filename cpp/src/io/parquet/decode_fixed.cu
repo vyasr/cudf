@@ -1098,8 +1098,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     (static_cast<uint32_t>(kernel_mask_t) & STRINGS_MASK_NON_DELTA) != 0;
   constexpr bool is_dict_int32_t = is_dict_int32_output<kernel_mask_t>();
 
-  constexpr int rolling_buf_size    = decode_block_size_t * 2;
-  constexpr int rle_run_buffer_size = rle_stream_required_run_buffer_size<decode_block_size_t>();
+  constexpr int rolling_buf_size = decode_block_size_t * 2;
 
   __shared__ __align__(16) full_page_decode_state state_g;
   constexpr bool use_dict_buffers = has_dict_t || has_bools_t;
@@ -1136,26 +1135,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
 
   bool const process_nulls = should_process_nulls(s);
 
-  // shared buffer. all shared memory is suballocated out of here
-  constexpr int rle_run_buffer_bytes =
-    cudf::util::round_up_unsafe(rle_run_buffer_size * sizeof(rle_run), size_t{16});
-  constexpr int shared_buf_size = cuda::std::max(
-    1, rle_run_buffer_bytes * (static_cast<int>(has_dict_t) + static_cast<int>(has_bools_t)));
-  __shared__ __align__(16) uint8_t shared_buf[shared_buf_size];
-
-  // setup all shared memory buffers
-  int shared_offset = 0;
-
-  auto dict_runs = reinterpret_cast<rle_run*>(shared_buf + shared_offset);
-  if constexpr (has_dict_t) { shared_offset += rle_run_buffer_bytes; }
-
-  auto bool_runs = reinterpret_cast<rle_run*>(shared_buf + shared_offset);
-
   // get the level data
   auto* const def = reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   auto* const rep = reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::REPETITION]);
 
-  rle_stream<uint32_t, decode_block_size_t, rolling_buf_size> dict_stream{dict_runs};
+  // Dictionary indices and booleans are RLE streams too. Use the same
+  // warp-balanced chunked expansion as the level preprocessing path; unlike
+  // the ring-buffer decoder this needs no per-stream rle_run shared buffer.
+  rle_stream_chunked<uint32_t, decode_block_size_t, rolling_buf_size> dict_stream{nullptr};
   if constexpr (has_dict_t) {
     dict_stream.init(block,
                      s->stream.dict_bits,
@@ -1165,8 +1152,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                      s->setup.page.num_input_values);
   }
 
-  // Use dictionary stream memory for bools
-  rle_stream<uint32_t, decode_block_size_t, rolling_buf_size> bool_stream{bool_runs};
+  rle_stream_chunked<uint32_t, decode_block_size_t, rolling_buf_size> bool_stream{nullptr};
   bool bools_are_rle_stream = (s->stream.dict_run == 0);
   if constexpr (has_bools_t) {
     if (bools_are_rle_stream) {

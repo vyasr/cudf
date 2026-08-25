@@ -6,6 +6,7 @@
 #include "delta_binary.cuh"
 #include "io/utilities/column_buffer.hpp"
 #include "page_decode.cuh"
+#include "page_state_composed.cuh"
 #include "reader_impl_chunking_utils.cuh"
 
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -48,7 +49,7 @@ using unused_state_buf = page_state_buffers_s<0, 0, 0>;
  * @param block The cooperative thread block
  */
 template <typename level_t>
-__device__ void update_page_sizes(page_state_s* s,
+__device__ void update_page_sizes(auto* s,
                                   int target_value_count,
                                   level_t const* const rep,
                                   level_t const* const def,
@@ -56,7 +57,7 @@ __device__ void update_page_sizes(page_state_s* s,
                                   cg::thread_block const& block)
 {
   // max nesting depth of the column
-  int const max_depth          = s->col.max_nesting_depth;
+  int const max_depth          = s->setup.col.max_nesting_depth;
   int const t                  = block.thread_rank();
   constexpr int num_warps      = preprocess_block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -69,13 +70,13 @@ __device__ void update_page_sizes(page_state_s* s,
   } temp_storage;
 
   // how many input level values we've processed in the page so far
-  int value_count = s->input_value_count;
+  int value_count = s->progress.input_value_count;
   // how many rows we've processed in the page so far
-  int row_count = s->input_row_count;
+  int row_count = s->progress.input_row_count;
   // how many leaf values we've processed in the page so far
-  int leaf_count = s->input_leaf_count;
+  int leaf_count = s->progress.input_leaf_count;
   // whether or not we need to continue checking for the first row
-  bool skipped_values_set = s->page.skipped_values >= 0;
+  bool skipped_values_set = s->setup.page.skipped_values >= 0;
 
   while (value_count < target_value_count) {
     int const batch_size =
@@ -100,7 +101,7 @@ __device__ void update_page_sizes(page_state_s* s,
       block.sync();
 
       // get absolute thread leaf index
-      int const is_new_leaf = (d >= s->nesting_info[max_depth - 1].max_def_level);
+      int const is_new_leaf = (d >= s->nesting.nesting_info[max_depth - 1].max_def_level);
       int thread_leaf_count, block_leaf_count;
       block_scan(temp_storage.scan_storage)
         .InclusiveSum(is_new_leaf, thread_leaf_count, block_leaf_count);
@@ -108,8 +109,8 @@ __device__ void update_page_sizes(page_state_s* s,
 
       // if this thread is in row bounds
       int const row_index = (thread_row_count + row_count) - 1;
-      in_row_bounds =
-        (row_index >= s->row_index_lower_bound) && (row_index < (s->first_row + s->num_rows));
+      in_row_bounds       = (row_index >= s->progress.row_index_lower_bound) &&
+                      (row_index < (s->setup.first_row + s->setup.num_rows));
 
       // if we have not set skipped values yet, see if we found the first in-bounds row
       if (!skipped_values_set) {
@@ -122,8 +123,8 @@ __device__ void update_page_sizes(page_state_s* s,
         if (global_count > 0) {
           // this is the thread that represents the first row.
           if (local_count == 1 && in_row_bounds) {
-            s->page.skipped_values = value_count + t;
-            s->page.skipped_leaf_values =
+            s->setup.page.skipped_values = value_count + t;
+            s->setup.page.skipped_leaf_values =
               leaf_count + (is_new_leaf ? thread_leaf_count - 1 : thread_leaf_count);
           }
           skipped_values_set = true;
@@ -140,7 +141,7 @@ __device__ void update_page_sizes(page_state_s* s,
       int const count = block_reduce(temp_storage.reduce_storage).Sum(in_nesting_bounds);
       block.sync();
       if (!t) {
-        PageNestingInfo* pni = &s->page.nesting[s_idx];
+        PageNestingInfo* pni = &s->setup.page.nesting[s_idx];
         pni->batch_size += count;
       }
     }
@@ -150,11 +151,11 @@ __device__ void update_page_sizes(page_state_s* s,
 
   // update final outputs
   if (!t) {
-    s->input_value_count = value_count;
+    s->progress.input_value_count = value_count;
 
     // only used in the skip_rows/num_rows case
-    s->input_leaf_count = leaf_count;
-    s->input_row_count  = row_count;
+    s->progress.input_leaf_count = leaf_count;
+    s->progress.input_row_count  = row_count;
   }
 
   block.sync();
@@ -170,7 +171,7 @@ __device__ void update_page_sizes(page_state_s* s,
  * @param[in] block The current thread block cooperative group
  */
 __device__ void compute_page_sizes_for_pruned_pages(PageInfo* page,
-                                                    page_state_s* const state,
+                                                    auto* const state,
                                                     bool has_repetition,
                                                     bool is_base_pass,
                                                     cg::thread_block const& block)
@@ -180,7 +181,7 @@ __device__ void compute_page_sizes_for_pruned_pages(PageInfo* page,
   if (not has_repetition and max_depth == 1) {
     if (!block.thread_rank()) {
       if (is_base_pass) { page->nesting[0].size = page->num_rows; }
-      page->nesting[0].batch_size = state->num_rows;
+      page->nesting[0].batch_size = state->setup.num_rows;
     }
     return;
   }
@@ -214,12 +215,12 @@ __device__ void compute_page_sizes_for_pruned_pages(PageInfo* page,
     // Write size information for all depths up to the list depth
     for (auto depth = warp.thread_rank(); depth < list_depth; depth += warp.size()) {
       if (is_base_pass) { page->nesting[depth].size = page->num_rows; }
-      page->nesting[depth].batch_size = state->num_rows;
+      page->nesting[depth].batch_size = state->setup.num_rows;
     }
     // Write size information at the list depth (zero if no list)
     if (warp.thread_rank() == 0) {
       if (is_base_pass) { page->nesting[list_depth].size = page->num_rows; }
-      page->nesting[list_depth].batch_size = state->num_rows;
+      page->nesting[list_depth].batch_size = state->setup.num_rows;
     }
   }
 }
@@ -248,13 +249,13 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
                             size_t num_rows,
                             bool is_base_pass)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) full_page_decode_state state_g;
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = block.thread_rank();
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = block.thread_rank();
+  PageInfo* pp       = &pages[page_idx];
 
   // whether or not we have repetition levels (lists)
   bool has_repetition = chunks[pp->chunk_idx].max_level[level_type::REPETITION] > 0;
@@ -275,9 +276,9 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
   // it directly.
   if (!has_repetition) {
     int depth = 0;
-    while (depth < s->page.num_output_nesting_levels) {
+    while (depth < s->setup.page.num_output_nesting_levels) {
       auto const thread_depth = depth + t;
-      if (thread_depth < s->page.num_output_nesting_levels) {
+      if (thread_depth < s->setup.page.num_output_nesting_levels) {
         if (is_base_pass) { pp->nesting[thread_depth].size = pp->num_input_values; }
         pp->nesting[thread_depth].batch_size = pp->num_input_values;
       }
@@ -289,15 +290,16 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
   // in the trim pass, for anything with lists, we only need to fully process bounding pages (those
   // at the beginning or the end of the row bounds)
   if (!is_base_pass &&
-      !is_bounds_page(s->page, s->col.start_row, min_row, num_rows, has_repetition)) {
+      !is_bounds_page(s->setup.page, s->setup.col.start_row, min_row, num_rows, has_repetition)) {
     int depth = 0;
-    while (depth < s->page.num_output_nesting_levels) {
+    while (depth < s->setup.page.num_output_nesting_levels) {
       auto const thread_depth = depth + t;
-      if (thread_depth < s->page.num_output_nesting_levels) {
+      if (thread_depth < s->setup.page.num_output_nesting_levels) {
         // if we are not a bounding page (as checked above) then we are either
         // returning all rows/values from this page, or 0 of them
         pp->nesting[thread_depth].batch_size =
-          (s->num_rows == 0 && !is_page_contained(s->page, s->col.start_row, min_row, num_rows))
+          (s->setup.num_rows == 0 &&
+           !is_page_contained(s->setup.page, s->setup.col.start_row, min_row, num_rows))
             ? 0
             : pp->nesting[thread_depth].size;
       }
@@ -308,10 +310,10 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
 
   // zero sizes
   int depth = 0;
-  while (depth < s->page.num_output_nesting_levels) {
+  while (depth < s->setup.page.num_output_nesting_levels) {
     auto const thread_depth = depth + t;
-    if (thread_depth < s->page.num_output_nesting_levels) {
-      s->page.nesting[thread_depth].batch_size = 0;
+    if (thread_depth < s->setup.page.num_output_nesting_levels) {
+      s->setup.page.nesting[thread_depth].batch_size = 0;
     }
     depth += blockDim.x;
   }
@@ -323,24 +325,24 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
                                : reinterpret_cast<level_t*>(pp->lvl_decode_buf[level_type::DEFINITION]);
 
   if (!t) {
-    s->page.skipped_values      = -1;
-    s->page.skipped_leaf_values = 0;
-    s->input_row_count          = 0;
-    s->input_value_count        = 0;
+    s->setup.page.skipped_values      = -1;
+    s->setup.page.skipped_leaf_values = 0;
+    s->progress.input_row_count       = 0;
+    s->progress.input_value_count     = 0;
 
     // in the base pass, we're computing the number of rows, make sure we visit absolutely
     // everything
     if (is_base_pass) {
-      s->first_row             = 0;
-      s->num_rows              = cuda::std::numeric_limits<int32_t>::max();
-      s->row_index_lower_bound = -1;
+      s->setup.first_row                = 0;
+      s->setup.num_rows                 = cuda::std::numeric_limits<int32_t>::max();
+      s->progress.row_index_lower_bound = -1;
     }
   }
 
   block.sync();
 
   // update_page_sizes
-  update_page_sizes<level_t>(s, s->page.num_input_values, rep, def, !is_base_pass, block);
+  update_page_sizes<level_t>(s, s->setup.page.num_input_values, rep, def, !is_base_pass, block);
 
   // update output results:
   // - real number of rows for the whole page
@@ -349,13 +351,13 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
   // - string bytes
   if (is_base_pass) {
     // nesting level 0 is the root column, so the size is also the # of rows
-    if (!t) { pp->num_rows = s->page.nesting[0].batch_size; }
+    if (!t) { pp->num_rows = s->setup.page.nesting[0].batch_size; }
 
     // store off this batch size as the "full" size
     int depth = 0;
-    while (depth < s->page.num_output_nesting_levels) {
+    while (depth < s->setup.page.num_output_nesting_levels) {
       auto const thread_depth = depth + t;
-      if (thread_depth < s->page.num_output_nesting_levels) {
+      if (thread_depth < s->setup.page.num_output_nesting_levels) {
         pp->nesting[thread_depth].size = pp->nesting[thread_depth].batch_size;
       }
       depth += block.size();
@@ -363,8 +365,8 @@ CUDF_KERNEL void __launch_bounds__(preprocess_block_size)
   }
 
   if (!t) {
-    pp->skipped_values      = s->page.skipped_values;
-    pp->skipped_leaf_values = s->page.skipped_leaf_values;
+    pp->skipped_values      = s->setup.page.skipped_values;
+    pp->skipped_leaf_values = s->setup.page.skipped_leaf_values;
   }
 }
 
@@ -391,13 +393,13 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                            size_t num_rows,
                            kernel_error::pointer error_code)
 {
-  __shared__ __align__(16) page_state_s state_g;
+  __shared__ __align__(16) level_scan_state state_g;
 
-  page_state_s* const s = &state_g;
-  auto const block      = cg::this_thread_block();
-  int const page_idx    = cg::this_grid().block_rank();
-  int const t           = block.thread_rank();
-  PageInfo* pp          = &pages[page_idx];
+  auto* const s      = &state_g;
+  auto const block   = cg::this_thread_block();
+  int const page_idx = blockIdx.x;
+  int const t        = block.thread_rank();
+  PageInfo* pp       = &pages[page_idx];
 
   // Return early if this page is pruned
   if (not page_mask.empty() and not page_mask[page_idx]) { return; }
@@ -453,10 +455,10 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   // Initialize the stream decoders
   bool const process_nulls = should_process_nulls(s);
-  if ((has_repetition &&
-       s->abs_lvl_end[level_type::REPETITION] < s->abs_lvl_start[level_type::REPETITION]) ||
-      (process_nulls &&
-       s->abs_lvl_end[level_type::DEFINITION] < s->abs_lvl_start[level_type::DEFINITION])) {
+  if ((has_repetition && s->stream.abs_lvl_end[level_type::REPETITION] <
+                           s->stream.abs_lvl_start[level_type::REPETITION]) ||
+      (process_nulls && s->stream.abs_lvl_end[level_type::DEFINITION] <
+                          s->stream.abs_lvl_start[level_type::DEFINITION])) {
     if (t == 0) {
       set_error(static_cast<kernel_error::value_type>(decode_error::LEVEL_STREAM_OVERRUN),
                 error_code);
@@ -465,9 +467,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   }
   if (has_repetition) {
     decoders[level_type::REPETITION].init(block,
-                                          s->col.level_bits[level_type::REPETITION],
-                                          s->abs_lvl_start[level_type::REPETITION],
-                                          s->abs_lvl_end[level_type::REPETITION],
+                                          s->setup.col.level_bits[level_type::REPETITION],
+                                          s->stream.abs_lvl_start[level_type::REPETITION],
+                                          s->stream.abs_lvl_end[level_type::REPETITION],
                                           rep,
                                           num_to_decode,
                                           stage,
@@ -487,9 +489,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   if (process_nulls) {
     decoders[level_type::DEFINITION].init(block,
-                                          s->col.level_bits[level_type::DEFINITION],
-                                          s->abs_lvl_start[level_type::DEFINITION],
-                                          s->abs_lvl_end[level_type::DEFINITION],
+                                          s->setup.col.level_bits[level_type::DEFINITION],
+                                          s->stream.abs_lvl_start[level_type::DEFINITION],
+                                          s->stream.abs_lvl_end[level_type::DEFINITION],
                                           def,
                                           num_to_decode,
                                           stage,
@@ -512,7 +514,7 @@ void compute_page_sizes(cudf::detail::hostdevice_span<PageInfo> pages,
                         size_t num_rows,
                         bool compute_num_rows,
                         int level_type_size,
-                        rmm::cuda_stream_view stream)
+                        cuda::stream_ref stream)
 {
   CUDF_FUNC_RANGE();
 
@@ -527,11 +529,11 @@ void compute_page_sizes(cudf::detail::hostdevice_span<PageInfo> pages,
   // If uses_custom_row_bounds is set to true, we have to do a second pass later that "trims"
   // the starting and ending read values to account for these bounds.
   if (level_type_size == 1) {
-    compute_page_sizes_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.value()>>>(
+    compute_page_sizes_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, page_mask, min_row, num_rows, compute_num_rows);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    compute_page_sizes_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.value()>>>(
+    compute_page_sizes_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, page_mask, min_row, num_rows, compute_num_rows);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
@@ -547,7 +549,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        size_t num_rows,
                        int level_type_size,
                        kernel_error::pointer error_code,
-                       rmm::cuda_stream_view stream)
+                       cuda::stream_ref stream)
 {
   CUDF_FUNC_RANGE();
 
@@ -558,12 +560,12 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
 
   if (level_type_size == 1) {
     preprocess_levels_kernel<uint8_t, level_decode_block_size>
-      <<<dim_grid, dim_block, 0, stream.value()>>>(
+      <<<dim_grid, dim_block, 0, stream.get()>>>(
         pages.device_ptr(), chunks, page_mask, min_row, num_rows, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
     preprocess_levels_kernel<uint16_t, level_decode_block_size>
-      <<<dim_grid, dim_block, 0, stream.value()>>>(
+      <<<dim_grid, dim_block, 0, stream.get()>>>(
         pages.device_ptr(), chunks, page_mask, min_row, num_rows, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }

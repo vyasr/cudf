@@ -385,18 +385,16 @@ void reader_impl::allocate_level_decode_space()
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
   }
 
-  // Flat strings retain the legacy path until their string-size preprocessing
-  // can consume the same published state. Required pages publish an identity
-  // contract and therefore need no map allocation.
+  // Required pages publish an identity contract and therefore need no map
+  // allocation.
   size_t flat_prepass_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page                       = pages[idx];
-    auto const& chunk                = pass.chunks[page.chunk_idx];
-    bool const enabled               = (_level_prepass_mode & level_prepass_generic_flat) != 0;
-    bool const optional              = chunk.max_level[level_type::DEFINITION] != 0;
-    bool const selected_generic_flat = enabled &&
-                                       page.prepass_family == level_prepass_family::GENERIC_FLAT &&
-                                       BitAnd(page.kernel_mask, STRINGS_MASK) == 0;
+    auto& page          = pages[idx];
+    auto const& chunk   = pass.chunks[page.chunk_idx];
+    bool const enabled  = (_level_prepass_mode & level_prepass_generic_flat) != 0;
+    bool const optional = chunk.max_level[level_type::DEFINITION] != 0;
+    bool const selected_generic_flat =
+      enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
     page.flat_prepass_nz_idx             = nullptr;
     page.flat_prepass_nz_count           = selected_generic_flat ? -2 : -1;
     page.flat_prepass_prefix_valid_count = -1;
@@ -413,8 +411,7 @@ void reader_impl::allocate_level_decode_space()
     auto& page                       = pages[idx];
     auto const& chunk                = pass.chunks[page.chunk_idx];
     bool const selected_generic_flat = (_level_prepass_mode & level_prepass_generic_flat) != 0 &&
-                                       page.prepass_family == level_prepass_family::GENERIC_FLAT &&
-                                       BitAnd(page.kernel_mask, STRINGS_MASK) == 0;
+                                       page.prepass_family == level_prepass_family::GENERIC_FLAT;
     if (selected_generic_flat && chunk.max_level[level_type::DEFINITION] != 0) {
       page.flat_prepass_nz_idx = flat_prepass_ptr;
       flat_prepass_ptr += page.num_input_values;

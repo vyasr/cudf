@@ -1374,6 +1374,19 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     valid_count = next_valid_count;
   }
 
+  if constexpr (use_flat_prepass_t) {
+    if (t == 0) {
+      auto& ni                      = s->nesting.nesting_info[0];
+      auto const page_rows          = min(processed_count, last_row);
+      ni.valid_count                = valid_count;
+      ni.value_count                = page_rows;
+      s->progress.nz_count          = valid_count;
+      s->progress.input_value_count = page_rows;
+      s->progress.input_row_count   = page_rows;
+    }
+    block.sync();
+  }
+
   // Zero-fill null positions after decoding valid values
   if constexpr (has_strings_t || has_lists_t || is_dict_int32_t) {
     if (process_nulls) {
@@ -1400,7 +1413,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     // column construction. Otherwise, convert string sizes to final offsets.
 
     if constexpr (!has_lists_t) {
-      if (!process_nulls) {
+      if constexpr (use_flat_prepass_t) {
+        if (t == 0) {
+          s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].value_count =
+            s->setup.first_row + s->setup.num_rows;
+        }
+        block.sync();
+      } else if (!process_nulls) {
         if (t == 0) {
           s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].value_count =
             s->progress.input_row_count;

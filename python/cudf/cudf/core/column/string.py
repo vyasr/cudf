@@ -647,13 +647,12 @@ class StringColumn(ColumnBase, Scannable):
         width: int,
     ) -> ListColumn:
         with self.access(mode="read", scope="internal"):
-            # Convert int to np.uint32 with validation
             if isinstance(seed, int):
                 if seed < 0 or seed > np.iinfo(np.uint32).max:
                     raise ValueError(
                         f"seed must be in range [0, {np.iinfo(np.uint32).max}]"
                     )
-                seed = np.uint32(seed)
+            seed = int(seed)
             result = plc.nvtext.minhash.minhash(
                 self.plc_column,
                 seed,
@@ -679,13 +678,12 @@ class StringColumn(ColumnBase, Scannable):
         width: int,
     ) -> ListColumn:
         with self.access(mode="read", scope="internal"):
-            # Convert int to np.uint64 with validation
             if isinstance(seed, int):
                 if seed < 0 or seed > np.iinfo(np.uint64).max:
                     raise ValueError(
                         f"seed must be in range [0, {np.iinfo(np.uint64).max}]"
                     )
-                seed = np.uint64(seed)
+            seed = int(seed)
             result = plc.nvtext.minhash.minhash64(
                 self.plc_column,
                 seed,
@@ -744,13 +742,12 @@ class StringColumn(ColumnBase, Scannable):
         self, ngrams: int, seed: int | np.uint32
     ) -> ListColumn:
         with self.access(mode="read", scope="internal"):
-            # Convert int to np.uint32 with validation
             if isinstance(seed, int):
                 if seed < 0 or seed > np.iinfo(np.uint32).max:
                     raise ValueError(
                         f"seed must be in range [0, {np.iinfo(np.uint32).max}]"
                     )
-                seed = np.uint32(seed)
+            seed = int(seed)
             result = plc.nvtext.generate_ngrams.hash_character_ngrams(
                 self.plc_column, ngrams, seed
             )

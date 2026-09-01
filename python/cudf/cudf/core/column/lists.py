@@ -470,13 +470,12 @@ class ListColumn(ColumnBase):
         b: NumericalColumn,
     ) -> Self:
         with self.access(mode="read", scope="internal"):
-            # Convert int to np.uint32 with validation
             if isinstance(seed, int):
                 if seed < 0 or seed > np.iinfo(np.uint32).max:
                     raise ValueError(
                         f"seed must be in range [0, {np.iinfo(np.uint32).max}]"
                     )
-                seed = np.uint32(seed)
+            seed = int(seed)
             return cast(
                 "Self",
                 ColumnBase.create(
@@ -501,13 +500,12 @@ class ListColumn(ColumnBase):
         b: NumericalColumn,
     ) -> Self:
         with self.access(mode="read", scope="internal"):
-            # Convert int to np.uint64 with validation
             if isinstance(seed, int):
                 if seed < 0 or seed > np.iinfo(np.uint64).max:
                     raise ValueError(
                         f"seed must be in range [0, {np.iinfo(np.uint64).max}]"
                     )
-                seed = np.uint64(seed)
+            seed = int(seed)
             return cast(
                 "Self",
                 ColumnBase.create(

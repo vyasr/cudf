@@ -44,7 +44,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const page_idx = blockIdx.x;
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
-  if (!pp->flat_prepass_enabled) { return; }
+  if (!pp->flat_prepass_enabled && !pp->legacy_flat_prepass_enabled) { return; }
   if (!page_mask.empty() && !page_mask[page_idx]) { return; }
 
   auto* const s = &state_g;

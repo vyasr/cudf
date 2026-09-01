@@ -389,18 +389,23 @@ void reader_impl::allocate_level_decode_space()
   // allocation.
   size_t flat_prepass_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page          = pages[idx];
-    auto const& chunk   = pass.chunks[page.chunk_idx];
-    bool const enabled  = (_level_prepass_mode & level_prepass_generic_flat) != 0;
-    bool const optional = chunk.max_level[level_type::DEFINITION] != 0;
+    auto& page                 = pages[idx];
+    auto const& chunk          = pass.chunks[page.chunk_idx];
+    bool const generic_enabled = (_level_prepass_mode & level_prepass_generic_flat) != 0;
+    bool const legacy_enabled  = (_level_prepass_mode & level_prepass_legacy_flat) != 0;
+    bool const optional        = chunk.max_level[level_type::DEFINITION] != 0;
     bool const selected_generic_flat =
-      enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
+      generic_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
+    bool const selected_legacy_flat =
+      legacy_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
+    bool const selected_flat             = selected_generic_flat || selected_legacy_flat;
     page.flat_prepass_nz_idx             = nullptr;
-    page.flat_prepass_nz_count           = selected_generic_flat ? -2 : -1;
+    page.flat_prepass_nz_count           = selected_flat ? -2 : -1;
     page.flat_prepass_prefix_valid_count = -1;
     page.flat_prepass_null_count         = 0;
     page.flat_prepass_enabled            = selected_generic_flat;
-    if (selected_generic_flat && optional) {
+    page.legacy_flat_prepass_enabled     = selected_legacy_flat;
+    if (selected_flat && optional) {
       flat_prepass_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
     }
   }
@@ -408,11 +413,13 @@ void reader_impl::allocate_level_decode_space()
     rmm::device_buffer(flat_prepass_size, _stream, cudf::get_current_device_resource_ref());
   auto* flat_prepass_ptr = static_cast<uint32_t*>(subpass.flat_prepass_data.data());
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page                       = pages[idx];
-    auto const& chunk                = pass.chunks[page.chunk_idx];
-    bool const selected_generic_flat = (_level_prepass_mode & level_prepass_generic_flat) != 0 &&
-                                       page.prepass_family == level_prepass_family::GENERIC_FLAT;
-    if (selected_generic_flat && chunk.max_level[level_type::DEFINITION] != 0) {
+    auto& page               = pages[idx];
+    auto const& chunk        = pass.chunks[page.chunk_idx];
+    bool const selected_flat = (((_level_prepass_mode & level_prepass_generic_flat) != 0 &&
+                                 page.prepass_family == level_prepass_family::GENERIC_FLAT) ||
+                                ((_level_prepass_mode & level_prepass_legacy_flat) != 0 &&
+                                 page.prepass_family == level_prepass_family::LEGACY_FLAT));
+    if (selected_flat && chunk.max_level[level_type::DEFINITION] != 0) {
       page.flat_prepass_nz_idx = flat_prepass_ptr;
       flat_prepass_ptr += page.num_input_values;
     }

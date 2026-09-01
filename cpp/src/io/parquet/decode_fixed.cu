@@ -240,55 +240,6 @@ __device__ void decode_fixed_width_values(
   }
 }
 
-template <typename level_t, int decode_block_size_t>
-CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
-  decode_page_data_generic_prepass(PageInfo* pages,
-                                   device_span<ColumnChunkDesc const> chunks,
-                                   size_t min_row,
-                                   size_t num_rows,
-                                   cudf::device_span<bool const> page_mask,
-                                   kernel_error::pointer error_code)
-{
-  constexpr int rolling_buf_size = decode_block_size_t * 2;
-  __shared__ __align__(16) full_page_decode_state state_g;
-  using state_buf_t = page_state_buffers_s<rolling_buf_size, 1, 1>;
-  __shared__ __align__(16) state_buf_t state_buffers;
-
-  auto const block   = cg::this_thread_block();
-  int const page_idx = cg::this_grid().block_rank();
-  int const t        = block.thread_rank();
-  PageInfo* const pp = &pages[page_idx];
-  if (!BitAnd(pp->kernel_mask, decode_kernel_mask::FIXED_WIDTH_NO_DICT)) { return; }
-  if (!page_mask.empty() && !page_mask[page_idx]) { return; }
-  if (!pp->flat_prepass_enabled || pp->flat_prepass_nz_count < 0) { return; }
-
-  auto* const s  = &state_g;
-  auto* const sb = &state_buffers;
-  [[maybe_unused]] null_count_back_copier _{s, t};
-  if (!setup_local_page_info(s,
-                             pp,
-                             chunks,
-                             min_row,
-                             num_rows,
-                             mask_filter{decode_kernel_mask::FIXED_WIDTH_NO_DICT},
-                             page_processing_stage::DECODE)) {
-    return;
-  }
-
-  int const first_rank = pp->flat_prepass_prefix_valid_count;
-  int const last_rank  = pp->flat_prepass_nz_count;
-  if (t == 0) { s->nesting.nesting_info[0].null_count = pp->flat_prepass_null_count; }
-  block.sync();
-  if (should_process_nulls(s)) {
-    decode_fixed_width_values<decode_block_size_t, false, copy_mode::INDIRECT>(
-      s, sb, first_rank, last_rank, t, pp->flat_prepass_nz_idx);
-  } else {
-    decode_fixed_width_values<decode_block_size_t, false, copy_mode::DIRECT>(
-      s, sb, first_rank, last_rank, t);
-  }
-  if (t == 0 && s->setup.error != 0) { set_error(s->setup.error, error_code); }
-}
-
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
 __device__ inline void decode_fixed_width_split_values(
   auto* s, state_buf* const sb, int start, int end, int t)
@@ -1130,7 +1081,26 @@ CUDF_HOST_DEVICE constexpr bool is_split_decode()
  * string offset buffer
  * @param error_code Error code to set if an error is encountered
  */
-template <typename level_t, int decode_block_size_t, decode_kernel_mask kernel_mask_t>
+/** Return the valid-rank immediately before a raw flat input position. */
+__device__ int flat_prepass_valid_count_before(uint32_t const* nz_idx, int count, int input_pos)
+{
+  int first = 0;
+  int last  = count;
+  while (first < last) {
+    int const middle = first + (last - first) / 2;
+    if (static_cast<int>(nz_idx[middle]) < input_pos) {
+      first = middle + 1;
+    } else {
+      last = middle;
+    }
+  }
+  return first;
+}
+
+template <typename level_t,
+          int decode_block_size_t,
+          decode_kernel_mask kernel_mask_t,
+          bool use_flat_prepass_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
   decode_page_data_generic_legacy(PageInfo* pages,
                                   device_span<ColumnChunkDesc const> chunks,
@@ -1169,9 +1139,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
 
   if (!(BitAnd(pages[page_idx].kernel_mask, kernel_mask_t))) { return; }
 
-  // The flat prepass consumer is launched separately. Keep this legacy kernel
-  // available for every other page that shares this decode mask.
-  if (pages[page_idx].flat_prepass_enabled) { return; }
+  if constexpr (use_flat_prepass_t) {
+    if (!pages[page_idx].flat_prepass_enabled) { return; }
+  } else {
+    // The flat prepass consumer is launched separately. Keep this legacy kernel
+    // available for every other page that shares this decode mask.
+    if (pages[page_idx].flat_prepass_enabled) { return; }
+  }
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
@@ -1248,36 +1222,78 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
   size_t string_output_offset = 0;
   int const init_valid_map_offset =
     s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_map_offset;
+  int const first_row = s->setup.first_row;
+  int const last_row  = first_row + s->setup.num_rows;
 
-  // Skip ahead in the decoding so that we don't repeat work
-  skip_ahead_in_decoding<decode_block_size_t,
-                         rolling_buf_size,
-                         has_lists_t,
-                         has_dict_t,
-                         has_bools_t,
-                         has_nesting_t,
-                         level_t>(s,
-                                  dict_stream,
-                                  bool_stream,
-                                  bools_are_rle_stream,
-                                  process_nulls,
-                                  def,
-                                  processed_count,
-                                  valid_count);
+  if constexpr (use_flat_prepass_t) {
+    // This instantiation is dispatched only for flat generic pages. Preserve
+    // value-stream alignment without replaying the definition-level walk.
+    processed_count = first_row;
+    valid_count     = process_nulls ? flat_prepass_valid_count_before(
+                                    pp->flat_prepass_nz_idx, pp->flat_prepass_nz_count, first_row)
+                                    : first_row;
+    if constexpr (has_dict_t) {
+      skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
+    } else if constexpr (has_bools_t) {
+      if (bools_are_rle_stream) {
+        skip_decode<rolling_buf_size>(bool_stream, valid_count, t);
+      } else if (t == 0) {
+        s->progress.dict_pos = valid_count;
+      }
+    }
+    if (t == 0) {
+      auto& ni                      = s->nesting.nesting_info[0];
+      ni.valid_count                = valid_count;
+      ni.value_count                = processed_count;
+      ni.null_count                 = pp->flat_prepass_null_count;
+      s->progress.nz_count          = valid_count;
+      s->progress.input_value_count = processed_count;
+      s->progress.input_row_count   = processed_count;
+    }
+    block.sync();
+  } else {
+    // Skip ahead in the decoding so that we don't repeat work
+    skip_ahead_in_decoding<decode_block_size_t,
+                           rolling_buf_size,
+                           has_lists_t,
+                           has_dict_t,
+                           has_bools_t,
+                           has_nesting_t,
+                           level_t>(s,
+                                    dict_stream,
+                                    bool_stream,
+                                    bools_are_rle_stream,
+                                    process_nulls,
+                                    def,
+                                    processed_count,
+                                    valid_count);
+  }
 
   // the core loop. decode batches of level stream data using rle_stream objects
   // and pass the results to decode_values
   // For chunked reads we may not process all of the rows on the page; if not stop early
-  int const first_row = s->setup.first_row;
-  int const last_row  = first_row + s->setup.num_rows;
   while ((s->setup.error == 0) && (processed_count < s->setup.page.num_input_values) &&
          (s->progress.input_row_count <= last_row)) {
     int next_valid_count;
     block.sync();
     processed_count += min(rolling_buf_size, s->setup.page.num_input_values - processed_count);
 
-    // only need to process definition levels if this is a nullable column
-    if (process_nulls) {
+    if constexpr (use_flat_prepass_t) {
+      int const capped_target_value_count = min(processed_count, last_row);
+      next_valid_count = process_nulls ? flat_prepass_valid_count_before(pp->flat_prepass_nz_idx,
+                                                                         pp->flat_prepass_nz_count,
+                                                                         capped_target_value_count)
+                                       : capped_target_value_count;
+      for (int map_pos = valid_count + t; map_pos < next_valid_count;
+           map_pos += decode_block_size_t) {
+        sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(map_pos)] =
+          process_nulls ? pp->flat_prepass_nz_idx[map_pos] : map_pos;
+      }
+      if (t == 0) {
+        s->progress.input_row_count =
+          processed_count >= last_row ? last_row + 1 : capped_target_value_count;
+      }
+    } else if (process_nulls) {
       if constexpr (has_lists_t) {
         next_valid_count =
           update_validity_and_row_indices_lists<decode_block_size_t, true, level_t>(
@@ -1438,22 +1454,32 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
     dim3 dim_block(decode_block_size, 1);
     dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
-    if constexpr (mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT) {
-      if (use_flat_prepass) {
-        if (level_type_size == 1) {
-          decode_page_data_generic_prepass<uint8_t, decode_block_size>
-            <<<dim_grid, dim_block, 0, stream.get()>>>(
-              pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
-        } else {
-          decode_page_data_generic_prepass<uint16_t, decode_block_size>
-            <<<dim_grid, dim_block, 0, stream.get()>>>(
-              pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
-        }
-        CUDF_CUDA_TRY(cudaGetLastError());
+    if (use_flat_prepass) {
+      if (level_type_size == 1) {
+        decode_page_data_generic_legacy<uint8_t, decode_block_size, mask, true>
+          <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
+                                                     chunks,
+                                                     min_row,
+                                                     num_rows,
+                                                     page_mask,
+                                                     initial_str_offsets,
+                                                     page_string_offset_indices,
+                                                     error_code);
+      } else {
+        decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, true>
+          <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
+                                                     chunks,
+                                                     min_row,
+                                                     num_rows,
+                                                     page_mask,
+                                                     initial_str_offsets,
+                                                     page_string_offset_indices,
+                                                     error_code);
       }
+      CUDF_CUDA_TRY(cudaGetLastError());
     }
     if (level_type_size == 1) {
-      decode_page_data_generic_legacy<uint8_t, decode_block_size, mask>
+      decode_page_data_generic_legacy<uint8_t, decode_block_size, mask, false>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
                                                    chunks,
                                                    min_row,
@@ -1464,7 +1490,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    error_code);
       CUDF_CUDA_TRY(cudaGetLastError());
     } else {
-      decode_page_data_generic_legacy<uint16_t, decode_block_size, mask>
+      decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
                                                    chunks,
                                                    min_row,

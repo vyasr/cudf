@@ -236,8 +236,16 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   int s_idx = 0;
 
   auto decode_data = [&](decode_kernel_mask decoder_mask) {
-    bool const use_flat_prepass = decoder_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT &&
-                                  (_level_prepass_mode & level_prepass_generic_flat) != 0;
+    bool const flat_generic_mask =
+      decoder_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT ||
+      decoder_mask == decode_kernel_mask::FIXED_WIDTH_DICT ||
+      decoder_mask == decode_kernel_mask::BYTE_STREAM_SPLIT_FIXED_WIDTH_FLAT ||
+      decoder_mask == decode_kernel_mask::BOOLEAN || decoder_mask == decode_kernel_mask::STRING ||
+      decoder_mask == decode_kernel_mask::STRING_DICT ||
+      decoder_mask == decode_kernel_mask::STRING_STREAM_SPLIT ||
+      decoder_mask == decode_kernel_mask::DICT_INT32;
+    bool const use_flat_prepass =
+      flat_generic_mask && (_level_prepass_mode & level_prepass_generic_flat) != 0;
     detail::decode_page_data(subpass.pages,
                              pass.chunks,
                              num_rows,

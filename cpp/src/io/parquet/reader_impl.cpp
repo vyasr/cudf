@@ -219,6 +219,16 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // create this before we fork streams
   kernel_error error_code(_stream);
 
+  if ((_level_prepass_mode & level_prepass_generic_flat) != 0) {
+    precompute_flat_level_state(subpass.pages,
+                                pass.chunks,
+                                subpass_page_mask_span(),
+                                skip_rows,
+                                num_rows,
+                                level_type_size,
+                                _stream);
+  }
+
   // get the number of streams we need from the pool and tell them to wait on the H2D copies
   int const nkernels = std::bitset<32>(kernel_mask).count();
   auto streams       = cudf::detail::fork_streams(_stream, nkernels);
@@ -226,6 +236,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   int s_idx = 0;
 
   auto decode_data = [&](decode_kernel_mask decoder_mask) {
+    bool const use_flat_prepass = decoder_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT &&
+                                  (_level_prepass_mode & level_prepass_generic_flat) != 0;
     detail::decode_page_data(subpass.pages,
                              pass.chunks,
                              num_rows,
@@ -236,7 +248,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                              initial_str_offsets,
                              subpass.page_string_offset_indices,
                              error_code.data(),
-                             streams[s_idx++]);
+                             streams[s_idx++],
+                             use_flat_prepass);
   };
 
   // launch string decoder for plain encoded flat columns

@@ -436,6 +436,14 @@ struct PageInfo {
   decode_kernel_mask kernel_mask;
   level_prepass_family prepass_family{level_prepass_family::NONE};
 
+  // Temporary page-global state for the opt-in generic flat level prepass.
+  // A null map denotes either legacy dispatch or the required-column identity path.
+  uint32_t* flat_prepass_nz_idx{};
+  int32_t flat_prepass_nz_count{-1};
+  int32_t flat_prepass_prefix_valid_count{-1};
+  int32_t flat_prepass_null_count{};
+  bool flat_prepass_enabled{};
+
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.
   uint8_t flags;              // PAGEINFO_FLAGS_XXX
@@ -1166,6 +1174,15 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        int level_type_size,
                        cuda::stream_ref stream);
 
+/** @brief Publish opt-in generic-flat validity and rank state from decoded levels. */
+void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
+                                 cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                                 cudf::device_span<bool const> page_mask,
+                                 size_t min_row,
+                                 size_t num_rows,
+                                 int level_type_size,
+                                 cuda::stream_ref stream);
+
 /**
  * @brief Fills output offset entries for pruned string and list pages
  *
@@ -1213,7 +1230,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       cudf::device_span<size_t> initial_str_offsets,
                       cudf::device_span<size_t const> page_string_offset_indices,
                       kernel_error::pointer error_code,
-                      cuda::stream_ref stream);
+                      cuda::stream_ref stream,
+                      bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for initializing encoder row group fragments

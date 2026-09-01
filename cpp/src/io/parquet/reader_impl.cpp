@@ -219,7 +219,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // create this before we fork streams
   kernel_error error_code(_stream);
 
-  if ((_level_prepass_mode & (level_prepass_generic_flat | level_prepass_legacy_flat)) != 0) {
+  if ((_level_prepass_mode &
+       (level_prepass_generic_flat | level_prepass_legacy_flat | level_prepass_delta_flat)) != 0) {
     precompute_flat_level_state(subpass.pages,
                                 pass.chunks,
                                 subpass_page_mask_span(),
@@ -320,7 +321,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                             subpass_page_mask_span(),
                             initial_str_offsets,
                             error_code.data(),
-                            streams[s_idx++]);
+                            streams[s_idx++],
+                            (_level_prepass_mode & level_prepass_delta_flat) != 0);
   }
 
   // launch delta length byte array decoder
@@ -333,7 +335,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                    subpass_page_mask_span(),
                                    initial_str_offsets,
                                    error_code.data(),
-                                   streams[s_idx++]);
+                                   streams[s_idx++],
+                                   (_level_prepass_mode & level_prepass_delta_flat) != 0);
   }
 
   // launch delta binary decoder
@@ -345,7 +348,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                         level_type_size,
                         subpass_page_mask_span(),
                         error_code.data(),
-                        streams[s_idx++]);
+                        streams[s_idx++],
+                        (_level_prepass_mode & level_prepass_delta_flat) != 0);
   }
 
   // launch byte stream split decoder

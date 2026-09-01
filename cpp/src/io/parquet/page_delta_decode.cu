@@ -353,12 +353,12 @@ struct delta_byte_array_decoder {
 // this kernel only needs 96 threads (3 warps)(for now).
 template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
-  decode_delta_binary_kernel(PageInfo* pages,
-                             device_span<ColumnChunkDesc const> chunks,
-                             size_t min_row,
-                             size_t num_rows,
-                             cudf::device_span<bool const> page_mask,
-                             kernel_error::pointer error_code)
+  decode_delta_binary_kernel_legacy(PageInfo* pages,
+                                    device_span<ColumnChunkDesc const> chunks,
+                                    size_t min_row,
+                                    size_t num_rows,
+                                    cudf::device_span<bool const> page_mask,
+                                    kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
@@ -526,13 +526,13 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
 // to find the start/end of each structure.
 template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
-  decode_delta_byte_array_kernel(PageInfo* pages,
-                                 device_span<ColumnChunkDesc const> chunks,
-                                 size_t min_row,
-                                 size_t num_rows,
-                                 cudf::device_span<bool const> page_mask,
-                                 cudf::device_span<size_t> initial_str_offsets,
-                                 kernel_error::pointer error_code)
+  decode_delta_byte_array_kernel_legacy(PageInfo* pages,
+                                        device_span<ColumnChunkDesc const> chunks,
+                                        size_t min_row,
+                                        size_t num_rows,
+                                        cudf::device_span<bool const> page_mask,
+                                        cudf::device_span<size_t> initial_str_offsets,
+                                        kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_byte_array_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
@@ -748,13 +748,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 // DELTA_BINARY_PACKED array of string lengths, followed by the string data.
 template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
-  decode_delta_length_byte_array_kernel(PageInfo* pages,
-                                        device_span<ColumnChunkDesc const> chunks,
-                                        size_t min_row,
-                                        size_t num_rows,
-                                        cudf::device_span<bool const> page_mask,
-                                        cudf::device_span<size_t> initial_str_offsets,
-                                        kernel_error::pointer error_code)
+  decode_delta_length_byte_array_kernel_legacy(PageInfo* pages,
+                                               device_span<ColumnChunkDesc const> chunks,
+                                               size_t min_row,
+                                               size_t num_rows,
+                                               cudf::device_span<bool const> page_mask,
+                                               cudf::device_span<size_t> initial_str_offsets,
+                                               kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
@@ -987,11 +987,11 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_delta_binary_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_delta_binary_kernel_legacy<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_delta_binary_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_delta_binary_kernel_legacy<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
@@ -1016,11 +1016,11 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 const dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_delta_byte_array_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_delta_byte_array_kernel_legacy<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_delta_byte_array_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_delta_byte_array_kernel_legacy<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
@@ -1045,12 +1045,13 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
   dim3 const dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_delta_length_byte_array_kernel<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_delta_length_byte_array_kernel_legacy<uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_delta_length_byte_array_kernel<uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
-      pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
+    decode_delta_length_byte_array_kernel_legacy<uint16_t>
+      <<<dim_grid, dim_block, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 }

@@ -1080,14 +1080,14 @@ CUDF_HOST_DEVICE constexpr bool is_split_decode()
  */
 template <typename level_t, int decode_block_size_t, decode_kernel_mask kernel_mask_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
-  decode_page_data_generic(PageInfo* pages,
-                           device_span<ColumnChunkDesc const> chunks,
-                           size_t min_row,
-                           size_t num_rows,
-                           cudf::device_span<bool const> page_mask,
-                           cudf::device_span<size_t> initial_str_offsets,
-                           cudf::device_span<size_t const> page_string_offset_indices,
-                           kernel_error::pointer error_code)
+  decode_page_data_generic_legacy(PageInfo* pages,
+                                  device_span<ColumnChunkDesc const> chunks,
+                                  size_t min_row,
+                                  size_t num_rows,
+                                  cudf::device_span<bool const> page_mask,
+                                  cudf::device_span<size_t> initial_str_offsets,
+                                  cudf::device_span<size_t const> page_string_offset_indices,
+                                  kernel_error::pointer error_code)
 {
   constexpr bool has_dict_t     = has_dict<kernel_mask_t>();
   constexpr bool has_bools_t    = has_bools<kernel_mask_t>();
@@ -1382,7 +1382,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
     dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
     if (level_type_size == 1) {
-      decode_page_data_generic<uint8_t, decode_block_size, mask>
+      decode_page_data_generic_legacy<uint8_t, decode_block_size, mask>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
                                                    chunks,
                                                    min_row,
@@ -1393,7 +1393,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    error_code);
       CUDF_CUDA_TRY(cudaGetLastError());
     } else {
-      decode_page_data_generic<uint16_t, decode_block_size, mask>
+      decode_page_data_generic_legacy<uint16_t, decode_block_size, mask>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
                                                    chunks,
                                                    min_row,

@@ -28,12 +28,31 @@
 #include <cuda/std/tuple>
 
 #include <bitset>
+#include <cerrno>
+#include <cstdlib>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <utility>
 
 namespace cudf::io::parquet::detail {
+
+uint32_t level_prepass_mode_from_environment()
+{
+  constexpr char const* name = "LIBCUDF_PARQUET_LEVEL_PREPASS";
+  auto const* value          = std::getenv(name);
+  if (value == nullptr || *value == '\0') { return 0; }
+
+  errno           = 0;
+  char* end       = nullptr;
+  auto const base = value[0] == '0' && (value[1] == 'x' || value[1] == 'X') ? 16 : 10;
+  auto parsed     = std::strtoul(value, &end, base);
+  if (errno != 0 || end == value || *end != '\0' || parsed > level_prepass_all) {
+    CUDF_LOG_WARN("Ignoring invalid %s=%s; using legacy Parquet level decode", name, value);
+    return 0;
+  }
+  return static_cast<uint32_t>(parsed);
+}
 
 void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_rows)
 {
@@ -538,6 +557,14 @@ reader_impl::reader_impl(std::size_t chunk_read_limit,
     _output_chunk_read_limit{chunk_read_limit},
     _input_pass_read_limit{pass_read_limit}
 {
+  _level_prepass_mode = level_prepass_mode_from_environment();
+  if (_level_prepass_mode != 0) {
+    CUDF_LOG_INFO(
+      "LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x; no prepass consumer family "
+      "is enabled in this build",
+      _level_prepass_mode);
+  }
+
   // The direct parquet-dict → DICTIONARY32 transcode fast path only supports single-pass,
   // non-chunked reads.
   if (_options.output_dict_columns and (chunk_read_limit != 0 or pass_read_limit != 0)) {

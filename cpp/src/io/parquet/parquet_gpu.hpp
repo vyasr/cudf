@@ -17,6 +17,7 @@
 #include <cudf/io/detail/codec.hpp>
 #include <cudf/io/parquet_schema.hpp>
 #include <cudf/types.hpp>
+#include <cudf/utilities/export.hpp>
 #include <cudf/utilities/span.hpp>
 
 #include <rmm/device_uvector.hpp>
@@ -260,6 +261,39 @@ enum class decode_kernel_mask {
   DICT_INT32               = (1 << 26),  // Run decode kernel for dict string → INT32 indices
 };
 
+/** @brief Mutually exclusive consumer families used by the temporary prepass selector. */
+enum class level_prepass_family : uint16_t {
+  NONE,
+  GENERIC_FLAT,
+  LEGACY_FLAT,
+  DELTA_FLAT,
+  GENERIC_NESTED,
+  LEGACY_NESTED,
+  DELTA_NESTED,
+  GENERIC_LIST,
+  LEGACY_LIST,
+  DELTA_LIST,
+};
+
+constexpr uint32_t level_prepass_generic_flat   = 0x001;
+constexpr uint32_t level_prepass_legacy_flat    = 0x002;
+constexpr uint32_t level_prepass_delta_flat     = 0x004;
+constexpr uint32_t level_prepass_generic_nested = 0x008;
+constexpr uint32_t level_prepass_legacy_nested  = 0x010;
+constexpr uint32_t level_prepass_delta_nested   = 0x020;
+constexpr uint32_t level_prepass_generic_list   = 0x040;
+constexpr uint32_t level_prepass_legacy_list    = 0x080;
+constexpr uint32_t level_prepass_delta_list     = 0x100;
+constexpr uint32_t level_prepass_all            = 0x1ff;
+
+/**
+ * @brief Read the temporary Parquet level-prepass selector from the environment.
+ *
+ * This is an internal rollout control. Until a family is migrated, its bit is
+ * intentionally inert and the legacy decoder remains selected.
+ */
+CUDF_EXPORT [[nodiscard]] uint32_t level_prepass_mode_from_environment();
+
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
                                                   decode_kernel_mask::STRING_LIST,
@@ -400,6 +434,7 @@ struct PageInfo {
   // while doing chunked reads, persist the value from the page index here.
   int32_t str_bytes_from_index;
   decode_kernel_mask kernel_mask;
+  level_prepass_family prepass_family{level_prepass_family::NONE};
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.

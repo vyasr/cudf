@@ -229,7 +229,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                 level_type_size,
                                 _stream);
   }
-  if ((_level_prepass_mode & level_prepass_generic_nested) != 0) {
+  if ((_level_prepass_mode & (level_prepass_generic_nested | level_prepass_legacy_nested)) != 0) {
     precompute_nested_level_state(subpass.pages,
                                   pass.chunks,
                                   subpass_page_mask_span(),
@@ -397,7 +397,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                            subpass_page_mask_span(),
                            error_code.data(),
                            streams[s_idx++],
-                           (_level_prepass_mode & level_prepass_legacy_flat) != 0);
+                           (_level_prepass_mode & level_prepass_legacy_flat) != 0,
+                           (_level_prepass_mode & level_prepass_legacy_nested) != 0);
   }
 
   // launch fixed width type decoder
@@ -455,7 +456,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                              subpass_page_mask_span(),
                              error_code.data(),
                              streams[s_idx++],
-                             (_level_prepass_mode & level_prepass_legacy_flat) != 0);
+                             (_level_prepass_mode & level_prepass_legacy_flat) != 0,
+                             (_level_prepass_mode & level_prepass_legacy_nested) != 0);
   }
 
   // synchronize the streams

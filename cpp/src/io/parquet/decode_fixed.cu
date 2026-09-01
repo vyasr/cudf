@@ -1747,15 +1747,19 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
 
-  if (!pp->nested_prepass_enabled || pp->nested_prepass_nesting == nullptr) { return; }
+  if ((!pp->nested_prepass_enabled && !pp->legacy_nested_prepass_enabled) ||
+      pp->nested_prepass_nesting == nullptr) {
+    return;
+  }
   if (!page_mask.empty() && !page_mask[page_idx]) { return; }
-  if (!setup_local_page_info(s,
-                             pp,
-                             chunks,
-                             min_row,
-                             num_rows,
-                             mask_filter{NESTED_GENERIC_LEVEL_PREPASS_MASK},
-                             page_processing_stage::DECODE)) {
+  if (!setup_local_page_info(
+        s,
+        pp,
+        chunks,
+        min_row,
+        num_rows,
+        mask_filter{BitOr(NESTED_GENERIC_LEVEL_PREPASS_MASK, NESTED_LEGACY_LEVEL_PREPASS_MASK)},
+        page_processing_stage::DECODE)) {
     return;
   }
 

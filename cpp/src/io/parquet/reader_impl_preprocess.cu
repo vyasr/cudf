@@ -393,18 +393,22 @@ void reader_impl::allocate_level_decode_space()
     auto const& chunk          = pass.chunks[page.chunk_idx];
     bool const generic_enabled = (_level_prepass_mode & level_prepass_generic_flat) != 0;
     bool const legacy_enabled  = (_level_prepass_mode & level_prepass_legacy_flat) != 0;
+    bool const delta_enabled   = (_level_prepass_mode & level_prepass_delta_flat) != 0;
     bool const optional        = chunk.max_level[level_type::DEFINITION] != 0;
     bool const selected_generic_flat =
       generic_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
     bool const selected_legacy_flat =
       legacy_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
-    bool const selected_flat             = selected_generic_flat || selected_legacy_flat;
-    page.flat_prepass_nz_idx             = nullptr;
+    bool const selected_delta_flat =
+      delta_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
+    bool const selected_flat = selected_generic_flat || selected_legacy_flat || selected_delta_flat;
+    page.flat_prepass_nz_idx = nullptr;
     page.flat_prepass_nz_count           = selected_flat ? -2 : -1;
     page.flat_prepass_prefix_valid_count = -1;
     page.flat_prepass_null_count         = 0;
     page.flat_prepass_enabled            = selected_generic_flat;
     page.legacy_flat_prepass_enabled     = selected_legacy_flat;
+    page.delta_flat_prepass_enabled      = selected_delta_flat;
     if (selected_flat && optional) {
       flat_prepass_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
     }
@@ -418,7 +422,9 @@ void reader_impl::allocate_level_decode_space()
     bool const selected_flat = (((_level_prepass_mode & level_prepass_generic_flat) != 0 &&
                                  page.prepass_family == level_prepass_family::GENERIC_FLAT) ||
                                 ((_level_prepass_mode & level_prepass_legacy_flat) != 0 &&
-                                 page.prepass_family == level_prepass_family::LEGACY_FLAT));
+                                 page.prepass_family == level_prepass_family::LEGACY_FLAT) ||
+                                ((_level_prepass_mode & level_prepass_delta_flat) != 0 &&
+                                 page.prepass_family == level_prepass_family::DELTA_FLAT));
     if (selected_flat && chunk.max_level[level_type::DEFINITION] != 0) {
       page.flat_prepass_nz_idx = flat_prepass_ptr;
       flat_prepass_ptr += page.num_input_values;

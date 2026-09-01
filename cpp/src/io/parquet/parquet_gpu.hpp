@@ -446,6 +446,7 @@ struct PageInfo {
   // True when the GENERAL/BYTE_STREAM_SPLIT flat consumer is selected by the
   // temporary dual-path level-prepass selector.
   bool legacy_flat_prepass_enabled{};
+  bool delta_flat_prepass_enabled{};
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.
@@ -1078,7 +1079,8 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          int level_type_size,
                          cudf::device_span<bool const> page_mask,
                          kernel_error::pointer error_code,
-                         cuda::stream_ref stream);
+                         cuda::stream_ref stream,
+                         bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_BYTE_ARRAY column data stored in the pages
@@ -1104,7 +1106,8 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                              cudf::device_span<bool const> page_mask,
                              cudf::device_span<size_t> initial_str_offsets,
                              kernel_error::pointer error_code,
-                             cuda::stream_ref stream);
+                             cuda::stream_ref stream,
+                             bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_LENGTH_BYTE_ARRAY column data stored in the pages
@@ -1130,7 +1133,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     cudf::device_span<bool const> page_mask,
                                     cudf::device_span<size_t> initial_str_offsets,
                                     kernel_error::pointer error_code,
-                                    cuda::stream_ref stream);
+                                    cuda::stream_ref stream,
+                                    bool use_flat_prepass = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

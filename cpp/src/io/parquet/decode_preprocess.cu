@@ -39,6 +39,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ typename cub::BlockScan<int, level_decode_block_size>::TempStorage scan_storage;
+  __shared__ int block_valid_count_shared;
   auto const block   = cg::this_thread_block();
   int const page_idx = blockIdx.x;
   int const t        = block.thread_rank();
@@ -48,13 +49,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   auto* const s = &state_g;
   null_count_back_copier _{s, t};
-  if (!setup_local_page_info(s,
-                             pp,
-                             chunks,
-                             min_row,
-                             num_rows,
-                             mask_filter{decode_kernel_mask::FIXED_WIDTH_NO_DICT},
-                             page_processing_stage::DECODE)) {
+  if (!setup_local_page_info(
+        s, pp, chunks, min_row, num_rows, all_types_filter{}, page_processing_stage::DECODE)) {
     return;
   }
 
@@ -93,7 +89,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                      write_end - write_start);
     }
     if (is_valid) { pp->flat_prepass_nz_idx[valid_count + thread_valid_count] = value_pos; }
-    valid_count += block_valid_count;
+    if (t == 0) { block_valid_count_shared = block_valid_count; }
+    block.sync();
+    valid_count += block_valid_count_shared;
     block.sync();
   }
   if (t == 0) {

@@ -430,6 +430,55 @@ void reader_impl::allocate_level_decode_space()
       flat_prepass_ptr += page.num_input_values;
     }
   }
+
+  // Non-list generic nested pages publish their per-depth decode counters and
+  // a dense valid-rank-to-output-position map.  Keep this allocation wholly
+  // separate from flat staging: the selected nested consumer needs the map
+  // through value decoding, while unselected pages retain untouched legacy
+  // nesting state.
+  size_t nested_prepass_map_size     = 0;
+  size_t nested_prepass_nesting_size = 0;
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page                 = pages[idx];
+    auto const& chunk          = pass.chunks[page.chunk_idx];
+    bool const selected_nested = (_level_prepass_mode & level_prepass_generic_nested) != 0 &&
+                                 page.prepass_family == level_prepass_family::GENERIC_NESTED;
+    page.nested_prepass_nz_idx             = nullptr;
+    page.nested_prepass_nesting            = nullptr;
+    page.nested_prepass_prefix_valid_count = -1;
+    page.nested_prepass_nz_count           = -1;
+    page.nested_prepass_input_value_count  = 0;
+    page.nested_prepass_input_row_count    = 0;
+    page.nested_prepass_enabled            = selected_nested;
+    if (selected_nested) {
+      // Required nested leaves have an identity valid-rank mapping. They
+      // still publish per-depth state, but do not retain a redundant map.
+      if (chunk.max_level[level_type::DEFINITION] != 0) {
+        nested_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+      }
+      nested_prepass_nesting_size +=
+        static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
+    }
+  }
+  auto const nested_prepass_size = nested_prepass_map_size + nested_prepass_nesting_size;
+  subpass.nested_prepass_data =
+    rmm::device_buffer(nested_prepass_size, _stream, cudf::get_current_device_resource_ref());
+  auto* nested_prepass_ptr = static_cast<uint8_t*>(subpass.nested_prepass_data.data());
+  auto* nested_map_ptr     = reinterpret_cast<uint32_t*>(nested_prepass_ptr);
+  auto* nested_nesting_ptr = reinterpret_cast<PageNestingPrepassState*>(
+    nested_prepass_ptr == nullptr ? nullptr : nested_prepass_ptr + nested_prepass_map_size);
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page = pages[idx];
+    if (page.nested_prepass_enabled) {
+      auto const& chunk = pass.chunks[page.chunk_idx];
+      if (chunk.max_level[level_type::DEFINITION] != 0) {
+        page.nested_prepass_nz_idx = nested_map_ptr;
+        nested_map_ptr += page.num_input_values;
+      }
+      page.nested_prepass_nesting = nested_nesting_ptr;
+      nested_nesting_ptr += page.nesting_info_size;
+    }
+  }
 }
 
 namespace {

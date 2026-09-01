@@ -443,6 +443,9 @@ struct PageInfo {
   int32_t flat_prepass_prefix_valid_count{-1};
   int32_t flat_prepass_null_count{};
   bool flat_prepass_enabled{};
+  // True when the GENERAL/BYTE_STREAM_SPLIT flat consumer is selected by the
+  // temporary dual-path level-prepass selector.
+  bool legacy_flat_prepass_enabled{};
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.
@@ -1013,7 +1016,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       int level_type_size,
                       cudf::device_span<bool const> page_mask,
                       kernel_error::pointer error_code,
-                      cuda::stream_ref stream);
+                      cuda::stream_ref stream,
+                      bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for reading the BYTE_STREAM_SPLIT column data stored in the pages
@@ -1037,7 +1041,8 @@ void decode_split_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                             int level_type_size,
                             cudf::device_span<bool const> page_mask,
                             kernel_error::pointer error_code,
-                            cuda::stream_ref stream);
+                            cuda::stream_ref stream,
+                            bool use_flat_prepass = false);
 
 /**
  * @brief Writes the final offsets to the corresponding list and string buffer end addresses in a

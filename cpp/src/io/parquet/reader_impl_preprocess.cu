@@ -331,6 +331,10 @@ void reader_impl::allocate_level_decode_space()
   // Loop over pages to compute sizes
   size_t total_memory_size = 0;
   for (size_t idx = 0; idx < num_pages; idx++) {
+    auto& p           = pages[idx];
+    auto const& chunk = pass.chunks[p.chunk_idx];
+    p.prepass_family  = classify_prepass_family(p, chunk);
+
     // Skip pages that are masked out - no need to allocate level decode space for them
     auto const page_mask = subpass_page_mask_span();
     if (!page_mask.is_empty() && !page_mask[idx]) {
@@ -338,9 +342,6 @@ void reader_impl::allocate_level_decode_space()
       rep_level_sizes[idx] = 0;
       continue;
     }
-
-    auto const& p     = pages[idx];
-    auto const& chunk = pass.chunks[p.chunk_idx];
 
     compute_page_level_decode_sizes(p,
                                     chunk,
@@ -382,6 +383,41 @@ void reader_impl::allocate_level_decode_space()
                  "Repetition level size is not a multiple of the level type size");
     pages[idx].num_decoded_level_values =
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
+  }
+
+  // PR2 only enables the generic flat, plain fixed-width family. Required
+  // pages publish an identity contract and therefore need no map allocation.
+  size_t flat_prepass_size = 0;
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page                      = pages[idx];
+    auto const& chunk               = pass.chunks[page.chunk_idx];
+    bool const enabled              = (_level_prepass_mode & level_prepass_generic_flat) != 0;
+    bool const optional             = chunk.max_level[level_type::DEFINITION] != 0;
+    bool const is_plain_fixed_width = page.kernel_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT;
+    bool const selected_generic_flat =
+      enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT && is_plain_fixed_width;
+    page.flat_prepass_nz_idx             = nullptr;
+    page.flat_prepass_nz_count           = selected_generic_flat ? -2 : -1;
+    page.flat_prepass_prefix_valid_count = -1;
+    page.flat_prepass_null_count         = 0;
+    page.flat_prepass_enabled            = selected_generic_flat;
+    if (selected_generic_flat && optional) {
+      flat_prepass_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+    }
+  }
+  subpass.flat_prepass_data =
+    rmm::device_buffer(flat_prepass_size, _stream, cudf::get_current_device_resource_ref());
+  auto* flat_prepass_ptr = static_cast<uint32_t*>(subpass.flat_prepass_data.data());
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page                       = pages[idx];
+    auto const& chunk                = pass.chunks[page.chunk_idx];
+    bool const selected_generic_flat = (_level_prepass_mode & level_prepass_generic_flat) != 0 &&
+                                       page.prepass_family == level_prepass_family::GENERIC_FLAT &&
+                                       page.kernel_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT;
+    if (selected_generic_flat && chunk.max_level[level_type::DEFINITION] != 0) {
+      page.flat_prepass_nz_idx = flat_prepass_ptr;
+      flat_prepass_ptr += page.num_input_values;
+    }
   }
 }
 
@@ -762,10 +798,6 @@ void reader_impl::preprocess_subpass_pages(read_mode mode, size_t chunk_read_lim
 
   // figure out which kernels to run
   subpass.kernel_mask = get_aggregated_decode_kernel_mask(subpass.pages, _stream);
-  for (size_t page_idx = 0; page_idx < subpass.pages.size(); ++page_idx) {
-    auto& page          = subpass.pages[page_idx];
-    page.prepass_family = classify_prepass_family(page, pass.chunks[page.chunk_idx]);
-  }
 
   // Decode definition and repetition levels for all subpass pages
   // so they're available to compute_page_sizes and decode kernels.

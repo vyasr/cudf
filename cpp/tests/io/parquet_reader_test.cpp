@@ -48,7 +48,10 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
 {
   using cudf::io::parquet::detail::level_prepass_mode_from_environment;
 
-  EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  }
   {
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x101"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0x101);

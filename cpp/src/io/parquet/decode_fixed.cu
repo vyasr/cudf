@@ -149,7 +149,8 @@ __device__ void decode_dict_indices_as_int32(
 }
 
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
-__device__ void decode_fixed_width_values(auto* s, state_buf* const sb, int start, int end, int t)
+__device__ void decode_fixed_width_values(
+  auto* s, state_buf* const sb, int start, int end, int t, uint32_t const* global_nz_idx = nullptr)
 {
   constexpr int num_warps      = block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -171,7 +172,9 @@ __device__ void decode_fixed_width_values(auto* s, state_buf* const sb, int star
       if constexpr (copy_mode_t == copy_mode::DIRECT) {
         return thread_pos - s->setup.first_row;
       } else {
-        int dst_pos = sb->nz_idx[rolling_index<state_buf::nz_buf_size>(thread_pos)];
+        int dst_pos = global_nz_idx == nullptr
+                        ? sb->nz_idx[rolling_index<state_buf::nz_buf_size>(thread_pos)]
+                        : global_nz_idx[thread_pos];
         if constexpr (!has_lists_t) { dst_pos -= s->setup.first_row; }
         return dst_pos;
       }
@@ -235,6 +238,55 @@ __device__ void decode_fixed_width_values(auto* s, state_buf* const sb, int star
 
     thread_pos += max_batch_size;
   }
+}
+
+template <typename level_t, int decode_block_size_t>
+CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
+  decode_page_data_generic_prepass(PageInfo* pages,
+                                   device_span<ColumnChunkDesc const> chunks,
+                                   size_t min_row,
+                                   size_t num_rows,
+                                   cudf::device_span<bool const> page_mask,
+                                   kernel_error::pointer error_code)
+{
+  constexpr int rolling_buf_size = decode_block_size_t * 2;
+  __shared__ __align__(16) full_page_decode_state state_g;
+  using state_buf_t = page_state_buffers_s<rolling_buf_size, 1, 1>;
+  __shared__ __align__(16) state_buf_t state_buffers;
+
+  auto const block   = cg::this_thread_block();
+  int const page_idx = cg::this_grid().block_rank();
+  int const t        = block.thread_rank();
+  PageInfo* const pp = &pages[page_idx];
+  if (!BitAnd(pp->kernel_mask, decode_kernel_mask::FIXED_WIDTH_NO_DICT)) { return; }
+  if (!page_mask.empty() && !page_mask[page_idx]) { return; }
+  if (!pp->flat_prepass_enabled || pp->flat_prepass_nz_count < 0) { return; }
+
+  auto* const s  = &state_g;
+  auto* const sb = &state_buffers;
+  [[maybe_unused]] null_count_back_copier _{s, t};
+  if (!setup_local_page_info(s,
+                             pp,
+                             chunks,
+                             min_row,
+                             num_rows,
+                             mask_filter{decode_kernel_mask::FIXED_WIDTH_NO_DICT},
+                             page_processing_stage::DECODE)) {
+    return;
+  }
+
+  int const first_rank = pp->flat_prepass_prefix_valid_count;
+  int const last_rank  = pp->flat_prepass_nz_count;
+  if (t == 0) { s->nesting.nesting_info[0].null_count = pp->flat_prepass_null_count; }
+  block.sync();
+  if (should_process_nulls(s)) {
+    decode_fixed_width_values<decode_block_size_t, false, copy_mode::INDIRECT>(
+      s, sb, first_rank, last_rank, t, pp->flat_prepass_nz_idx);
+  } else {
+    decode_fixed_width_values<decode_block_size_t, false, copy_mode::DIRECT>(
+      s, sb, first_rank, last_rank, t);
+  }
+  if (t == 0 && s->setup.error != 0) { set_error(s->setup.error, error_code); }
 }
 
 template <int block_size, bool has_lists_t, copy_mode copy_mode_t, typename state_buf>
@@ -1117,6 +1169,10 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
 
   if (!(BitAnd(pages[page_idx].kernel_mask, kernel_mask_t))) { return; }
 
+  // The flat prepass consumer is launched separately. Keep this legacy kernel
+  // available for every other page that shares this decode mask.
+  if (pages[page_idx].flat_prepass_enabled) { return; }
+
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
 
@@ -1371,7 +1427,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       cudf::device_span<size_t> initial_str_offsets,
                       cudf::device_span<size_t const> page_string_offset_indices,
                       kernel_error::pointer error_code,
-                      cuda::stream_ref stream)
+                      cuda::stream_ref stream,
+                      bool use_flat_prepass)
 {
   // No template parameters on lambdas until C++20, so use type tags instead
   auto launch_kernel = [&](auto block_size_tag, auto kernel_mask_tag) {
@@ -1381,6 +1438,20 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
     dim3 dim_block(decode_block_size, 1);
     dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
+    if constexpr (mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT) {
+      if (use_flat_prepass) {
+        if (level_type_size == 1) {
+          decode_page_data_generic_prepass<uint8_t, decode_block_size>
+            <<<dim_grid, dim_block, 0, stream.get()>>>(
+              pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
+        } else {
+          decode_page_data_generic_prepass<uint16_t, decode_block_size>
+            <<<dim_grid, dim_block, 0, stream.get()>>>(
+              pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
+        }
+        CUDF_CUDA_TRY(cudaGetLastError());
+      }
+    }
     if (level_type_size == 1) {
       decode_page_data_generic_legacy<uint8_t, decode_block_size, mask>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),

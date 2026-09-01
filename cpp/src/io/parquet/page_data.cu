@@ -43,12 +43,12 @@ constexpr int rolling_buf_size  = decode_block_size * 2;
  */
 template <int lvl_buf_size, typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
-  decode_split_page_data_kernel(PageInfo* pages,
-                                device_span<ColumnChunkDesc const> chunks,
-                                size_t min_row,
-                                size_t num_rows,
-                                cudf::device_span<bool const> page_mask,
-                                kernel_error::pointer error_code)
+  decode_split_page_data_kernel_legacy(PageInfo* pages,
+                                       device_span<ColumnChunkDesc const> chunks,
+                                       size_t min_row,
+                                       size_t num_rows,
+                                       cudf::device_span<bool const> page_mask,
+                                       kernel_error::pointer error_code)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ __align__(16)
@@ -257,12 +257,12 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
  */
 template <int lvl_buf_size, typename level_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
-  decode_page_data(PageInfo* pages,
-                   device_span<ColumnChunkDesc const> chunks,
-                   size_t min_row,
-                   size_t num_rows,
-                   cudf::device_span<bool const> page_mask,
-                   kernel_error::pointer error_code)
+  decode_page_data_legacy(PageInfo* pages,
+                          device_span<ColumnChunkDesc const> chunks,
+                          size_t min_row,
+                          size_t num_rows,
+                          cudf::device_span<bool const> page_mask,
+                          kernel_error::pointer error_code)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ __align__(16)
@@ -527,11 +527,11 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_page_data<rolling_buf_size, uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_page_data_legacy<rolling_buf_size, uint8_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_page_data<rolling_buf_size, uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
+    decode_page_data_legacy<rolling_buf_size, uint16_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
@@ -555,12 +555,12 @@ void decode_split_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
 
   if (level_type_size == 1) {
-    decode_split_page_data_kernel<rolling_buf_size, uint8_t>
+    decode_split_page_data_kernel_legacy<rolling_buf_size, uint8_t>
       <<<dim_grid, dim_block, 0, stream.get()>>>(
         pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
   } else {
-    decode_split_page_data_kernel<rolling_buf_size, uint16_t>
+    decode_split_page_data_kernel_legacy<rolling_buf_size, uint16_t>
       <<<dim_grid, dim_block, 0, stream.get()>>>(
         pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());

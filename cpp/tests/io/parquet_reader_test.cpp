@@ -88,6 +88,29 @@ TEST_F(ParquetReaderTest, ManyTinyStringPages)
   CUDF_TEST_EXPECT_TABLES_EQUAL(input, result.tbl->view());
 }
 
+TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
+{
+  using cudf::io::parquet::detail::level_prepass_mode_from_environment;
+
+  EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x101"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x101);
+  }
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "511"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x1ff);
+  }
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x200"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  }
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "invalid"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  }
+}
+
 TEST_F(ParquetReaderTest, UserBounds)
 {
   // trying to read more rows than there are should result in

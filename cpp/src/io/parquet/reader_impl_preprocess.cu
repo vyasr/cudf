@@ -41,6 +41,38 @@
 namespace cudf::io::parquet::detail {
 
 namespace {
+
+[[nodiscard]] level_prepass_family classify_prepass_family(PageInfo const& page,
+                                                           ColumnChunkDesc const& chunk)
+{
+  bool const is_list   = chunk.max_level[level_type::REPETITION] > 0;
+  bool const is_nested = !is_list && chunk.max_nesting_depth > 1;
+  bool const is_delta  = BitAnd(page.kernel_mask,
+                               BitOr(decode_kernel_mask::DELTA_BINARY,
+                                     decode_kernel_mask::DELTA_BYTE_ARRAY,
+                                     decode_kernel_mask::DELTA_LENGTH_BA)) != 0;
+  bool const is_legacy =
+    BitAnd(page.kernel_mask,
+           BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT)) != 0;
+
+  if (is_list) {
+    return is_delta    ? level_prepass_family::DELTA_LIST
+           : is_legacy ? level_prepass_family::LEGACY_LIST
+                       : level_prepass_family::GENERIC_LIST;
+  }
+  if (is_nested) {
+    return is_delta    ? level_prepass_family::DELTA_NESTED
+           : is_legacy ? level_prepass_family::LEGACY_NESTED
+                       : level_prepass_family::GENERIC_NESTED;
+  }
+  return is_delta    ? level_prepass_family::DELTA_FLAT
+         : is_legacy ? level_prepass_family::LEGACY_FLAT
+                     : level_prepass_family::GENERIC_FLAT;
+}
+
+}  // namespace
+
+namespace {
 // Tests the passed in logical type for a FIXED_LENGTH_BYTE_ARRAY column to see if it should
 // be treated as a string. Currently the only logical type that has special handling is DECIMAL.
 // Other valid types in the future would be UUID (still treated as string) and FLOAT16 (which
@@ -730,6 +762,10 @@ void reader_impl::preprocess_subpass_pages(read_mode mode, size_t chunk_read_lim
 
   // figure out which kernels to run
   subpass.kernel_mask = get_aggregated_decode_kernel_mask(subpass.pages, _stream);
+  for (size_t page_idx = 0; page_idx < subpass.pages.size(); ++page_idx) {
+    auto& page          = subpass.pages[page_idx];
+    page.prepass_family = classify_prepass_family(page, pass.chunks[page.chunk_idx]);
+  }
 
   // Decode definition and repetition levels for all subpass pages
   // so they're available to compute_page_sizes and decode kernels.

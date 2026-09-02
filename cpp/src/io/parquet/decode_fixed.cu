@@ -412,10 +412,20 @@ struct rolling_nz_idx_sink {
   }
 };
 
-struct global_nz_idx_sink {
+/** @brief Write a page-local leaf-valid-rank to output-position map. */
+struct page_local_nz_idx_sink {
   uint32_t* indices;
+  int rank_base;
 
-  __device__ void store(int valid_rank, uint32_t dst_pos) const { indices[valid_rank] = dst_pos; }
+  __device__ void store(int valid_rank, uint32_t dst_pos) const
+  {
+    indices[valid_rank - rank_base] = dst_pos;
+  }
+};
+
+/** @brief Preserve level-state side effects without materializing a map. */
+struct discard_nz_idx_sink {
+  __device__ void store(int, int) const {}
 };
 
 template <int decode_block_size, typename level_t, typename nz_idx_sink>
@@ -534,6 +544,118 @@ __device__ int update_validity_and_row_indices_nested(
     s->progress.nz_count          = max_depth_valid_count;
     s->progress.input_value_count = value_count;
     s->progress.input_row_count   = value_count;
+  }
+
+  return max_depth_valid_count;
+}
+
+/**
+ * @brief Publish the complete non-list nested level state into page-global storage.
+ *
+ * This is intentionally separate from the legacy generic decoder helper above.
+ * Its map is page-local even though the state restored by setup_local_page_info()
+ * may carry a non-zero valid-rank base from prior output work.
+ */
+template <int decode_block_size, typename level_t, typename nz_idx_sink>
+__device__ int update_nested_level_prepass(int32_t target_value_count,
+                                           auto* s,
+                                           nz_idx_sink sink,
+                                           level_t const* const def,
+                                           int* const prefix_valid_count,
+                                           int const map_rank_base,
+                                           int t)
+{
+  constexpr int num_warps      = decode_block_size / cudf::detail::warp_size;
+  constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
+
+  int value_count = s->progress.input_value_count;
+
+  int const first_row                 = s->setup.first_row;
+  int const last_row                  = first_row + s->setup.num_rows;
+  int const capped_target_value_count = min(target_value_count, last_row);
+
+  int const max_depth       = s->setup.col.max_nesting_depth - 1;
+  auto& max_depth_ni        = s->nesting.nesting_info[max_depth];
+  int max_depth_valid_count = max_depth_ni.valid_count;
+
+  using block_scan   = cub::BlockScan<int, decode_block_size>;
+  using block_reduce = cub::BlockReduce<int, decode_block_size>;
+  __shared__ union {
+    typename block_scan::TempStorage scan_storage;
+    typename block_reduce::TempStorage reduce_storage;
+  } temp_storage;
+
+  __syncthreads();
+
+  while (value_count < capped_target_value_count) {
+    int const batch_size = min(max_batch_size, capped_target_value_count - value_count);
+    int const def_level  = (t >= batch_size)
+                             ? -1
+                             : ((def != nullptr) ? def[value_count + t]
+                                                 : s->setup.col.max_level[level_type::DEFINITION]);
+
+    int const row_index                     = t + value_count;
+    int const in_row_bounds                 = row_index < last_row;
+    bool const in_write_row_bounds          = in_row_bounds && row_index >= first_row;
+    uint32_t const in_write_row_bounds_mask = ballot(in_write_row_bounds);
+    int const write_start                   = __ffs(in_write_row_bounds_mask) - 1;
+
+    for (int d_idx = 0; d_idx <= max_depth; ++d_idx) {
+      auto& ni           = s->nesting.nesting_info[d_idx];
+      int const is_valid = (def_level >= ni.max_def_level && in_row_bounds) ? 1 : 0;
+
+      int thread_valid_count, block_valid_count;
+      block_scan(temp_storage.scan_storage)
+        .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+
+      __syncthreads();
+      int const selected_valid_count =
+        block_reduce(temp_storage.reduce_storage).Sum(is_valid && in_write_row_bounds);
+      __syncthreads();
+
+      if (ni.valid_map != nullptr) {
+        uint32_t const warp_validity_mask = ballot(is_valid);
+        if (write_start >= 0 && (t % cudf::detail::warp_size) == 0) {
+          int const vindex     = value_count + t;
+          int const bit_offset = ni.valid_map_offset + vindex + write_start - first_row;
+          int const write_end  = cudf::detail::warp_size - __clz(in_write_row_bounds_mask);
+          store_validity(
+            bit_offset, ni.valid_map, warp_validity_mask >> write_start, write_end - write_start);
+        }
+      }
+
+      if (t == 0) {
+        int const write_begin = max(value_count, first_row);
+        int const write_end   = min(value_count + batch_size, last_row);
+        int const write_count = max(0, write_end - write_begin);
+        ni.null_count += write_count - selected_valid_count;
+        ni.valid_count += block_valid_count;
+        ni.value_count += batch_size;
+      }
+
+      if (d_idx == max_depth) {
+        int const prefix_thread = first_row - value_count - 1;
+        if (prefix_valid_count != nullptr && prefix_thread >= 0 && prefix_thread < batch_size &&
+            t == prefix_thread) {
+          *prefix_valid_count =
+            max_depth_valid_count + thread_valid_count + is_valid - map_rank_base;
+        }
+        if (is_valid) { sink.store(max_depth_valid_count + thread_valid_count, value_count + t); }
+        max_depth_valid_count += block_valid_count;
+      }
+      __syncthreads();
+    }
+    value_count += batch_size;
+  }
+
+  if (t == 0) {
+    for (int d_idx = 0; d_idx <= max_depth; ++d_idx) {
+      auto& ni = s->nesting.nesting_info[d_idx];
+      if (ni.valid_map != nullptr) { ni.valid_map_offset += s->setup.num_rows; }
+    }
+    s->progress.nz_count          = max_depth_valid_count;
+    s->progress.input_value_count = target_value_count;
+    s->progress.input_row_count   = target_value_count;
   }
 
   return max_depth_valid_count;
@@ -1881,32 +2003,41 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   }
 
   auto const* const def =
-    reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION]);
-  int processed_count = 0;
-  int valid_count     = 0;
-  if (s->setup.first_row > 0) {
-    materialize_skipped_nested_nz_idx<decode_block_size_t>(s, def, pp->nested_prepass_nz_idx);
-  }
-  seed_nonlist_level_state<decode_block_size_t, true>(
-    s, process_nulls, def, processed_count, valid_count);
-  constexpr int rolling_buf_size = decode_block_size_t * 2;
+    process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
+                  : nullptr;
+  int const map_rank_base = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_count;
+  if (t == 0) { pp->nested_prepass_prefix_valid_count = 0; }
+  block.sync();
   int const decoded_value_limit =
     pp->num_decoded_level_values > 0
       ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
       : s->setup.page.num_input_values;
-  int const last_row = min(s->setup.first_row + s->setup.num_rows, decoded_value_limit);
-  while (processed_count < decoded_value_limit && s->progress.input_row_count <= last_row) {
-    processed_count += min(rolling_buf_size, decoded_value_limit - processed_count);
-    valid_count = update_validity_and_row_indices_nested<decode_block_size_t, level_t>(
-      processed_count, s, global_nz_idx_sink{pp->nested_prepass_nz_idx}, def, t);
-  }
+  auto const sink = pp->nested_prepass_nz_idx != nullptr
+                      ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base}
+                      : page_local_nz_idx_sink{nullptr, map_rank_base};
+  int const final_valid_count =
+    pp->nested_prepass_nz_idx != nullptr
+      ? update_nested_level_prepass<decode_block_size_t>(decoded_value_limit,
+                                                         s,
+                                                         sink,
+                                                         def,
+                                                         &pp->nested_prepass_prefix_valid_count,
+                                                         map_rank_base,
+                                                         t)
+      : update_nested_level_prepass<decode_block_size_t>(decoded_value_limit,
+                                                         s,
+                                                         discard_nz_idx_sink{},
+                                                         def,
+                                                         &pp->nested_prepass_prefix_valid_count,
+                                                         map_rank_base,
+                                                         t);
   if (t == 0) {
     for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
       auto const& source                = s->nesting.nesting_info[depth];
       pp->nested_prepass_nesting[depth] = {
         source.null_count, source.valid_map_offset, source.valid_count, source.value_count};
     }
-    pp->nested_prepass_nz_count          = valid_count;
+    pp->nested_prepass_nz_count          = final_valid_count - map_rank_base;
     pp->nested_prepass_input_value_count = s->progress.input_value_count;
     pp->nested_prepass_input_row_count   = s->progress.input_row_count;
   }

@@ -498,17 +498,21 @@ void reader_impl::allocate_level_decode_space()
   size_t list_prepass_map_size     = 0;
   size_t list_prepass_nesting_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page          = pages[idx];
-    auto const& chunk   = pass.chunks[page.chunk_idx];
-    bool const selected = (_level_prepass_mode & level_prepass_generic_list) != 0 &&
-                          page.prepass_family == level_prepass_family::GENERIC_LIST &&
-                          chunk.max_level[level_type::REPETITION] > 0;
+    auto& page                  = pages[idx];
+    auto const& chunk           = pass.chunks[page.chunk_idx];
+    bool const selected_generic = (_level_prepass_mode & level_prepass_generic_list) != 0 &&
+                                  page.prepass_family == level_prepass_family::GENERIC_LIST;
+    bool const selected_legacy = (_level_prepass_mode & level_prepass_legacy_list) != 0 &&
+                                 page.prepass_family == level_prepass_family::LEGACY_LIST;
+    bool const selected =
+      (selected_generic || selected_legacy) && chunk.max_level[level_type::REPETITION] > 0;
     page.list_prepass_nz_idx            = nullptr;
     page.list_prepass_nesting           = nullptr;
     page.list_prepass_nz_count          = -1;
     page.list_prepass_input_value_count = 0;
     page.list_prepass_input_row_count   = 0;
-    page.generic_list_prepass_enabled   = selected;
+    page.generic_list_prepass_enabled   = selected_generic;
+    page.legacy_list_prepass_enabled    = selected_legacy;
     if (selected) {
       list_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
       list_prepass_nesting_size +=
@@ -520,6 +524,7 @@ void reader_impl::allocate_level_decode_space()
     list_prepass_nesting_size = 0;
     for (size_t idx = 0; idx < num_pages; ++idx) {
       pages[idx].generic_list_prepass_enabled = false;
+      pages[idx].legacy_list_prepass_enabled  = false;
     }
   };
 
@@ -551,7 +556,7 @@ void reader_impl::allocate_level_decode_space()
     list_prepass_bytes == nullptr ? nullptr : list_prepass_bytes + list_prepass_map_size);
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page = pages[idx];
-    if (page.generic_list_prepass_enabled) {
+    if (page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled) {
       page.list_prepass_nz_idx = list_map_ptr;
       list_map_ptr += page.num_input_values;
       page.list_prepass_nesting = list_prepass_ptr;

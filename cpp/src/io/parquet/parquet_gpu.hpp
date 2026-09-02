@@ -333,6 +333,13 @@ constexpr uint32_t GENERIC_LIST_LEVEL_PREPASS_MASK =
         decode_kernel_mask::STRING_DICT_LIST,
         decode_kernel_mask::STRING_STREAM_SPLIT_LIST);
 
+/** @brief GENERAL and BYTE_STREAM_SPLIT list pages covered by the list prepass. */
+constexpr uint32_t LEGACY_LIST_LEVEL_PREPASS_MASK =
+  BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT);
+
+constexpr uint32_t LIST_LEVEL_PREPASS_MASK =
+  BitOr(GENERIC_LIST_LEVEL_PREPASS_MASK, LEGACY_LIST_LEVEL_PREPASS_MASK);
+
 /**
  * @brief Nesting information specifically needed by the decode and preprocessing
  * kernels.
@@ -507,6 +514,7 @@ struct PageInfo {
   int32_t list_prepass_input_value_count{};
   int32_t list_prepass_input_row_count{};
   bool generic_list_prepass_enabled{};
+  bool legacy_list_prepass_enabled{};
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.
@@ -1079,7 +1087,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       kernel_error::pointer error_code,
                       cuda::stream_ref stream,
                       bool use_flat_prepass   = false,
-                      bool use_nested_prepass = false);
+                      bool use_nested_prepass = false,
+                      bool use_list_prepass   = false);
 
 /**
  * @brief Launches kernel for reading the BYTE_STREAM_SPLIT column data stored in the pages
@@ -1105,7 +1114,8 @@ void decode_split_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                             kernel_error::pointer error_code,
                             cuda::stream_ref stream,
                             bool use_flat_prepass   = false,
-                            bool use_nested_prepass = false);
+                            bool use_nested_prepass = false,
+                            bool use_list_prepass   = false);
 
 /**
  * @brief Writes the final offsets to the corresponding list and string buffer end addresses in a

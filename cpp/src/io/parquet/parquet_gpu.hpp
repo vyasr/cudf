@@ -475,6 +475,7 @@ struct PageInfo {
   // temporary dual-path level-prepass selector.
   bool legacy_flat_prepass_enabled{};
   bool delta_flat_prepass_enabled{};
+  bool delta_nested_prepass_enabled{};
 
   // Temporary page-global state for the opt-in generic non-list nested
   // prepass. A null nesting pointer denotes legacy nested dispatch.
@@ -1121,7 +1122,8 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          cudf::device_span<bool const> page_mask,
                          kernel_error::pointer error_code,
                          cuda::stream_ref stream,
-                         bool use_flat_prepass = false);
+                         bool use_flat_prepass   = false,
+                         bool use_nested_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_BYTE_ARRAY column data stored in the pages
@@ -1148,7 +1150,8 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                              cudf::device_span<size_t> initial_str_offsets,
                              kernel_error::pointer error_code,
                              cuda::stream_ref stream,
-                             bool use_flat_prepass = false);
+                             bool use_flat_prepass   = false,
+                             bool use_nested_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_LENGTH_BYTE_ARRAY column data stored in the pages
@@ -1175,7 +1178,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     cudf::device_span<size_t> initial_str_offsets,
                                     kernel_error::pointer error_code,
                                     cuda::stream_ref stream,
-                                    bool use_flat_prepass = false);
+                                    bool use_flat_prepass   = false,
+                                    bool use_nested_prepass = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

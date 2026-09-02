@@ -57,9 +57,17 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
     return;
   }
 
-  auto& ni              = s->nesting.nesting_info[0];
-  int const first_row   = min(s->setup.first_row, s->setup.page.num_input_values);
-  int const value_limit = min(s->setup.page.num_input_values, first_row + s->setup.num_rows);
+  auto& ni = s->nesting.nesting_info[0];
+  // Bounds preprocessing deliberately materializes fewer level values than a
+  // page contains. The prepass must never scan past that decoded prefix: doing
+  // so reads beyond lvl_decode_buf and can silently corrupt an unrelated
+  // column when another prepass allocation changes the device-memory layout.
+  int const decoded_value_limit =
+    pp->num_decoded_level_values > 0
+      ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
+      : s->setup.page.num_input_values;
+  int const first_row   = min(s->setup.first_row, decoded_value_limit);
+  int const value_limit = min(decoded_value_limit, first_row + s->setup.num_rows);
   if (!should_process_nulls(s)) {
     if (t == 0) {
       pp->flat_prepass_prefix_valid_count = first_row;

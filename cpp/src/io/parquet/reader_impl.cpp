@@ -219,8 +219,23 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // create this before we fork streams
   kernel_error error_code(_stream);
 
-  if ((_level_prepass_mode &
-       (level_prepass_generic_flat | level_prepass_legacy_flat | level_prepass_delta_flat)) != 0) {
+  auto const has_selected_flat_prepass =
+    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
+      return page.flat_prepass_enabled || page.legacy_flat_prepass_enabled ||
+             page.delta_flat_prepass_enabled;
+    });
+  auto const has_selected_nested_prepass =
+    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
+      return page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
+             page.delta_nested_prepass_enabled;
+    });
+  auto const has_selected_list_prepass =
+    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
+      return page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
+             page.delta_list_prepass_enabled;
+    });
+
+  if (has_selected_flat_prepass) {
     precompute_flat_level_state(subpass.pages,
                                 pass.chunks,
                                 subpass_page_mask_span(),
@@ -229,8 +244,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                 level_type_size,
                                 _stream);
   }
-  if ((_level_prepass_mode & (level_prepass_generic_nested | level_prepass_legacy_nested |
-                              level_prepass_delta_nested)) != 0) {
+  if (has_selected_nested_prepass) {
     precompute_nested_level_state(subpass.pages,
                                   pass.chunks,
                                   subpass_page_mask_span(),
@@ -239,8 +253,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                   level_type_size,
                                   _stream);
   }
-  if ((_level_prepass_mode &
-       (level_prepass_generic_list | level_prepass_legacy_list | level_prepass_delta_list)) != 0) {
+  if (has_selected_list_prepass) {
     precompute_list_level_state(subpass.pages,
                                 pass.chunks,
                                 subpass_page_mask_span(),

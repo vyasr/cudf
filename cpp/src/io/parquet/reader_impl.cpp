@@ -239,6 +239,15 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                   level_type_size,
                                   _stream);
   }
+  if ((_level_prepass_mode & level_prepass_generic_list) != 0) {
+    precompute_list_level_state(subpass.pages,
+                                pass.chunks,
+                                subpass_page_mask_span(),
+                                skip_rows,
+                                num_rows,
+                                level_type_size,
+                                _stream);
+  }
 
   // get the number of streams we need from the pool and tell them to wait on the H2D copies
   int const nkernels = std::bitset<32>(kernel_mask).count();
@@ -267,6 +276,16 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       decoder_mask == decode_kernel_mask::STRING_STREAM_SPLIT_NESTED;
     bool const use_nested_prepass =
       nested_generic_mask && (_level_prepass_mode & level_prepass_generic_nested) != 0;
+    bool const list_generic_mask =
+      decoder_mask == decode_kernel_mask::FIXED_WIDTH_NO_DICT_LIST ||
+      decoder_mask == decode_kernel_mask::FIXED_WIDTH_DICT_LIST ||
+      decoder_mask == decode_kernel_mask::BYTE_STREAM_SPLIT_FIXED_WIDTH_LIST ||
+      decoder_mask == decode_kernel_mask::BOOLEAN_LIST ||
+      decoder_mask == decode_kernel_mask::STRING_LIST ||
+      decoder_mask == decode_kernel_mask::STRING_DICT_LIST ||
+      decoder_mask == decode_kernel_mask::STRING_STREAM_SPLIT_LIST;
+    bool const use_list_prepass =
+      list_generic_mask && (_level_prepass_mode & level_prepass_generic_list) != 0;
     detail::decode_page_data(subpass.pages,
                              pass.chunks,
                              num_rows,
@@ -279,7 +298,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                              error_code.data(),
                              streams[s_idx++],
                              use_flat_prepass,
-                             use_nested_prepass);
+                             use_nested_prepass,
+                             use_list_prepass);
   };
 
   // launch string decoder for plain encoded flat columns

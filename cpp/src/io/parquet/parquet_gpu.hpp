@@ -323,6 +323,16 @@ constexpr uint32_t NESTED_GENERIC_LEVEL_PREPASS_MASK =
 constexpr uint32_t NESTED_LEGACY_LEVEL_PREPASS_MASK =
   BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT);
 
+/** @brief Generic list decoder masks covered by the opt-in list prepass. */
+constexpr uint32_t GENERIC_LIST_LEVEL_PREPASS_MASK =
+  BitOr(decode_kernel_mask::FIXED_WIDTH_NO_DICT_LIST,
+        decode_kernel_mask::FIXED_WIDTH_DICT_LIST,
+        decode_kernel_mask::BYTE_STREAM_SPLIT_FIXED_WIDTH_LIST,
+        decode_kernel_mask::BOOLEAN_LIST,
+        decode_kernel_mask::STRING_LIST,
+        decode_kernel_mask::STRING_DICT_LIST,
+        decode_kernel_mask::STRING_STREAM_SPLIT_LIST);
+
 /**
  * @brief Nesting information specifically needed by the decode and preprocessing
  * kernels.
@@ -487,6 +497,16 @@ struct PageInfo {
   int32_t nested_prepass_input_row_count{};
   bool nested_prepass_enabled{};
   bool legacy_nested_prepass_enabled{};
+
+  // Temporary page-global state for the opt-in generic list prepass.
+  // The map preserves the legacy valid-rank-to-output-position contract,
+  // including rows suppressed by a nullable ancestor of a required leaf.
+  uint32_t* list_prepass_nz_idx{};
+  PageNestingPrepassState* list_prepass_nesting{};
+  int32_t list_prepass_nz_count{-1};
+  int32_t list_prepass_input_value_count{};
+  int32_t list_prepass_input_row_count{};
+  bool generic_list_prepass_enabled{};
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.
@@ -1246,6 +1266,15 @@ void precompute_nested_level_state(cudf::detail::hostdevice_span<PageInfo> pages
                                    int level_type_size,
                                    cuda::stream_ref stream);
 
+/** @brief Publish opt-in generic list level state. */
+void precompute_list_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
+                                 cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                                 cudf::device_span<bool const> page_mask,
+                                 size_t min_row,
+                                 size_t num_rows,
+                                 int level_type_size,
+                                 cuda::stream_ref stream);
+
 /**
  * @brief Fills output offset entries for pruned string and list pages
  *
@@ -1295,7 +1324,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       kernel_error::pointer error_code,
                       cuda::stream_ref stream,
                       bool use_flat_prepass   = false,
-                      bool use_nested_prepass = false);
+                      bool use_nested_prepass = false,
+                      bool use_list_prepass   = false);
 
 /**
  * @brief Launches kernel for initializing encoder row group fragments

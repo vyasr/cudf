@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 #include <numeric>
 #include <utility>
 #include <vector>
@@ -487,6 +488,74 @@ void reader_impl::allocate_level_decode_space()
       }
       page.nested_prepass_nesting = nested_nesting_ptr;
       nested_nesting_ptr += page.nesting_info_size;
+    }
+  }
+
+  // The generic-list prepass owns per-depth counters, offsets, and the
+  // legacy valid-rank-to-output map. The latter is required even for a
+  // required leaf when an optional ancestor suppresses leaf values.
+  // Leave every unselected list page on the legacy level walker.
+  size_t list_prepass_map_size     = 0;
+  size_t list_prepass_nesting_size = 0;
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page          = pages[idx];
+    auto const& chunk   = pass.chunks[page.chunk_idx];
+    bool const selected = (_level_prepass_mode & level_prepass_generic_list) != 0 &&
+                          page.prepass_family == level_prepass_family::GENERIC_LIST &&
+                          chunk.max_level[level_type::REPETITION] > 0;
+    page.list_prepass_nz_idx            = nullptr;
+    page.list_prepass_nesting           = nullptr;
+    page.list_prepass_nz_count          = -1;
+    page.list_prepass_input_value_count = 0;
+    page.list_prepass_input_row_count   = 0;
+    page.generic_list_prepass_enabled   = selected;
+    if (selected) {
+      list_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+      list_prepass_nesting_size +=
+        static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
+    }
+  }
+  auto disable_generic_list_prepass = [&] {
+    list_prepass_map_size     = 0;
+    list_prepass_nesting_size = 0;
+    for (size_t idx = 0; idx < num_pages; ++idx) {
+      pages[idx].generic_list_prepass_enabled = false;
+    }
+  };
+
+  // The dense compatibility map must stay live alongside the output chunk.
+  // Bound its per-subpass footprint so a selected experimental path cannot
+  // crowd out a large, otherwise valid list output allocation.
+  constexpr size_t max_list_prepass_map_bytes{size_t{1} << 30};
+  if (list_prepass_map_size > max_list_prepass_map_bytes) { disable_generic_list_prepass(); }
+
+  auto const list_prepass_size = list_prepass_map_size + list_prepass_nesting_size;
+  try {
+    subpass.list_prepass_data =
+      rmm::device_buffer(list_prepass_size, _stream, cudf::get_current_device_resource_ref());
+  } catch (std::bad_alloc const&) {
+    // A list map is deliberately dense so that it preserves the legacy
+    // valid-rank-to-output-position contract for required leaves below an
+    // optional ancestor.  It can therefore be much larger than the output
+    // itself for a single exceptionally large page.  The selector is an
+    // opt-in compatibility path: leave this subpass on the existing list
+    // walker if its temporary map cannot be accommodated, rather than making
+    // a selected read fail solely because of prepass scratch space.
+    disable_generic_list_prepass();
+    subpass.list_prepass_data =
+      rmm::device_buffer(0, _stream, cudf::get_current_device_resource_ref());
+  }
+  auto* list_prepass_bytes = static_cast<uint8_t*>(subpass.list_prepass_data.data());
+  auto* list_map_ptr       = reinterpret_cast<uint32_t*>(list_prepass_bytes);
+  auto* list_prepass_ptr   = reinterpret_cast<PageNestingPrepassState*>(
+    list_prepass_bytes == nullptr ? nullptr : list_prepass_bytes + list_prepass_map_size);
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page = pages[idx];
+    if (page.generic_list_prepass_enabled) {
+      page.list_prepass_nz_idx = list_map_ptr;
+      list_map_ptr += page.num_input_values;
+      page.list_prepass_nesting = list_prepass_ptr;
+      list_prepass_ptr += page.nesting_info_size;
     }
   }
 }

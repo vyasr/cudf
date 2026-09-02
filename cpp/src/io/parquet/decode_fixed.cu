@@ -1941,8 +1941,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
 
-  if (!pp->generic_list_prepass_enabled || pp->list_prepass_nesting == nullptr ||
-      BitAnd(pp->kernel_mask, GENERIC_LIST_LEVEL_PREPASS_MASK) == 0) {
+  if (!(pp->generic_list_prepass_enabled || pp->legacy_list_prepass_enabled) ||
+      pp->list_prepass_nesting == nullptr ||
+      BitAnd(pp->kernel_mask, LIST_LEVEL_PREPASS_MASK) == 0) {
     return;
   }
   if (!page_mask.empty() && !page_mask[page_idx]) { return; }
@@ -1951,7 +1952,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
                              chunks,
                              min_row,
                              num_rows,
-                             mask_filter{GENERIC_LIST_LEVEL_PREPASS_MASK},
+                             mask_filter{LIST_LEVEL_PREPASS_MASK},
                              page_processing_stage::DECODE)) {
     return;
   }

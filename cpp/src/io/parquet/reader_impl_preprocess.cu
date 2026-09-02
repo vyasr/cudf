@@ -504,8 +504,10 @@ void reader_impl::allocate_level_decode_space()
                                   page.prepass_family == level_prepass_family::GENERIC_LIST;
     bool const selected_legacy = (_level_prepass_mode & level_prepass_legacy_list) != 0 &&
                                  page.prepass_family == level_prepass_family::LEGACY_LIST;
-    bool const selected =
-      (selected_generic || selected_legacy) && chunk.max_level[level_type::REPETITION] > 0;
+    bool const selected_delta = (_level_prepass_mode & level_prepass_delta_list) != 0 &&
+                                page.prepass_family == level_prepass_family::DELTA_LIST;
+    bool const selected = (selected_generic || selected_legacy || selected_delta) &&
+                          chunk.max_level[level_type::REPETITION] > 0;
     page.list_prepass_nz_idx            = nullptr;
     page.list_prepass_nesting           = nullptr;
     page.list_prepass_nz_count          = -1;
@@ -513,6 +515,7 @@ void reader_impl::allocate_level_decode_space()
     page.list_prepass_input_row_count   = 0;
     page.generic_list_prepass_enabled   = selected_generic;
     page.legacy_list_prepass_enabled    = selected_legacy;
+    page.delta_list_prepass_enabled     = selected_delta;
     if (selected) {
       list_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
       list_prepass_nesting_size +=
@@ -525,6 +528,7 @@ void reader_impl::allocate_level_decode_space()
     for (size_t idx = 0; idx < num_pages; ++idx) {
       pages[idx].generic_list_prepass_enabled = false;
       pages[idx].legacy_list_prepass_enabled  = false;
+      pages[idx].delta_list_prepass_enabled   = false;
     }
   };
 
@@ -556,7 +560,8 @@ void reader_impl::allocate_level_decode_space()
     list_prepass_bytes == nullptr ? nullptr : list_prepass_bytes + list_prepass_map_size);
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page = pages[idx];
-    if (page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled) {
+    if (page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
+        page.delta_list_prepass_enabled) {
       page.list_prepass_nz_idx = list_map_ptr;
       list_map_ptr += page.num_input_values;
       page.list_prepass_nesting = list_prepass_ptr;

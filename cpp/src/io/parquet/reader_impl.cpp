@@ -239,7 +239,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                   level_type_size,
                                   _stream);
   }
-  if ((_level_prepass_mode & (level_prepass_generic_list | level_prepass_legacy_list)) != 0) {
+  if ((_level_prepass_mode &
+       (level_prepass_generic_list | level_prepass_legacy_list | level_prepass_delta_list)) != 0) {
     precompute_list_level_state(subpass.pages,
                                 pass.chunks,
                                 subpass_page_mask_span(),
@@ -364,7 +365,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                             error_code.data(),
                             streams[s_idx++],
                             (_level_prepass_mode & level_prepass_delta_flat) != 0,
-                            (_level_prepass_mode & level_prepass_delta_nested) != 0);
+                            (_level_prepass_mode & level_prepass_delta_nested) != 0,
+                            (_level_prepass_mode & level_prepass_delta_list) != 0);
   }
 
   // launch delta length byte array decoder
@@ -379,7 +381,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                    error_code.data(),
                                    streams[s_idx++],
                                    (_level_prepass_mode & level_prepass_delta_flat) != 0,
-                                   (_level_prepass_mode & level_prepass_delta_nested) != 0);
+                                   (_level_prepass_mode & level_prepass_delta_nested) != 0,
+                                   (_level_prepass_mode & level_prepass_delta_list) != 0);
   }
 
   // launch delta binary decoder
@@ -393,7 +396,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                         error_code.data(),
                         streams[s_idx++],
                         (_level_prepass_mode & level_prepass_delta_flat) != 0,
-                        (_level_prepass_mode & level_prepass_delta_nested) != 0);
+                        (_level_prepass_mode & level_prepass_delta_nested) != 0,
+                        (_level_prepass_mode & level_prepass_delta_list) != 0);
   }
 
   // launch byte stream split decoder

@@ -481,11 +481,13 @@ __device__ int update_validity_and_row_indices_nested(
         uint32_t const warp_validity_mask = ballot(is_valid);
         // lane 0 from each warp writes out validity
         if ((write_start >= 0) && ((t % cudf::detail::warp_size) == 0)) {
-          int const valid_map_offset = ni.valid_map_offset;
-          int const vindex     = value_count + thread_value_count;  // absolute input value index
-          int const bit_offset = (valid_map_offset + vindex + write_start) -
-                                 first_row;  // absolute bit offset into the output validity map
-          int const write_end = cudf::detail::warp_size -
+          // valid_map_offset is the output cursor for this depth.  It is
+          // advanced after every block below, so adding value_count here
+          // would apply block progress twice.  Each warp owns its contiguous
+          // portion of the current block.
+          int const warp_value_offset = t - (t % cudf::detail::warp_size);
+          int const bit_offset        = ni.valid_map_offset + warp_value_offset + write_start;
+          int const write_end         = cudf::detail::warp_size -
                                 __clz(in_write_row_bounds_mask);  // last bit in the warp to store
           int const bit_count = write_end - write_start;
 
@@ -493,7 +495,16 @@ __device__ int update_validity_and_row_indices_nested(
         }
       }
 
-      if (t == 0) { ni.null_count += (block_value_count - block_valid_count); }
+      if (t == 0) {
+        // Publish the same per-depth progress that gpuDecodeLevels leaves in
+        // the local state.  Consumers use valid_map_offset to delimit the
+        // selected validity range (not merely to address the bitmap), and
+        // string/nested finalization relies on the depth-local counts.
+        ni.null_count += (block_value_count - block_valid_count);
+        ni.valid_count += block_valid_count;
+        ni.value_count += block_value_count;
+        if (ni.valid_map != nullptr) { ni.valid_map_offset += block_value_count; }
+      }
 
       // if this is valid and we're at the leaf, output dst_pos
       if (d_idx == max_depth) {
@@ -506,6 +517,10 @@ __device__ int update_validity_and_row_indices_nested(
         // update stuff
         max_depth_valid_count += block_valid_count;
       }
+
+      // BlockScan temporary storage is reused for every nesting depth.  All
+      // threads must finish this depth before the next scan overwrites it.
+      __syncthreads();
 
     }  // end depth loop
 

@@ -1180,6 +1180,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   auto* const suffix_db = &db_state.suffixes;
   auto* const dba       = &db_state;
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
+  if constexpr (use_nested_prepass_t) {
+    if (!pages[page_idx].delta_nested_prepass_enabled) { return; }
+  } else if constexpr (use_list_prepass_t) {
+    if (!pages[page_idx].delta_list_prepass_enabled) { return; }
+  } else {
+    if (!pages[page_idx].delta_flat_prepass_enabled) { return; }
+  }
+
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 
   if (!setup_local_page_info(s,
@@ -1192,13 +1200,6 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     return;
   }
   PageInfo* const pp = &pages[page_idx];
-  if constexpr (use_nested_prepass_t) {
-    if (!pp->delta_nested_prepass_enabled) { return; }
-  } else if constexpr (use_list_prepass_t) {
-    if (!pp->delta_list_prepass_enabled) { return; }
-  } else {
-    if (!pp->delta_flat_prepass_enabled) { return; }
-  }
 
   if (s->setup.col.logical_type.has_value() &&
       s->setup.col.logical_type->type == LogicalType::DECIMAL) {
@@ -1404,6 +1405,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
   auto* const db     = &db_state;
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
+  if constexpr (use_nested_prepass_t) {
+    if (!pages[page_idx].delta_nested_prepass_enabled) { return; }
+  } else if constexpr (use_list_prepass_t) {
+    if (!pages[page_idx].delta_list_prepass_enabled) { return; }
+  } else {
+    if (!pages[page_idx].delta_flat_prepass_enabled) { return; }
+  }
+
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 
   if (!setup_local_page_info(s,
@@ -1416,13 +1425,6 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     return;
   }
   PageInfo* const pp = &pages[page_idx];
-  if constexpr (use_nested_prepass_t) {
-    if (!pp->delta_nested_prepass_enabled) { return; }
-  } else if constexpr (use_list_prepass_t) {
-    if (!pp->delta_list_prepass_enabled) { return; }
-  } else {
-    if (!pp->delta_flat_prepass_enabled) { return; }
-  }
 
   if (s->setup.col.logical_type.has_value() &&
       s->setup.col.logical_type->type == LogicalType::DECIMAL) {

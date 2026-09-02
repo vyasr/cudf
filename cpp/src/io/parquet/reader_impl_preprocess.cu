@@ -446,7 +446,10 @@ void reader_impl::allocate_level_decode_space()
       page.prepass_family == level_prepass_family::GENERIC_NESTED;
     bool const selected_legacy_nested = (_level_prepass_mode & level_prepass_legacy_nested) != 0 &&
                                         page.prepass_family == level_prepass_family::LEGACY_NESTED;
-    bool const selected_nested             = selected_generic_nested || selected_legacy_nested;
+    bool const selected_delta_nested = (_level_prepass_mode & level_prepass_delta_nested) != 0 &&
+                                       page.prepass_family == level_prepass_family::DELTA_NESTED;
+    bool const selected_nested =
+      selected_generic_nested || selected_legacy_nested || selected_delta_nested;
     page.nested_prepass_nz_idx             = nullptr;
     page.nested_prepass_nesting            = nullptr;
     page.nested_prepass_prefix_valid_count = -1;
@@ -455,6 +458,7 @@ void reader_impl::allocate_level_decode_space()
     page.nested_prepass_input_row_count    = 0;
     page.nested_prepass_enabled            = selected_generic_nested;
     page.legacy_nested_prepass_enabled     = selected_legacy_nested;
+    page.delta_nested_prepass_enabled      = selected_delta_nested;
     if (selected_nested) {
       // Required nested leaves have an identity valid-rank mapping. They
       // still publish per-depth state, but do not retain a redundant map.
@@ -474,7 +478,8 @@ void reader_impl::allocate_level_decode_space()
     nested_prepass_ptr == nullptr ? nullptr : nested_prepass_ptr + nested_prepass_map_size);
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page = pages[idx];
-    if (page.nested_prepass_enabled || page.legacy_nested_prepass_enabled) {
+    if (page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
+        page.delta_nested_prepass_enabled) {
       auto const& chunk = pass.chunks[page.chunk_idx];
       if (chunk.max_level[level_type::DEFINITION] != 0) {
         page.nested_prepass_nz_idx = nested_map_ptr;

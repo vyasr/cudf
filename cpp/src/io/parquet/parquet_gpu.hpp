@@ -337,6 +337,11 @@ constexpr uint32_t GENERIC_LIST_LEVEL_PREPASS_MASK =
 constexpr uint32_t LEGACY_LIST_LEVEL_PREPASS_MASK =
   BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT);
 
+/** @brief Delta list decoder masks covered by the opt-in list prepass. */
+constexpr uint32_t DELTA_LIST_LEVEL_PREPASS_MASK = BitOr(decode_kernel_mask::DELTA_BINARY,
+                                                         decode_kernel_mask::DELTA_BYTE_ARRAY,
+                                                         decode_kernel_mask::DELTA_LENGTH_BA);
+
 constexpr uint32_t LIST_LEVEL_PREPASS_MASK =
   BitOr(GENERIC_LIST_LEVEL_PREPASS_MASK, LEGACY_LIST_LEVEL_PREPASS_MASK);
 
@@ -493,6 +498,7 @@ struct PageInfo {
   bool legacy_flat_prepass_enabled{};
   bool delta_flat_prepass_enabled{};
   bool delta_nested_prepass_enabled{};
+  bool delta_list_prepass_enabled{};
 
   // Temporary page-global state for the opt-in generic non-list nested
   // prepass. A null nesting pointer denotes legacy nested dispatch.
@@ -1153,7 +1159,8 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          kernel_error::pointer error_code,
                          cuda::stream_ref stream,
                          bool use_flat_prepass   = false,
-                         bool use_nested_prepass = false);
+                         bool use_nested_prepass = false,
+                         bool use_list_prepass   = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_BYTE_ARRAY column data stored in the pages
@@ -1181,7 +1188,8 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                              kernel_error::pointer error_code,
                              cuda::stream_ref stream,
                              bool use_flat_prepass   = false,
-                             bool use_nested_prepass = false);
+                             bool use_nested_prepass = false,
+                             bool use_list_prepass   = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_LENGTH_BYTE_ARRAY column data stored in the pages
@@ -1209,7 +1217,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     kernel_error::pointer error_code,
                                     cuda::stream_ref stream,
                                     bool use_flat_prepass   = false,
-                                    bool use_nested_prepass = false);
+                                    bool use_nested_prepass = false,
+                                    bool use_list_prepass   = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

@@ -308,6 +308,14 @@ class reader_impl {
   void allocate_nesting_info();
 
   /**
+   * @brief Return the per-input-column nesting-state count used for every page.
+   *
+   * The count is the maximum required by that logical column across all input sources. It is
+   * shared by nesting allocation and constrained prepass-arena budgeting.
+   */
+  [[nodiscard]] std::vector<int> nesting_info_sizes() const;
+
+  /**
    * @brief Allocate space for use when decoding definition/repetition levels.
    *
    * One large contiguous buffer of data allocated and

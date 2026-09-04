@@ -915,6 +915,16 @@ struct compute_page_level_decode_size {
   }
 };
 
+struct compute_page_prepass_size {
+  cudf::device_span<ColumnChunkDesc const> chunks;
+  uint32_t selector;
+
+  __device__ size_t operator()(PageInfo const& page) const
+  {
+    return compute_page_level_prepass_size(page, chunks[page.chunk_idx], selector);
+  }
+};
+
 }  // anonymous namespace
 
 rmm::device_uvector<size_t> compute_string_offset_sizes(device_span<ColumnChunkDesc const> chunks,
@@ -952,6 +962,23 @@ rmm::device_uvector<size_t> compute_level_decode_sizes(device_span<ColumnChunkDe
                     compute_page_level_decode_size{chunks, level_type_size, skip_rows, num_rows});
 
   return level_decode_sizes;
+}
+
+rmm::device_uvector<size_t> compute_level_prepass_sizes(device_span<ColumnChunkDesc const> chunks,
+                                                        device_span<PageInfo const> pages,
+                                                        uint32_t selector,
+                                                        cuda::stream_ref stream,
+                                                        rmm::device_async_resource_ref mr)
+{
+  rmm::device_uvector<size_t> prepass_sizes(pages.size(), stream, mr);
+
+  thrust::transform(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                    pages.begin(),
+                    pages.end(),
+                    prepass_sizes.begin(),
+                    compute_page_prepass_size{chunks, selector});
+
+  return prepass_sizes;
 }
 
 row_group_pass_data compute_row_group_passes(std::span<row_group_size_info const> row_group_sizes,

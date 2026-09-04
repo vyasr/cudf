@@ -28,6 +28,104 @@ using cudf::io::detail::codec_exec_result;
 using cudf::io::detail::codec_status;
 using cudf::io::detail::decompression_info;
 
+/**
+ * @brief Classify a page for the temporary page-global level-prepass selector.
+ *
+ * This must stay shared by subpass budgeting and the allocation path: charging
+ * a family that the allocator does not select needlessly fragments constrained
+ * reads, while omitting a selected family can exceed the read limit.
+ */
+template <typename PageType, typename ChunkType>
+CUDF_HOST_DEVICE inline level_prepass_family classify_level_prepass_family(PageType const& page,
+                                                                           ChunkType const& chunk)
+{
+  bool const is_list   = chunk.max_level[level_type::REPETITION] > 0;
+  bool const is_nested = !is_list && chunk.max_nesting_depth > 1;
+  bool const is_delta  = BitAnd(page.kernel_mask,
+                               BitOr(decode_kernel_mask::DELTA_BINARY,
+                                     decode_kernel_mask::DELTA_BYTE_ARRAY,
+                                     decode_kernel_mask::DELTA_LENGTH_BA)) != 0;
+  bool const is_legacy =
+    BitAnd(page.kernel_mask,
+           BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT)) != 0;
+
+  if (is_list) {
+    return is_delta    ? level_prepass_family::DELTA_LIST
+           : is_legacy ? level_prepass_family::LEGACY_LIST
+                       : level_prepass_family::GENERIC_LIST;
+  }
+  if (is_nested) {
+    return is_delta    ? level_prepass_family::DELTA_NESTED
+           : is_legacy ? level_prepass_family::LEGACY_NESTED
+                       : level_prepass_family::GENERIC_NESTED;
+  }
+  return is_delta    ? level_prepass_family::DELTA_FLAT
+         : is_legacy ? level_prepass_family::LEGACY_FLAT
+                     : level_prepass_family::GENERIC_FLAT;
+}
+
+/** @brief Return the selector bit that enables a prepass family. */
+CUDF_HOST_DEVICE constexpr uint32_t level_prepass_family_selector_bit(level_prepass_family family)
+{
+  switch (family) {
+    case level_prepass_family::GENERIC_FLAT: return level_prepass_generic_flat;
+    case level_prepass_family::LEGACY_FLAT: return level_prepass_legacy_flat;
+    case level_prepass_family::DELTA_FLAT: return level_prepass_delta_flat;
+    case level_prepass_family::GENERIC_NESTED: return level_prepass_generic_nested;
+    case level_prepass_family::LEGACY_NESTED: return level_prepass_legacy_nested;
+    case level_prepass_family::DELTA_NESTED: return level_prepass_delta_nested;
+    case level_prepass_family::GENERIC_LIST: return level_prepass_generic_list;
+    case level_prepass_family::LEGACY_LIST: return level_prepass_legacy_list;
+    case level_prepass_family::DELTA_LIST: return level_prepass_delta_list;
+    case level_prepass_family::NONE: return 0;
+  }
+  return 0;
+}
+
+/** @brief Return whether a selector enables a page-global level-prepass family. */
+CUDF_HOST_DEVICE constexpr bool level_prepass_family_is_enabled(level_prepass_family family,
+                                                                uint32_t selector)
+{
+  return (selector & level_prepass_family_selector_bit(family)) != 0;
+}
+
+/**
+ * @brief Return the exact page-local contribution to the prepass arena.
+ *
+ * The arena is laid out as typed, four-byte-aligned regions, so every selected
+ * page's contribution is additive. List allocation is deliberately charged
+ * even though the allocation path can later choose its existing 1 GiB fallback;
+ * that makes constrained reads conservative rather than under-budgeted.
+ */
+template <typename PageType, typename ChunkType>
+CUDF_HOST_DEVICE inline size_t compute_page_level_prepass_size(PageType const& page,
+                                                               ChunkType const& chunk,
+                                                               uint32_t selector)
+{
+  auto const family = classify_level_prepass_family(page, chunk);
+  if (!level_prepass_family_is_enabled(family, selector)) { return 0; }
+
+  auto const map_bytes = static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+  auto const nesting_bytes =
+    static_cast<size_t>(chunk.prepass_nesting_info_size) * sizeof(PageNestingPrepassState);
+  bool const optional_leaf = chunk.max_level[level_type::DEFINITION] != 0;
+
+  switch (family) {
+    case level_prepass_family::GENERIC_FLAT:
+    case level_prepass_family::LEGACY_FLAT:
+    case level_prepass_family::DELTA_FLAT: return optional_leaf ? map_bytes : size_t{0};
+    case level_prepass_family::GENERIC_NESTED:
+    case level_prepass_family::LEGACY_NESTED:
+    case level_prepass_family::DELTA_NESTED:
+      return nesting_bytes + (optional_leaf ? map_bytes : size_t{0});
+    case level_prepass_family::GENERIC_LIST:
+    case level_prepass_family::LEGACY_LIST:
+    case level_prepass_family::DELTA_LIST: return nesting_bytes + map_bytes;
+    case level_prepass_family::NONE: return 0;
+  }
+  return 0;
+}
+
 // Forward declarations
 struct cumulative_page_info;
 struct page_span;
@@ -267,6 +365,20 @@ rmm::device_uvector<size_t> compute_level_decode_sizes(device_span<ColumnChunkDe
                                                        size_t num_rows,
                                                        cuda::stream_ref stream,
                                                        rmm::device_async_resource_ref mr);
+
+/**
+ * @brief Computes the selector-aware per-page storage required by the page-global level prepass.
+ *
+ * The returned values account for the regions that the pass-owned prepass arena may need when a
+ * page is selected for the prepass. Required flat pages use the identity-map contract and need no
+ * arena storage. List pages are deliberately charged before the allocator's list-cap fallback so
+ * constrained subpass selection never under-budgets a possible prepass allocation.
+ */
+rmm::device_uvector<size_t> compute_level_prepass_sizes(device_span<ColumnChunkDesc const> chunks,
+                                                        device_span<PageInfo const> pages,
+                                                        uint32_t selector,
+                                                        cuda::stream_ref stream,
+                                                        rmm::device_async_resource_ref mr);
 
 /**
  * @brief Computes the level decode buffer sizes for a single page.

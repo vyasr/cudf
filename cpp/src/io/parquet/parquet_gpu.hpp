@@ -633,8 +633,12 @@ struct ColumnChunkDesc {
   size_t num_values{};               // total number of values in this column
   size_t start_row{};                // file-wide, absolute starting row of this chunk
   uint32_t num_rows{};               // number of rows in this chunk
-  int16_t max_level[level_type::NUM_LEVEL_TYPES]{};   // max definition/repetition level  // NOLINT
-  int16_t max_nesting_depth{};                        // max nesting depth of the output
+  int16_t max_level[level_type::NUM_LEVEL_TYPES]{};  // max definition/repetition level  // NOLINT
+  int16_t max_nesting_depth{};                       // max nesting depth of the output
+  // Number of nesting states allocated per page for this logical input column across all sources.
+  // This is kept on the chunk descriptor because constrained subpass sizing happens before the
+  // corresponding PageInfo fields are initialized.
+  int32_t prepass_nesting_info_size{};
   int32_t type_length{};                              // type length from schema (for FLBA only)
   Type physical_type{};                               // parquet physical data type
   uint8_t level_bits[level_type::NUM_LEVEL_TYPES]{};  // bits to encode max   // NOLINT

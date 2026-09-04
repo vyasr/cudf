@@ -170,6 +170,7 @@ struct pass_intermediate_data {
       decomp_scratch_sizes{0, stream},
       string_offset_sizes{0, stream},
       level_decode_sizes{0, stream},
+      prepass_sizes{0, stream},
       str_dict_index{0, stream},
       prepass_arena{0, stream}
   {
@@ -194,6 +195,7 @@ struct pass_intermediate_data {
   rmm::device_uvector<size_t> decomp_scratch_sizes;
   rmm::device_uvector<size_t> string_offset_sizes;
   rmm::device_uvector<size_t> level_decode_sizes;
+  rmm::device_uvector<size_t> prepass_sizes;
   rmm::device_uvector<string_index_pair> str_dict_index;
 
   // Retained pass-owned storage for page-global level-prepass state.  It is

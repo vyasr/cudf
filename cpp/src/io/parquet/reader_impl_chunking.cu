@@ -272,10 +272,13 @@ void reader_impl::setup_next_subpass(read_mode mode)
         pass.chunks, pass.pages, pass.skip_rows, pass.num_rows, _stream, _mr);
       pass.level_decode_sizes = compute_level_decode_sizes(
         pass.chunks, pass.pages, pass.level_type_size, pass.skip_rows, pass.num_rows, _stream, _mr);
+      pass.prepass_sizes =
+        compute_level_prepass_sizes(pass.chunks, pass.pages, _level_prepass_mode, _stream, _mr);
     }
     include_scratch_size(pass.decomp_scratch_sizes, c_info, _stream);
     include_scratch_size(pass.string_offset_sizes, c_info, _stream);
     include_scratch_size(pass.level_decode_sizes, c_info, _stream);
+    include_scratch_size(pass.prepass_sizes, c_info, _stream);
 
     auto iter               = cuda::counting_iterator<size_t>{0};
     auto const pass_max_row = pass.skip_rows + pass.num_rows;
@@ -415,8 +418,9 @@ void reader_impl::create_global_chunk_info()
   auto& chunks                = _file_itm_data.chunks;
 
   // Descriptors for all the chunks that make up the selected columns
-  auto const num_input_columns = _input_columns.size();
-  auto const num_chunks        = row_groups_info.size() * num_input_columns;
+  auto const num_input_columns          = _input_columns.size();
+  auto const num_chunks                 = row_groups_info.size() * num_input_columns;
+  auto const per_page_nesting_info_size = nesting_info_sizes();
 
   // Mapping of input column to page index column
   std::vector<size_type> column_mapping;
@@ -502,6 +506,7 @@ void reader_impl::create_global_chunk_info()
                           list_bytes_per_row_est,
                           schema.type == Type::BYTE_ARRAY and _strings_to_categorical,
                           rg.source_index);
+      chunks.back().prepass_nesting_info_size = per_page_nesting_info_size[i];
     }
     // Adjust for skip_rows when updating the remaining rows after the first group
     remaining_rows -=

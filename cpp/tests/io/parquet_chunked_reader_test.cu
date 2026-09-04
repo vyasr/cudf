@@ -1290,6 +1290,52 @@ void input_limit_test_read(std::vector<std::string> const& test_filenames,
 
 struct ParquetChunkedReaderInputLimitConstrainedTest : public cudf::test::BaseFixture {};
 
+TEST_F(ParquetChunkedReaderInputLimitConstrainedTest,
+       LevelPrepassArenaIsBudgetedForMixedNestedChunkedReads)
+{
+  constexpr auto num_rows = cudf::size_type{2'048};
+  auto const values       = cuda::counting_iterator<int32_t>{0};
+
+  std::vector<std::unique_ptr<cudf::column>> input_columns;
+  input_columns.emplace_back(int32s_col(values, values + num_rows).release());
+  input_columns.emplace_back(structs_col{
+    {int32s_col(values, values + num_rows), int32s_col(values + num_rows, values + 2 * num_rows)}}
+                               .release());
+
+  auto const list_pattern = int32s_lists_col{
+    int32s_lists_col{}, int32s_lists_col{1}, int32s_lists_col{2, 3}, int32s_lists_col{4, 5, 6}};
+  auto list_ids = std::vector<int32_t>(num_rows);
+  std::iota(list_ids.begin(), list_ids.end(), 0);
+  std::transform(
+    list_ids.begin(), list_ids.end(), list_ids.begin(), [](int32_t row) { return row % 4; });
+  auto const gather_map = int32s_col(list_ids.begin(), list_ids.end());
+  input_columns.emplace_back(
+    std::move(cudf::gather(cudf::table_view{{list_pattern}}, gather_map)->release().front()));
+
+  auto const [input, filepath] =
+    write_file(input_columns, "level_prepass_budgeted_chunked_read", true, false, 4 * 1024, 33);
+  constexpr auto skip_rows = cudf::size_type{17};
+  constexpr auto num_read  = cudf::size_type{2'000};
+  auto const options = cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath})
+                         .skip_rows(skip_rows)
+                         .num_rows(num_read)
+                         .build();
+  auto const expected = cudf::slice(input->view(), {skip_rows, skip_rows + num_read});
+
+  auto const read_with_selector = [&](char const* selector) {
+    tmp_env_var const level_prepass{"LIBCUDF_PARQUET_LEVEL_PREPASS", selector};
+    auto const [result, num_chunks] = chunked_read(options, 1'024, 1'024);
+    EXPECT_GT(num_chunks, 1);
+    return result;
+  };
+
+  auto const legacy  = read_with_selector("0");
+  auto const prepass = read_with_selector("0x1ff");
+  CUDF_TEST_EXPECT_TABLES_EQUAL(expected[0], legacy->view());
+  CUDF_TEST_EXPECT_TABLES_EQUAL(expected[0], prepass->view());
+  CUDF_TEST_EXPECT_TABLES_EQUAL(legacy->view(), prepass->view());
+}
+
 TEST_F(ParquetChunkedReaderInputLimitConstrainedTest, SingleFixedWidthColumn)
 {
   auto base_path      = temp_env->get_temp_filepath("single_col_fixed_width");

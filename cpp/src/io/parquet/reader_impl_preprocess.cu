@@ -42,38 +42,6 @@
 namespace cudf::io::parquet::detail {
 
 namespace {
-
-[[nodiscard]] level_prepass_family classify_prepass_family(PageInfo const& page,
-                                                           ColumnChunkDesc const& chunk)
-{
-  bool const is_list   = chunk.max_level[level_type::REPETITION] > 0;
-  bool const is_nested = !is_list && chunk.max_nesting_depth > 1;
-  bool const is_delta  = BitAnd(page.kernel_mask,
-                               BitOr(decode_kernel_mask::DELTA_BINARY,
-                                     decode_kernel_mask::DELTA_BYTE_ARRAY,
-                                     decode_kernel_mask::DELTA_LENGTH_BA)) != 0;
-  bool const is_legacy =
-    BitAnd(page.kernel_mask,
-           BitOr(decode_kernel_mask::GENERAL, decode_kernel_mask::BYTE_STREAM_SPLIT)) != 0;
-
-  if (is_list) {
-    return is_delta    ? level_prepass_family::DELTA_LIST
-           : is_legacy ? level_prepass_family::LEGACY_LIST
-                       : level_prepass_family::GENERIC_LIST;
-  }
-  if (is_nested) {
-    return is_delta    ? level_prepass_family::DELTA_NESTED
-           : is_legacy ? level_prepass_family::LEGACY_NESTED
-                       : level_prepass_family::GENERIC_NESTED;
-  }
-  return is_delta    ? level_prepass_family::DELTA_FLAT
-         : is_legacy ? level_prepass_family::LEGACY_FLAT
-                     : level_prepass_family::GENERIC_FLAT;
-}
-
-}  // namespace
-
-namespace {
 // Tests the passed in logical type for a FIXED_LENGTH_BYTE_ARRAY column to see if it should
 // be treated as a string. Currently the only logical type that has special handling is DECIMAL.
 // Other valid types in the future would be UUID (still treated as string) and FLOAT16 (which
@@ -153,6 +121,27 @@ void reader_impl::build_string_dict_indices()
     "Parquet dictionary index construction failed with code(s) " + kernel_error::to_string(error));
 }
 
+std::vector<int> reader_impl::nesting_info_sizes() const
+{
+  auto const num_columns = _input_columns.size();
+  std::vector<int> sizes(num_columns);
+  auto iter = cuda::counting_iterator{size_type{0}};
+  std::transform(iter, iter + num_columns, sizes.begin(), [&](size_type i) {
+    auto const schema_idx     = _input_columns[i].schema_idx;
+    auto max_definition_level = _metadata->get_schema(schema_idx).max_definition_level + 1;
+    std::for_each(cuda::counting_iterator{static_cast<size_t>(1)},
+                  cuda::counting_iterator{_num_sources},
+                  [&](auto const src_file_idx) {
+                    auto const& schema = _metadata->get_schema(
+                      _metadata->map_schema_index(schema_idx, src_file_idx), src_file_idx);
+                    max_definition_level =
+                      std::max(max_definition_level, schema.max_definition_level + 1);
+                  });
+    return std::max(max_definition_level, _metadata->get_output_nesting_depth(schema_idx));
+  });
+  return sizes;
+}
+
 void reader_impl::allocate_nesting_info()
 {
   auto& pass    = *_pass_itm_data;
@@ -164,24 +153,7 @@ void reader_impl::allocate_nesting_info()
   auto& page_nesting_decode_info = subpass.page_nesting_decode_info;
 
   // generate the number of nesting info structs needed per-page, by column
-  std::vector<int> per_page_nesting_info_size(num_columns);
-  auto iter = cuda::counting_iterator{size_type{0}};
-  std::transform(iter, iter + num_columns, per_page_nesting_info_size.begin(), [&](size_type i) {
-    // Schema index of the current input column
-    auto const schema_idx = _input_columns[i].schema_idx;
-    // Get the max_definition_level of this column across all sources.
-    auto max_definition_level = _metadata->get_schema(schema_idx).max_definition_level + 1;
-    std::for_each(cuda::counting_iterator{static_cast<size_t>(1)},
-                  cuda::counting_iterator{_num_sources},
-                  [&](auto const src_file_idx) {
-                    auto const& schema = _metadata->get_schema(
-                      _metadata->map_schema_index(schema_idx, src_file_idx), src_file_idx);
-                    max_definition_level =
-                      std::max(max_definition_level, schema.max_definition_level + 1);
-                  });
-
-    return std::max(max_definition_level, _metadata->get_output_nesting_depth(schema_idx));
-  });
+  auto const per_page_nesting_info_size = nesting_info_sizes();
 
   // compute total # of page_nesting infos needed and allocate space. doing this in one
   // buffer to keep it to a single gpu allocation
@@ -335,7 +307,7 @@ void reader_impl::allocate_level_decode_space()
   for (size_t idx = 0; idx < num_pages; idx++) {
     auto& p           = pages[idx];
     auto const& chunk = pass.chunks[p.chunk_idx];
-    p.prepass_family  = classify_prepass_family(p, chunk);
+    p.prepass_family  = classify_level_prepass_family(p, chunk);
 
     // Skip pages that are masked out - no need to allocate level decode space for them
     auto const page_mask = subpass_page_mask_span();
@@ -404,16 +376,6 @@ void reader_impl::allocate_level_decode_space()
   };
   auto const page_mask = subpass_page_mask_span();
   std::vector<prepass_layout> layout(num_pages);
-  auto const generic_flat_enabled   = (_level_prepass_mode & level_prepass_generic_flat) != 0;
-  auto const legacy_flat_enabled    = (_level_prepass_mode & level_prepass_legacy_flat) != 0;
-  auto const delta_flat_enabled     = (_level_prepass_mode & level_prepass_delta_flat) != 0;
-  auto const generic_nested_enabled = (_level_prepass_mode & level_prepass_generic_nested) != 0;
-  auto const legacy_nested_enabled  = (_level_prepass_mode & level_prepass_legacy_nested) != 0;
-  auto const delta_nested_enabled   = (_level_prepass_mode & level_prepass_delta_nested) != 0;
-  auto const generic_list_enabled   = (_level_prepass_mode & level_prepass_generic_list) != 0;
-  auto const legacy_list_enabled    = (_level_prepass_mode & level_prepass_legacy_list) != 0;
-  auto const delta_list_enabled     = (_level_prepass_mode & level_prepass_delta_list) != 0;
-
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page          = pages[idx];
     auto const& chunk   = pass.chunks[page.chunk_idx];
@@ -437,31 +399,33 @@ void reader_impl::allocate_level_decode_space()
     page.list_prepass_input_value_count    = 0;
     page.list_prepass_input_row_count      = 0;
 
+    auto const prepass_family_enabled =
+      level_prepass_family_is_enabled(page.prepass_family, _level_prepass_mode);
     page.flat_prepass_enabled =
-      active && generic_flat_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
+      active && prepass_family_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
     page.legacy_flat_prepass_enabled =
-      active && legacy_flat_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
+      active && prepass_family_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
     page.delta_flat_prepass_enabled =
-      active && delta_flat_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
+      active && prepass_family_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
     entry.flat = page.flat_prepass_enabled || page.legacy_flat_prepass_enabled ||
                  page.delta_flat_prepass_enabled;
     if (entry.flat) { page.flat_prepass_nz_count = -2; }
 
-    page.nested_prepass_enabled = active && generic_nested_enabled &&
+    page.nested_prepass_enabled = active && prepass_family_enabled &&
                                   page.prepass_family == level_prepass_family::GENERIC_NESTED;
-    page.legacy_nested_prepass_enabled =
-      active && legacy_nested_enabled && page.prepass_family == level_prepass_family::LEGACY_NESTED;
+    page.legacy_nested_prepass_enabled = active && prepass_family_enabled &&
+                                         page.prepass_family == level_prepass_family::LEGACY_NESTED;
     page.delta_nested_prepass_enabled =
-      active && delta_nested_enabled && page.prepass_family == level_prepass_family::DELTA_NESTED;
+      active && prepass_family_enabled && page.prepass_family == level_prepass_family::DELTA_NESTED;
     entry.nested = page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
                    page.delta_nested_prepass_enabled;
 
     bool const has_repetition         = chunk.max_level[level_type::REPETITION] > 0;
-    page.generic_list_prepass_enabled = active && has_repetition && generic_list_enabled &&
+    page.generic_list_prepass_enabled = active && has_repetition && prepass_family_enabled &&
                                         page.prepass_family == level_prepass_family::GENERIC_LIST;
-    page.legacy_list_prepass_enabled = active && has_repetition && legacy_list_enabled &&
+    page.legacy_list_prepass_enabled = active && has_repetition && prepass_family_enabled &&
                                        page.prepass_family == level_prepass_family::LEGACY_LIST;
-    page.delta_list_prepass_enabled = active && has_repetition && delta_list_enabled &&
+    page.delta_list_prepass_enabled = active && has_repetition && prepass_family_enabled &&
                                       page.prepass_family == level_prepass_family::DELTA_LIST;
     entry.list = page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
                  page.delta_list_prepass_enabled;

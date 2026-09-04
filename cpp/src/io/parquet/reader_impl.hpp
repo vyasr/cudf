@@ -607,6 +607,7 @@ class reader_impl {
   // fixed for the reader lifetime so every pass and output chunk agrees on
   // which (future) prepass consumer families may be selected.
   uint32_t _level_prepass_mode{0};
+  bool _level_prepass_debug_stats_enabled{false};
 };
 
 }  // namespace cudf::io::parquet::detail

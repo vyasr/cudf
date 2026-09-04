@@ -289,9 +289,11 @@ constexpr uint32_t level_prepass_all            = 0x1ff;
 /**
  * @brief Test-only accounting for the temporary Parquet level prepass.
  *
- * The values are process-global and accumulate until reset. They intentionally
- * describe producer-side work only, so selector-zero reads can prove that they
- * did not allocate or launch prepass work.
+ * The values are process-global and accumulate until reset. Set
+ * `LIBCUDF_PARQUET_LEVEL_PREPASS_DEBUG_STATS=1` before constructing a reader
+ * to enable accounting. They intentionally describe producer-side work only,
+ * so selector-zero reads can prove that they did not allocate or launch
+ * prepass work.
  */
 struct level_prepass_debug_stats {
   size_t publisher_launches{};
@@ -308,6 +310,9 @@ CUDF_EXPORT [[nodiscard]] level_prepass_debug_stats get_level_prepass_debug_stat
 
 /** @brief Add producer-side work to the test-only Parquet level-prepass accounting. */
 CUDF_EXPORT void add_level_prepass_debug_stats(level_prepass_debug_stats const& stats);
+
+/** @brief Return whether test-only prepass accounting is enabled for a reader. */
+CUDF_EXPORT [[nodiscard]] bool level_prepass_debug_stats_enabled_from_environment();
 
 /**
  * @brief Read the temporary Parquet level-prepass selector from the environment.

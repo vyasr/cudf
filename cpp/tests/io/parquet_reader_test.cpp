@@ -83,6 +83,7 @@ TEST_F(ParquetReaderTest, LevelPrepassDebugStatsRespectSelector)
 
   {
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x1ff"};
+    tmp_env_var const debug_stats{"LIBCUDF_PARQUET_LEVEL_PREPASS_DEBUG_STATS", "1"};
     reset_level_prepass_debug_stats();
     auto const result = cudf::io::read_parquet(options);
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result.tbl->view().column(0), input);
@@ -96,6 +97,7 @@ TEST_F(ParquetReaderTest, LevelPrepassDebugStatsRespectSelector)
 
   {
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0"};
+    tmp_env_var const debug_stats{"LIBCUDF_PARQUET_LEVEL_PREPASS_DEBUG_STATS", "1"};
     reset_level_prepass_debug_stats();
     auto const result = cudf::io::read_parquet(options);
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(result.tbl->view().column(0), input);

@@ -606,11 +606,14 @@ void reader_impl::allocate_level_decode_space()
   subpass.list_prepass_selected_pages = prepare_compact_indices(
     [](prepass_layout const& entry) { return entry.list; }, subpass.list_prepass_page_indices);
 
-  add_level_prepass_debug_stats(
-    {.selected_pages = subpass.flat_prepass_selected_pages + subpass.nested_prepass_selected_pages +
-                       subpass.list_prepass_selected_pages,
-     .allocated_bytes = pass.prepass_arena.capacity() - prepass_arena_capacity_before,
-     .fallback_pages  = list_fallback_pages});
+  if (_level_prepass_debug_stats_enabled) {
+    add_level_prepass_debug_stats(
+      {.selected_pages = subpass.flat_prepass_selected_pages +
+                         subpass.nested_prepass_selected_pages +
+                         subpass.list_prepass_selected_pages,
+       .allocated_bytes = pass.prepass_arena.capacity() - prepass_arena_capacity_before,
+       .fallback_pages  = list_fallback_pages});
+  }
 }
 
 namespace {

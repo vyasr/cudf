@@ -31,6 +31,7 @@
 #include <bitset>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <stdexcept>
@@ -80,6 +81,12 @@ void add_level_prepass_debug_stats(level_prepass_debug_stats const& added)
   stats.selected_pages.fetch_add(added.selected_pages, std::memory_order_relaxed);
   stats.allocated_bytes.fetch_add(added.allocated_bytes, std::memory_order_relaxed);
   stats.fallback_pages.fetch_add(added.fallback_pages, std::memory_order_relaxed);
+}
+
+bool level_prepass_debug_stats_enabled_from_environment()
+{
+  auto const* value = std::getenv("LIBCUDF_PARQUET_LEVEL_PREPASS_DEBUG_STATS");
+  return value != nullptr && std::strcmp(value, "1") == 0;
 }
 
 uint32_t level_prepass_mode_from_environment()
@@ -285,7 +292,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.flat_prepass_page_indices.data(),
                                       subpass.flat_prepass_page_indices.size()},
       _stream);
-    add_level_prepass_debug_stats({.publisher_launches = 1});
+    if (_level_prepass_debug_stats_enabled) {
+      add_level_prepass_debug_stats({.publisher_launches = 1});
+    }
   }
   if (has_selected_nested_prepass) {
     cudf::scoped_range const publisher{"parquet::level_prepass::nested_publisher"};
@@ -299,7 +308,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.nested_prepass_page_indices.data(),
                                       subpass.nested_prepass_page_indices.size()},
       _stream);
-    add_level_prepass_debug_stats({.publisher_launches = 1});
+    if (_level_prepass_debug_stats_enabled) {
+      add_level_prepass_debug_stats({.publisher_launches = 1});
+    }
   }
   if (has_selected_list_prepass) {
     cudf::scoped_range const publisher{"parquet::level_prepass::list_publisher"};
@@ -313,7 +324,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.list_prepass_page_indices.data(),
                                       subpass.list_prepass_page_indices.size()},
       _stream);
-    add_level_prepass_debug_stats({.publisher_launches = 1});
+    if (_level_prepass_debug_stats_enabled) {
+      add_level_prepass_debug_stats({.publisher_launches = 1});
+    }
   }
 
   // get the number of streams we need from the pool and tell them to wait on the H2D copies
@@ -708,7 +721,8 @@ reader_impl::reader_impl(std::size_t chunk_read_limit,
     _output_chunk_read_limit{chunk_read_limit},
     _input_pass_read_limit{pass_read_limit}
 {
-  _level_prepass_mode = level_prepass_mode_from_environment();
+  _level_prepass_mode                = level_prepass_mode_from_environment();
+  _level_prepass_debug_stats_enabled = level_prepass_debug_stats_enabled_from_environment();
   if (_level_prepass_mode != 0) {
     CUDF_LOG_INFO(
       "LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x; selected Parquet level-prepass "

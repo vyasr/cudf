@@ -4,11 +4,18 @@
 
 set -euo pipefail
 
+source rapids-init-pip
+
+BASE_PIP_CONSTRAINT="$(mktemp)"
+cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"
+trap 'rm -f "${BASE_PIP_CONSTRAINT}"' EXIT
+
 build_wheel() {
   local package_key=$1
   local build_script=$2
 
   unset RAPIDS_PACKAGE_NAME
+  cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
   export RAPIDS_WHEEL_BLD_OUTPUT_DIR="${PWD}/wheel-output/${package_key}"
   mkdir -p "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
 

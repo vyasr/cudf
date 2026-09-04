@@ -11,10 +11,11 @@ package_dir="python/libcudf_streaming"
 
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 
-# Downloads libcudf wheel from this current build,
+# Uses a local libcudf wheelhouse when one is supplied; otherwise downloads the
+# libcudf wheel from this current build.
 # then ensures 'libcudf_streaming' wheel builds always use the 'libcudf'
 # just built in the same CI run.
-LIBCUDF_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")
+LIBCUDF_WHEELHOUSE=${RAPIDS_LIBCUDF_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")}
 echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 
 rapids-logger "Generating build requirements"

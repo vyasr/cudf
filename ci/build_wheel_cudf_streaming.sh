@@ -12,11 +12,12 @@ dependency_file_key_suffix="cudf_streaming"
 
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 
-# Downloads libcudf_streaming wheel from this current build,
-# then ensures 'cudf_streaming' wheel builds always use the 'libcudf_streaming' just built in the same CI run.
-LIBCUDF_STREAMING_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "$RAPIDS_CUDA_VERSION")")
-LIBCUDF_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")
-PYLIBCUDF_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "$RAPIDS_CUDA_VERSION")")
+# Uses local wheelhouses when supplied; otherwise downloads wheels from this
+# current build. This ensures cudf_streaming builds use the libcudf_streaming,
+# libcudf, and pylibcudf built in the same CI run.
+LIBCUDF_STREAMING_WHEELHOUSE=${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "$RAPIDS_CUDA_VERSION")")}
+LIBCUDF_WHEELHOUSE=${RAPIDS_LIBCUDF_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")}
+PYLIBCUDF_WHEELHOUSE=${RAPIDS_PYLIBCUDF_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "$RAPIDS_CUDA_VERSION")")}
 echo "libcudf-streaming-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_STREAMING_WHEELHOUSE}"/libcudf_streaming_*.whl)" >> "${PIP_CONSTRAINT}"
 echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 echo "pylibcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${PYLIBCUDF_WHEELHOUSE}"/pylibcudf_*.whl)" >> "${PIP_CONSTRAINT}"

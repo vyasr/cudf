@@ -10,10 +10,11 @@ package_dir="python/cudf"
 
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 
-# Downloads libcudf and pylibcudf wheels from this current build,
-# then ensures 'cudf' wheel builds always use the 'libcudf' and 'pylibcudf' just built in the same CI run.
-LIBCUDF_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")
-PYLIBCUDF_WHEELHOUSE=$(rapids-download-from-github "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "$RAPIDS_CUDA_VERSION")")
+# Uses local libcudf and pylibcudf wheelhouses when supplied; otherwise
+# downloads wheels from this current build. This ensures cudf builds always use
+# the libcudf and pylibcudf built in the same CI run.
+LIBCUDF_WHEELHOUSE=${RAPIDS_LIBCUDF_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "$RAPIDS_CUDA_VERSION")")}
+PYLIBCUDF_WHEELHOUSE=${RAPIDS_PYLIBCUDF_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "$RAPIDS_CUDA_VERSION")")}
 
 # env variable 'PIP_CONSTRAINT' is set up by rapids-init-pip. It constrains all subsequent
 # 'pip install', 'pip download', etc. calls (except the isolated wheel build,

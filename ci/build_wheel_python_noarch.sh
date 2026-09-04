@@ -4,22 +4,37 @@
 
 set -euo pipefail
 
-build_wheel() {
-  local package_key=$1
-  local build_script=$2
+source rapids-init-pip
 
-  unset RAPIDS_PACKAGE_NAME
+set_wheel_output_dir() {
+  local package_key=$1
+
   export RAPIDS_WHEEL_BLD_OUTPUT_DIR="${PWD}/wheel-output/${package_key}"
   mkdir -p "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+}
 
-  # shellcheck disable=SC1090
-  source "${build_script}"
-
+record_wheel_artifact() {
+  local package_key=$1
+  local package_name=$2
   {
-    echo "${package_key}_artifact_name=${RAPIDS_PACKAGE_NAME}"
+    echo "${package_key}_artifact_name=${package_name}"
     echo "${package_key}_output_dir=${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
   } >> "${GITHUB_OUTPUT}"
 }
 
-build_wheel dask_cudf ci/build_wheel_dask_cudf.sh
-build_wheel cudf_polars ci/build_wheel_cudf_polars.sh
+build_noarch_wheel() {
+  local package_key=$1
+  local package_name=$2
+  local package_dir=$3
+
+  set_wheel_output_dir "${package_key}"
+  ./ci/build_wheel.sh "${package_name}" "${package_dir}"
+  cp "${package_dir}"/dist/* "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}/"
+  ./ci/validate_wheel.sh "${package_dir}" "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+  record_wheel_artifact \
+    "${package_key}" \
+    "$(rapids-artifact-name wheel_python "${package_name}" cudf --pure --arch any --cuda "${RAPIDS_CUDA_VERSION}")"
+}
+
+build_noarch_wheel dask_cudf dask-cudf python/dask_cudf
+build_noarch_wheel cudf_polars cudf-polars python/cudf_polars

@@ -204,7 +204,6 @@ jobs:
           - 'ci/test_narwhals.sh'
         test_python_wheels:
           - 'ci/build_wheel.sh'
-          - 'ci/build_wheel_pylibcudf.sh'
           - 'ci/build_wheel_cpp.sh'
           - 'ci/build_wheel_python.sh'
           - 'ci/build_wheel_python_noarch.sh'
@@ -212,17 +211,13 @@ jobs:
           - '.github/workflows/wheels-build-stage.yaml'
         test_python_wheel_cudf:
           - 'ci/test_wheel_cudf.sh'
-          - 'ci/build_wheel_cudf.sh'
         test_python_wheel_cudf_streaming:
           - 'ci/test_wheel_cudf_streaming.sh'
-          - 'ci/build_wheel_cudf_streaming.sh'
         test_python_wheel_cudf_polars:
           - 'ci/test_wheel_cudf_polars.sh'
-          - 'ci/build_wheel_cudf_polars.sh'
           - 'ci/utils/get_matrix_values.py'
         test_python_wheel_dask_cudf:
           - 'ci/test_wheel_dask_cudf.sh'
-          - 'ci/build_wheel_dask_cudf.sh'
         test_python_cudf_polars_polars:
           - 'ci/test_cudf_polars_polars_tests.sh'
           - 'ci/run_cudf_polars_polars_tests.sh'

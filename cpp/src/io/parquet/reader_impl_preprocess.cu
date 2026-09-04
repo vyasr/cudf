@@ -390,6 +390,7 @@ void reader_impl::allocate_level_decode_space()
   // Classify, size, and wire all prepass state in one host pass.  The maps
   // have to remain live until decoder streams join, so the storage is owned by
   // the pass rather than by each output chunk/subpass.
+  cudf::scoped_range const prepass_host_plan{"parquet::level_prepass::host_plan"};
   struct prepass_layout {
     bool flat{false};
     bool nested{false};
@@ -467,7 +468,8 @@ void reader_impl::allocate_level_decode_space()
   }
 
   constexpr size_t max_list_prepass_map_bytes{size_t{1} << 30};
-  size_t list_map_bytes = 0;
+  size_t list_fallback_pages = 0;
+  size_t list_map_bytes      = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
     if (layout[idx].list) {
       list_map_bytes += static_cast<size_t>(pages[idx].num_input_values) * sizeof(uint32_t);
@@ -475,6 +477,7 @@ void reader_impl::allocate_level_decode_space()
   }
   if (list_map_bytes > max_list_prepass_map_bytes) {
     for (size_t idx = 0; idx < num_pages; ++idx) {
+      list_fallback_pages += layout[idx].list;
       layout[idx].list                        = false;
       pages[idx].generic_list_prepass_enabled = false;
       pages[idx].legacy_list_prepass_enabled  = false;
@@ -537,6 +540,7 @@ void reader_impl::allocate_level_decode_space()
     alignof(PageNestingPrepassState),
     [](prepass_layout& entry, size_t offset) { entry.list_nesting_offset = offset; });
 
+  auto const prepass_arena_capacity_before = pass.prepass_arena.capacity();
   try {
     pass.prepass_arena.resize(arena_size, _stream);
   } catch (std::bad_alloc const&) {
@@ -544,6 +548,7 @@ void reader_impl::allocate_level_decode_space()
     // map cannot fit. Flat/nested prepass allocation failures remain real OOMs.
     if (arena_size == list_region_start) { throw; }
     for (size_t idx = 0; idx < num_pages; ++idx) {
+      list_fallback_pages += layout[idx].list;
       layout[idx].list                        = false;
       pages[idx].generic_list_prepass_enabled = false;
       pages[idx].legacy_list_prepass_enabled  = false;
@@ -600,6 +605,12 @@ void reader_impl::allocate_level_decode_space()
     [](prepass_layout const& entry) { return entry.nested; }, subpass.nested_prepass_page_indices);
   subpass.list_prepass_selected_pages = prepare_compact_indices(
     [](prepass_layout const& entry) { return entry.list; }, subpass.list_prepass_page_indices);
+
+  add_level_prepass_debug_stats(
+    {.selected_pages = subpass.flat_prepass_selected_pages + subpass.nested_prepass_selected_pages +
+                       subpass.list_prepass_selected_pages,
+     .allocated_bytes = pass.prepass_arena.capacity() - prepass_arena_capacity_before,
+     .fallback_pages  = list_fallback_pages});
 }
 
 namespace {

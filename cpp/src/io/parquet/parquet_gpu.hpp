@@ -287,6 +287,29 @@ constexpr uint32_t level_prepass_delta_list     = 0x100;
 constexpr uint32_t level_prepass_all            = 0x1ff;
 
 /**
+ * @brief Test-only accounting for the temporary Parquet level prepass.
+ *
+ * The values are process-global and accumulate until reset. They intentionally
+ * describe producer-side work only, so selector-zero reads can prove that they
+ * did not allocate or launch prepass work.
+ */
+struct level_prepass_debug_stats {
+  size_t publisher_launches{};
+  size_t selected_pages{};
+  size_t allocated_bytes{};
+  size_t fallback_pages{};
+};
+
+/** @brief Reset the test-only Parquet level-prepass accounting. */
+CUDF_EXPORT void reset_level_prepass_debug_stats();
+
+/** @brief Return the current test-only Parquet level-prepass accounting. */
+CUDF_EXPORT [[nodiscard]] level_prepass_debug_stats get_level_prepass_debug_stats();
+
+/** @brief Add producer-side work to the test-only Parquet level-prepass accounting. */
+CUDF_EXPORT void add_level_prepass_debug_stats(level_prepass_debug_stats const& stats);
+
+/**
  * @brief Read the temporary Parquet level-prepass selector from the environment.
  *
  * This is an internal rollout control. Until a family is migrated, its bit is

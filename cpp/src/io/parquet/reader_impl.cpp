@@ -27,6 +27,7 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 
+#include <atomic>
 #include <bitset>
 #include <cerrno>
 #include <cstdlib>
@@ -36,6 +37,50 @@
 #include <utility>
 
 namespace cudf::io::parquet::detail {
+
+namespace {
+
+struct level_prepass_debug_stats_atomic {
+  std::atomic<size_t> publisher_launches{0};
+  std::atomic<size_t> selected_pages{0};
+  std::atomic<size_t> allocated_bytes{0};
+  std::atomic<size_t> fallback_pages{0};
+};
+
+level_prepass_debug_stats_atomic& level_prepass_debug_stats_storage()
+{
+  static level_prepass_debug_stats_atomic stats;
+  return stats;
+}
+
+}  // namespace
+
+void reset_level_prepass_debug_stats()
+{
+  auto& stats = level_prepass_debug_stats_storage();
+  stats.publisher_launches.store(0, std::memory_order_relaxed);
+  stats.selected_pages.store(0, std::memory_order_relaxed);
+  stats.allocated_bytes.store(0, std::memory_order_relaxed);
+  stats.fallback_pages.store(0, std::memory_order_relaxed);
+}
+
+level_prepass_debug_stats get_level_prepass_debug_stats()
+{
+  auto& stats = level_prepass_debug_stats_storage();
+  return {stats.publisher_launches.load(std::memory_order_relaxed),
+          stats.selected_pages.load(std::memory_order_relaxed),
+          stats.allocated_bytes.load(std::memory_order_relaxed),
+          stats.fallback_pages.load(std::memory_order_relaxed)};
+}
+
+void add_level_prepass_debug_stats(level_prepass_debug_stats const& added)
+{
+  auto& stats = level_prepass_debug_stats_storage();
+  stats.publisher_launches.fetch_add(added.publisher_launches, std::memory_order_relaxed);
+  stats.selected_pages.fetch_add(added.selected_pages, std::memory_order_relaxed);
+  stats.allocated_bytes.fetch_add(added.allocated_bytes, std::memory_order_relaxed);
+  stats.fallback_pages.fetch_add(added.fallback_pages, std::memory_order_relaxed);
+}
 
 uint32_t level_prepass_mode_from_environment()
 {
@@ -204,18 +249,21 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // string decoders.
   auto initial_str_offsets = rmm::device_uvector<size_t>{0, _stream, _mr};
 
-  pass.chunks.host_to_device_async(_stream);
-  chunk_nested_valids.host_to_device_async(_stream);
-  chunk_nested_data.host_to_device_async(_stream);
-  if (has_strings) {
-    // Host vector to initialize the initial string offsets
-    auto host_offsets_vector =
-      cudf::detail::make_pinned_vector_async<size_t>(_input_columns.size(), _stream);
-    std::fill(
-      host_offsets_vector.begin(), host_offsets_vector.end(), std::numeric_limits<size_t>::max());
-    // Initialize the initial string offsets vector from the host vector
-    initial_str_offsets = cudf::detail::make_device_uvector(host_offsets_vector, _stream, _mr);
-    chunk_nested_str_data.host_to_device_async(_stream);
+  {
+    cudf::scoped_range const pointer_h2d{"parquet::level_prepass::pointer_h2d"};
+    pass.chunks.host_to_device_async(_stream);
+    chunk_nested_valids.host_to_device_async(_stream);
+    chunk_nested_data.host_to_device_async(_stream);
+    if (has_strings) {
+      // Host vector to initialize the initial string offsets
+      auto host_offsets_vector =
+        cudf::detail::make_pinned_vector_async<size_t>(_input_columns.size(), _stream);
+      std::fill(
+        host_offsets_vector.begin(), host_offsets_vector.end(), std::numeric_limits<size_t>::max());
+      // Initialize the initial string offsets vector from the host vector
+      initial_str_offsets = cudf::detail::make_device_uvector(host_offsets_vector, _stream, _mr);
+      chunk_nested_str_data.host_to_device_async(_stream);
+    }
   }
 
   // create this before we fork streams
@@ -226,6 +274,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   auto const has_selected_list_prepass   = subpass.list_prepass_selected_pages != 0;
 
   if (has_selected_flat_prepass) {
+    cudf::scoped_range const publisher{"parquet::level_prepass::flat_publisher"};
     precompute_flat_level_state(
       subpass.pages,
       pass.chunks,
@@ -236,8 +285,10 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.flat_prepass_page_indices.data(),
                                       subpass.flat_prepass_page_indices.size()},
       _stream);
+    add_level_prepass_debug_stats({.publisher_launches = 1});
   }
   if (has_selected_nested_prepass) {
+    cudf::scoped_range const publisher{"parquet::level_prepass::nested_publisher"};
     precompute_nested_level_state(
       subpass.pages,
       pass.chunks,
@@ -248,8 +299,10 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.nested_prepass_page_indices.data(),
                                       subpass.nested_prepass_page_indices.size()},
       _stream);
+    add_level_prepass_debug_stats({.publisher_launches = 1});
   }
   if (has_selected_list_prepass) {
+    cudf::scoped_range const publisher{"parquet::level_prepass::list_publisher"};
     precompute_list_level_state(
       subpass.pages,
       pass.chunks,
@@ -260,11 +313,15 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       cudf::device_span<size_t const>{subpass.list_prepass_page_indices.data(),
                                       subpass.list_prepass_page_indices.size()},
       _stream);
+    add_level_prepass_debug_stats({.publisher_launches = 1});
   }
 
   // get the number of streams we need from the pool and tell them to wait on the H2D copies
   int const nkernels = std::bitset<32>(kernel_mask).count();
-  auto streams       = cudf::detail::fork_streams(_stream, nkernels);
+  auto streams       = [&] {
+    cudf::scoped_range const fork{"parquet::level_prepass::stream_fork"};
+    return cudf::detail::fork_streams(_stream, nkernels);
+  }();
 
   int s_idx = 0;
 
@@ -503,7 +560,10 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   }
 
   // synchronize the streams
-  cudf::detail::join_streams(streams, _stream);
+  {
+    cudf::scoped_range const join{"parquet::level_prepass::stream_join"};
+    cudf::detail::join_streams(streams, _stream);
+  }
 
   // the delta_temp_buf in the subpass struct can be freed now
   subpass.delta_temp_buf.release();

@@ -70,6 +70,44 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
   }
 }
 
+TEST_F(ParquetReaderTest, LevelPrepassDebugStatsRespectSelector)
+{
+  using cudf::io::parquet::detail::get_level_prepass_debug_stats;
+  using cudf::io::parquet::detail::reset_level_prepass_debug_stats;
+
+  auto input = cudf::test::fixed_width_column_wrapper<int>{
+    {1, 2, 3, 4, 5, 6, 7, 8}, {true, false, true, true, false, true, true, false}};
+  auto const filepath = write_parquet_temp_file(cudf::table_view{{input}}, "LevelPrepassStats");
+  auto const options =
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath}).build();
+
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x1ff"};
+    reset_level_prepass_debug_stats();
+    auto const result = cudf::io::read_parquet(options);
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(result.tbl->view().column(0), input);
+
+    auto const stats = get_level_prepass_debug_stats();
+    EXPECT_GT(stats.publisher_launches, 0);
+    EXPECT_GT(stats.selected_pages, 0);
+    EXPECT_GT(stats.allocated_bytes, 0);
+    EXPECT_EQ(stats.fallback_pages, 0);
+  }
+
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0"};
+    reset_level_prepass_debug_stats();
+    auto const result = cudf::io::read_parquet(options);
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(result.tbl->view().column(0), input);
+
+    auto const stats = get_level_prepass_debug_stats();
+    EXPECT_EQ(stats.publisher_launches, 0);
+    EXPECT_EQ(stats.selected_pages, 0);
+    EXPECT_EQ(stats.allocated_bytes, 0);
+    EXPECT_EQ(stats.fallback_pages, 0);
+  }
+}
+
 TEST_F(ParquetReaderTest, UserBounds)
 {
   // trying to read more rows than there are should result in

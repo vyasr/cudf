@@ -1955,12 +1955,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
                                        device_span<ColumnChunkDesc const> chunks,
                                        size_t min_row,
                                        size_t num_rows,
-                                       cudf::device_span<bool const> page_mask)
+                                       cudf::device_span<bool const> page_mask,
+                                       cudf::device_span<size_t const> page_indices)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   auto const block   = cg::this_thread_block();
   auto* const s      = &state_g;
-  int const page_idx = blockIdx.x;
+  int const page_idx = page_indices.empty() ? blockIdx.x : page_indices[blockIdx.x];
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
 
@@ -2051,18 +2052,22 @@ void precompute_nested_level_state(cudf::detail::hostdevice_span<PageInfo> pages
                                    size_t min_row,
                                    size_t num_rows,
                                    int level_type_size,
+                                   cudf::device_span<size_t const> page_indices,
                                    cuda::stream_ref stream)
 {
+  CUDF_FUNC_RANGE();
   if (pages.size() == 0) { return; }
   constexpr int decode_block_size = 128;
   dim3 const block(decode_block_size, 1);
-  dim3 const grid(pages.size(), 1);
+  dim3 const grid(page_indices.empty() ? pages.size() : page_indices.size(), 1);
   if (level_type_size == 1) {
     precompute_nested_level_state_kernel<uint8_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+      <<<grid, block, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, page_indices);
   } else {
     precompute_nested_level_state_kernel<uint16_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+      <<<grid, block, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, page_indices);
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }
@@ -2075,7 +2080,8 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
                                      device_span<ColumnChunkDesc const> chunks,
                                      size_t min_row,
                                      size_t num_rows,
-                                     cudf::device_span<bool const> page_mask)
+                                     cudf::device_span<bool const> page_mask,
+                                     cudf::device_span<size_t const> page_indices)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   using state_buf_t = page_state_buffers_s<decode_block_size_t * 2, 1, 1>;
@@ -2083,7 +2089,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   auto const block   = cg::this_thread_block();
   auto* const s      = &state_g;
   auto* const sb     = &state_buffers;
-  int const page_idx = blockIdx.x;
+  int const page_idx = page_indices.empty() ? blockIdx.x : page_indices[blockIdx.x];
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
 
@@ -2150,18 +2156,22 @@ void precompute_list_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
+                                 cudf::device_span<size_t const> page_indices,
                                  cuda::stream_ref stream)
 {
+  CUDF_FUNC_RANGE();
   if (pages.size() == 0) { return; }
   constexpr int decode_block_size = 128;
   dim3 const block(decode_block_size, 1);
-  dim3 const grid(pages.size(), 1);
+  dim3 const grid(page_indices.empty() ? pages.size() : page_indices.size(), 1);
   if (level_type_size == 1) {
     precompute_list_level_state_kernel<uint8_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+      <<<grid, block, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, page_indices);
   } else {
     precompute_list_level_state_kernel<uint16_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+      <<<grid, block, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, page_indices);
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

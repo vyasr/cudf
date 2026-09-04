@@ -221,48 +221,45 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // create this before we fork streams
   kernel_error error_code(_stream);
 
-  auto const has_selected_flat_prepass =
-    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
-      return page.flat_prepass_enabled || page.legacy_flat_prepass_enabled ||
-             page.delta_flat_prepass_enabled;
-    });
-  auto const has_selected_nested_prepass =
-    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
-      return page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
-             page.delta_nested_prepass_enabled;
-    });
-  auto const has_selected_list_prepass =
-    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
-      return page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
-             page.delta_list_prepass_enabled;
-    });
+  auto const has_selected_flat_prepass   = subpass.flat_prepass_selected_pages != 0;
+  auto const has_selected_nested_prepass = subpass.nested_prepass_selected_pages != 0;
+  auto const has_selected_list_prepass   = subpass.list_prepass_selected_pages != 0;
 
   if (has_selected_flat_prepass) {
-    precompute_flat_level_state(subpass.pages,
-                                pass.chunks,
-                                subpass_page_mask_span(),
-                                skip_rows,
-                                num_rows,
-                                level_type_size,
-                                _stream);
+    precompute_flat_level_state(
+      subpass.pages,
+      pass.chunks,
+      subpass_page_mask_span(),
+      skip_rows,
+      num_rows,
+      level_type_size,
+      cudf::device_span<size_t const>{subpass.flat_prepass_page_indices.data(),
+                                      subpass.flat_prepass_page_indices.size()},
+      _stream);
   }
   if (has_selected_nested_prepass) {
-    precompute_nested_level_state(subpass.pages,
-                                  pass.chunks,
-                                  subpass_page_mask_span(),
-                                  skip_rows,
-                                  num_rows,
-                                  level_type_size,
-                                  _stream);
+    precompute_nested_level_state(
+      subpass.pages,
+      pass.chunks,
+      subpass_page_mask_span(),
+      skip_rows,
+      num_rows,
+      level_type_size,
+      cudf::device_span<size_t const>{subpass.nested_prepass_page_indices.data(),
+                                      subpass.nested_prepass_page_indices.size()},
+      _stream);
   }
   if (has_selected_list_prepass) {
-    precompute_list_level_state(subpass.pages,
-                                pass.chunks,
-                                subpass_page_mask_span(),
-                                skip_rows,
-                                num_rows,
-                                level_type_size,
-                                _stream);
+    precompute_list_level_state(
+      subpass.pages,
+      pass.chunks,
+      subpass_page_mask_span(),
+      skip_rows,
+      num_rows,
+      level_type_size,
+      cudf::device_span<size_t const>{subpass.list_prepass_page_indices.data(),
+                                      subpass.list_prepass_page_indices.size()},
+      _stream);
   }
 
   // get the number of streams we need from the pool and tell them to wait on the H2D copies
@@ -654,8 +651,8 @@ reader_impl::reader_impl(std::size_t chunk_read_limit,
   _level_prepass_mode = level_prepass_mode_from_environment();
   if (_level_prepass_mode != 0) {
     CUDF_LOG_INFO(
-      "LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x; no prepass consumer family "
-      "is enabled in this build",
+      "LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x; selected Parquet level-prepass "
+      "consumer families are enabled",
       _level_prepass_mode);
   }
 

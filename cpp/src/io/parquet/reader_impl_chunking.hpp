@@ -81,11 +81,11 @@ struct subpass_intermediate_data {
   subpass_intermediate_data(cuda::stream_ref stream)
     : decomp_page_data(0, stream),
       level_decode_data(0, stream),
-      flat_prepass_data(0, stream),
-      nested_prepass_data(0, stream),
-      list_prepass_data(0, stream),
       page_buf(0, stream),
       page_src_index{0, stream},
+      flat_prepass_page_indices{0, stream},
+      nested_prepass_page_indices{0, stream},
+      list_prepass_page_indices{0, stream},
       page_string_offset_indices(0, stream),
       string_offset_buffer(0, stream),
       delta_temp_buf(0, stream),
@@ -97,15 +97,21 @@ struct subpass_intermediate_data {
   rmm::device_buffer decomp_page_data;
 
   rmm::device_buffer level_decode_data;
-  rmm::device_buffer flat_prepass_data;
-  rmm::device_buffer nested_prepass_data;
-  rmm::device_buffer list_prepass_data;
   cudf::detail::hostdevice_span<PageInfo> pages{};
 
   cudf::detail::hostdevice_vector<PageInfo> page_buf;
 
   // for each page in the subpass, the index of our source page in the pass
   rmm::device_uvector<size_t> page_src_index;
+
+  // Optional compact publisher grids. Empty means that the corresponding
+  // publisher uses the direct full-page grid.
+  rmm::device_uvector<size_t> flat_prepass_page_indices;
+  rmm::device_uvector<size_t> nested_prepass_page_indices;
+  rmm::device_uvector<size_t> list_prepass_page_indices;
+  size_t flat_prepass_selected_pages{0};
+  size_t nested_prepass_selected_pages{0};
+  size_t list_prepass_selected_pages{0};
 
   // For each page, the index into the column's string offset buffer
   // Used for non-dictionary, non-FLBA string columns
@@ -164,7 +170,8 @@ struct pass_intermediate_data {
       decomp_scratch_sizes{0, stream},
       string_offset_sizes{0, stream},
       level_decode_sizes{0, stream},
-      str_dict_index{0, stream}
+      str_dict_index{0, stream},
+      prepass_arena{0, stream}
   {
   }
 
@@ -188,6 +195,10 @@ struct pass_intermediate_data {
   rmm::device_uvector<size_t> string_offset_sizes;
   rmm::device_uvector<size_t> level_decode_sizes;
   rmm::device_uvector<string_index_pair> str_dict_index;
+
+  // Retained pass-owned storage for page-global level-prepass state.  It is
+  // resized only when a larger subpass needs more space.
+  rmm::device_buffer prepass_arena;
 
   // currently active subpass
   std::unique_ptr<subpass_intermediate_data> subpass{};

@@ -35,13 +35,14 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                                      device_span<ColumnChunkDesc const> chunks,
                                      cudf::device_span<bool const> page_mask,
                                      size_t min_row,
-                                     size_t num_rows)
+                                     size_t num_rows,
+                                     cudf::device_span<size_t const> page_indices)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
   __shared__ typename cub::BlockScan<int, level_decode_block_size>::TempStorage scan_storage;
   __shared__ int block_valid_count_shared;
   auto const block   = cg::this_thread_block();
-  int const page_idx = blockIdx.x;
+  int const page_idx = page_indices.empty() ? blockIdx.x : page_indices[blockIdx.x];
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
   if (!pp->flat_prepass_enabled && !pp->legacy_flat_prepass_enabled &&
@@ -81,6 +82,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   auto const* def = reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   int valid_count = 0;
+  int prefix_valid_count = 0;
   for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
     int const value_pos = value_base + t;
     int const is_valid  = value_pos < value_limit && def[value_pos] > 0;
@@ -102,17 +104,22 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
     if (is_valid) { pp->flat_prepass_nz_idx[valid_count + thread_valid_count] = value_pos; }
     if (t == 0) { block_valid_count_shared = block_valid_count; }
     block.sync();
+    if (t == 0) {
+      if (value_base + level_decode_block_size <= first_row) {
+        prefix_valid_count += block_valid_count_shared;
+      } else if (value_base < first_row) {
+        for (int prefix_pos = value_base; prefix_pos < first_row; ++prefix_pos) {
+          prefix_valid_count += def[prefix_pos] > 0;
+        }
+      }
+    }
     valid_count += block_valid_count_shared;
     block.sync();
   }
   if (t == 0) {
-    int prefix = 0;
-    while (prefix < valid_count && pp->flat_prepass_nz_idx[prefix] < first_row) {
-      ++prefix;
-    }
     int const selected_value_count      = max(value_limit - first_row, 0);
-    int const selected_valid_count      = valid_count - prefix;
-    pp->flat_prepass_prefix_valid_count = prefix;
+    int const selected_valid_count      = valid_count - prefix_valid_count;
+    pp->flat_prepass_prefix_valid_count = prefix_valid_count;
     pp->flat_prepass_nz_count           = valid_count;
     pp->flat_prepass_null_count         = selected_value_count - selected_valid_count;
     ni.null_count                       = pp->flat_prepass_null_count;
@@ -623,17 +630,19 @@ void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
+                                 cudf::device_span<size_t const> page_indices,
                                  cuda::stream_ref stream)
 {
+  CUDF_FUNC_RANGE();
   if (pages.size() == 0) { return; }
-  dim3 const grid(pages.size(), 1);
+  dim3 const grid(page_indices.empty() ? pages.size() : page_indices.size(), 1);
   dim3 const block(level_decode_block_size, 1);
   if (level_type_size == 1) {
-    precompute_flat_level_state_kernel<uint8_t>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+    precompute_flat_level_state_kernel<uint8_t><<<grid, block, 0, stream.get()>>>(
+      pages.device_ptr(), chunks, page_mask, min_row, num_rows, page_indices);
   } else {
-    precompute_flat_level_state_kernel<uint16_t>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+    precompute_flat_level_state_kernel<uint16_t><<<grid, block, 0, stream.get()>>>(
+      pages.device_ptr(), chunks, page_mask, min_row, num_rows, page_indices);
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

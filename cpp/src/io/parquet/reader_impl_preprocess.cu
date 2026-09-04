@@ -319,6 +319,7 @@ void reader_impl::allocate_nesting_info()
 
 void reader_impl::allocate_level_decode_space()
 {
+  CUDF_FUNC_RANGE();
   auto& pass    = *_pass_itm_data;
   auto& subpass = *pass.subpass;
   auto& pages   = subpass.pages;
@@ -386,188 +387,219 @@ void reader_impl::allocate_level_decode_space()
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
   }
 
-  // Required pages publish an identity contract and therefore need no map
-  // allocation.
-  size_t flat_prepass_size = 0;
-  for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page                 = pages[idx];
-    auto const& chunk          = pass.chunks[page.chunk_idx];
-    bool const generic_enabled = (_level_prepass_mode & level_prepass_generic_flat) != 0;
-    bool const legacy_enabled  = (_level_prepass_mode & level_prepass_legacy_flat) != 0;
-    bool const delta_enabled   = (_level_prepass_mode & level_prepass_delta_flat) != 0;
-    bool const optional        = chunk.max_level[level_type::DEFINITION] != 0;
-    bool const selected_generic_flat =
-      generic_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
-    bool const selected_legacy_flat =
-      legacy_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
-    bool const selected_delta_flat =
-      delta_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
-    bool const selected_flat = selected_generic_flat || selected_legacy_flat || selected_delta_flat;
-    page.flat_prepass_nz_idx = nullptr;
-    page.flat_prepass_nz_count           = selected_flat ? -2 : -1;
-    page.flat_prepass_prefix_valid_count = -1;
-    page.flat_prepass_null_count         = 0;
-    page.flat_prepass_enabled            = selected_generic_flat;
-    page.legacy_flat_prepass_enabled     = selected_legacy_flat;
-    page.delta_flat_prepass_enabled      = selected_delta_flat;
-    if (selected_flat && optional) {
-      flat_prepass_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
-    }
-  }
-  subpass.flat_prepass_data =
-    rmm::device_buffer(flat_prepass_size, _stream, cudf::get_current_device_resource_ref());
-  auto* flat_prepass_ptr = static_cast<uint32_t*>(subpass.flat_prepass_data.data());
-  for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page               = pages[idx];
-    auto const& chunk        = pass.chunks[page.chunk_idx];
-    bool const selected_flat = (((_level_prepass_mode & level_prepass_generic_flat) != 0 &&
-                                 page.prepass_family == level_prepass_family::GENERIC_FLAT) ||
-                                ((_level_prepass_mode & level_prepass_legacy_flat) != 0 &&
-                                 page.prepass_family == level_prepass_family::LEGACY_FLAT) ||
-                                ((_level_prepass_mode & level_prepass_delta_flat) != 0 &&
-                                 page.prepass_family == level_prepass_family::DELTA_FLAT));
-    if (selected_flat && chunk.max_level[level_type::DEFINITION] != 0) {
-      page.flat_prepass_nz_idx = flat_prepass_ptr;
-      flat_prepass_ptr += page.num_input_values;
-    }
-  }
+  // Classify, size, and wire all prepass state in one host pass.  The maps
+  // have to remain live until decoder streams join, so the storage is owned by
+  // the pass rather than by each output chunk/subpass.
+  struct prepass_layout {
+    bool flat{false};
+    bool nested{false};
+    bool list{false};
+    bool optional_leaf{false};
+    size_t flat_map_offset{0};
+    size_t nested_map_offset{0};
+    size_t nested_nesting_offset{0};
+    size_t list_map_offset{0};
+    size_t list_nesting_offset{0};
+  };
+  auto const page_mask = subpass_page_mask_span();
+  std::vector<prepass_layout> layout(num_pages);
+  auto const generic_flat_enabled   = (_level_prepass_mode & level_prepass_generic_flat) != 0;
+  auto const legacy_flat_enabled    = (_level_prepass_mode & level_prepass_legacy_flat) != 0;
+  auto const delta_flat_enabled     = (_level_prepass_mode & level_prepass_delta_flat) != 0;
+  auto const generic_nested_enabled = (_level_prepass_mode & level_prepass_generic_nested) != 0;
+  auto const legacy_nested_enabled  = (_level_prepass_mode & level_prepass_legacy_nested) != 0;
+  auto const delta_nested_enabled   = (_level_prepass_mode & level_prepass_delta_nested) != 0;
+  auto const generic_list_enabled   = (_level_prepass_mode & level_prepass_generic_list) != 0;
+  auto const legacy_list_enabled    = (_level_prepass_mode & level_prepass_legacy_list) != 0;
+  auto const delta_list_enabled     = (_level_prepass_mode & level_prepass_delta_list) != 0;
 
-  // Non-list generic nested pages publish their per-depth decode counters and
-  // a dense valid-rank-to-output-position map.  Keep this allocation wholly
-  // separate from flat staging: the selected nested consumer needs the map
-  // through value decoding, while unselected pages retain untouched legacy
-  // nesting state.
-  size_t nested_prepass_map_size     = 0;
-  size_t nested_prepass_nesting_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page        = pages[idx];
-    auto const& chunk = pass.chunks[page.chunk_idx];
-    bool const selected_generic_nested =
-      (_level_prepass_mode & level_prepass_generic_nested) != 0 &&
-      page.prepass_family == level_prepass_family::GENERIC_NESTED;
-    bool const selected_legacy_nested = (_level_prepass_mode & level_prepass_legacy_nested) != 0 &&
-                                        page.prepass_family == level_prepass_family::LEGACY_NESTED;
-    bool const selected_delta_nested = (_level_prepass_mode & level_prepass_delta_nested) != 0 &&
-                                       page.prepass_family == level_prepass_family::DELTA_NESTED;
-    bool const selected_nested =
-      selected_generic_nested || selected_legacy_nested || selected_delta_nested;
+    auto& page          = pages[idx];
+    auto const& chunk   = pass.chunks[page.chunk_idx];
+    auto const active   = page_mask.is_empty() || page_mask[idx];
+    auto& entry         = layout[idx];
+    entry.optional_leaf = chunk.max_level[level_type::DEFINITION] != 0;
+
+    page.flat_prepass_nz_idx               = nullptr;
+    page.flat_prepass_nz_count             = -1;
+    page.flat_prepass_prefix_valid_count   = -1;
+    page.flat_prepass_null_count           = 0;
     page.nested_prepass_nz_idx             = nullptr;
     page.nested_prepass_nesting            = nullptr;
     page.nested_prepass_prefix_valid_count = -1;
     page.nested_prepass_nz_count           = -1;
     page.nested_prepass_input_value_count  = 0;
     page.nested_prepass_input_row_count    = 0;
-    page.nested_prepass_enabled            = selected_generic_nested;
-    page.legacy_nested_prepass_enabled     = selected_legacy_nested;
-    page.delta_nested_prepass_enabled      = selected_delta_nested;
-    if (selected_nested) {
-      // Required nested leaves have an identity valid-rank mapping. They
-      // still publish per-depth state, but do not retain a redundant map.
-      if (chunk.max_level[level_type::DEFINITION] != 0) {
-        nested_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
-      }
-      nested_prepass_nesting_size +=
-        static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
-    }
-  }
-  auto const nested_prepass_size = nested_prepass_map_size + nested_prepass_nesting_size;
-  subpass.nested_prepass_data =
-    rmm::device_buffer(nested_prepass_size, _stream, cudf::get_current_device_resource_ref());
-  auto* nested_prepass_ptr = static_cast<uint8_t*>(subpass.nested_prepass_data.data());
-  auto* nested_map_ptr     = reinterpret_cast<uint32_t*>(nested_prepass_ptr);
-  auto* nested_nesting_ptr = reinterpret_cast<PageNestingPrepassState*>(
-    nested_prepass_ptr == nullptr ? nullptr : nested_prepass_ptr + nested_prepass_map_size);
-  for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page = pages[idx];
-    if (page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
-        page.delta_nested_prepass_enabled) {
-      auto const& chunk = pass.chunks[page.chunk_idx];
-      if (chunk.max_level[level_type::DEFINITION] != 0) {
-        page.nested_prepass_nz_idx = nested_map_ptr;
-        nested_map_ptr += page.num_input_values;
-      }
-      page.nested_prepass_nesting = nested_nesting_ptr;
-      nested_nesting_ptr += page.nesting_info_size;
-    }
+    page.list_prepass_nz_idx               = nullptr;
+    page.list_prepass_nesting              = nullptr;
+    page.list_prepass_nz_count             = -1;
+    page.list_prepass_input_value_count    = 0;
+    page.list_prepass_input_row_count      = 0;
+
+    page.flat_prepass_enabled =
+      active && generic_flat_enabled && page.prepass_family == level_prepass_family::GENERIC_FLAT;
+    page.legacy_flat_prepass_enabled =
+      active && legacy_flat_enabled && page.prepass_family == level_prepass_family::LEGACY_FLAT;
+    page.delta_flat_prepass_enabled =
+      active && delta_flat_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
+    entry.flat = page.flat_prepass_enabled || page.legacy_flat_prepass_enabled ||
+                 page.delta_flat_prepass_enabled;
+    if (entry.flat) { page.flat_prepass_nz_count = -2; }
+
+    page.nested_prepass_enabled = active && generic_nested_enabled &&
+                                  page.prepass_family == level_prepass_family::GENERIC_NESTED;
+    page.legacy_nested_prepass_enabled =
+      active && legacy_nested_enabled && page.prepass_family == level_prepass_family::LEGACY_NESTED;
+    page.delta_nested_prepass_enabled =
+      active && delta_nested_enabled && page.prepass_family == level_prepass_family::DELTA_NESTED;
+    entry.nested = page.nested_prepass_enabled || page.legacy_nested_prepass_enabled ||
+                   page.delta_nested_prepass_enabled;
+
+    bool const has_repetition         = chunk.max_level[level_type::REPETITION] > 0;
+    page.generic_list_prepass_enabled = active && has_repetition && generic_list_enabled &&
+                                        page.prepass_family == level_prepass_family::GENERIC_LIST;
+    page.legacy_list_prepass_enabled = active && has_repetition && legacy_list_enabled &&
+                                       page.prepass_family == level_prepass_family::LEGACY_LIST;
+    page.delta_list_prepass_enabled = active && has_repetition && delta_list_enabled &&
+                                      page.prepass_family == level_prepass_family::DELTA_LIST;
+    entry.list = page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
+                 page.delta_list_prepass_enabled;
   }
 
-  // The generic-list prepass owns per-depth counters, offsets, and the
-  // legacy valid-rank-to-output map. The latter is required even for a
-  // required leaf when an optional ancestor suppresses leaf values.
-  // Leave every unselected list page on the legacy level walker.
-  size_t list_prepass_map_size     = 0;
-  size_t list_prepass_nesting_size = 0;
+  constexpr size_t max_list_prepass_map_bytes{size_t{1} << 30};
+  size_t list_map_bytes = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page                  = pages[idx];
-    auto const& chunk           = pass.chunks[page.chunk_idx];
-    bool const selected_generic = (_level_prepass_mode & level_prepass_generic_list) != 0 &&
-                                  page.prepass_family == level_prepass_family::GENERIC_LIST;
-    bool const selected_legacy = (_level_prepass_mode & level_prepass_legacy_list) != 0 &&
-                                 page.prepass_family == level_prepass_family::LEGACY_LIST;
-    bool const selected_delta = (_level_prepass_mode & level_prepass_delta_list) != 0 &&
-                                page.prepass_family == level_prepass_family::DELTA_LIST;
-    bool const selected = (selected_generic || selected_legacy || selected_delta) &&
-                          chunk.max_level[level_type::REPETITION] > 0;
-    page.list_prepass_nz_idx            = nullptr;
-    page.list_prepass_nesting           = nullptr;
-    page.list_prepass_nz_count          = -1;
-    page.list_prepass_input_value_count = 0;
-    page.list_prepass_input_row_count   = 0;
-    page.generic_list_prepass_enabled   = selected_generic;
-    page.legacy_list_prepass_enabled    = selected_legacy;
-    page.delta_list_prepass_enabled     = selected_delta;
-    if (selected) {
-      list_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
-      list_prepass_nesting_size +=
-        static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
+    if (layout[idx].list) {
+      list_map_bytes += static_cast<size_t>(pages[idx].num_input_values) * sizeof(uint32_t);
     }
   }
-  auto disable_generic_list_prepass = [&] {
-    list_prepass_map_size     = 0;
-    list_prepass_nesting_size = 0;
+  if (list_map_bytes > max_list_prepass_map_bytes) {
     for (size_t idx = 0; idx < num_pages; ++idx) {
+      layout[idx].list                        = false;
       pages[idx].generic_list_prepass_enabled = false;
       pages[idx].legacy_list_prepass_enabled  = false;
       pages[idx].delta_list_prepass_enabled   = false;
     }
-  };
-
-  // The dense compatibility map must stay live alongside the output chunk.
-  // Bound its per-subpass footprint so a selected experimental path cannot
-  // crowd out a large, otherwise valid list output allocation.
-  constexpr size_t max_list_prepass_map_bytes{size_t{1} << 30};
-  if (list_prepass_map_size > max_list_prepass_map_bytes) { disable_generic_list_prepass(); }
-
-  auto const list_prepass_size = list_prepass_map_size + list_prepass_nesting_size;
-  try {
-    subpass.list_prepass_data =
-      rmm::device_buffer(list_prepass_size, _stream, cudf::get_current_device_resource_ref());
-  } catch (std::bad_alloc const&) {
-    // A list map is deliberately dense so that it preserves the legacy
-    // valid-rank-to-output-position contract for required leaves below an
-    // optional ancestor.  It can therefore be much larger than the output
-    // itself for a single exceptionally large page.  The selector is an
-    // opt-in compatibility path: leave this subpass on the existing list
-    // walker if its temporary map cannot be accommodated, rather than making
-    // a selected read fail solely because of prepass scratch space.
-    disable_generic_list_prepass();
-    subpass.list_prepass_data =
-      rmm::device_buffer(0, _stream, cudf::get_current_device_resource_ref());
   }
-  auto* list_prepass_bytes = static_cast<uint8_t*>(subpass.list_prepass_data.data());
-  auto* list_map_ptr       = reinterpret_cast<uint32_t*>(list_prepass_bytes);
-  auto* list_prepass_ptr   = reinterpret_cast<PageNestingPrepassState*>(
-    list_prepass_bytes == nullptr ? nullptr : list_prepass_bytes + list_prepass_map_size);
+
+  auto align_up = [](size_t offset, size_t alignment) {
+    return (offset + alignment - 1) & ~(alignment - 1);
+  };
+  size_t arena_size  = 0;
+  auto assign_region = [&](auto bytes, auto alignment, auto set_offset) {
+    arena_size = align_up(arena_size, alignment);
+    for (size_t idx = 0; idx < num_pages; ++idx) {
+      auto const size = bytes(idx);
+      if (size != 0) {
+        set_offset(layout[idx], arena_size);
+        arena_size += size;
+      }
+    }
+  };
+  assign_region(
+    [&](size_t idx) {
+      return layout[idx].flat && layout[idx].optional_leaf
+               ? static_cast<size_t>(pages[idx].num_input_values) * sizeof(uint32_t)
+               : size_t{0};
+    },
+    alignof(uint32_t),
+    [](prepass_layout& entry, size_t offset) { entry.flat_map_offset = offset; });
+  assign_region(
+    [&](size_t idx) {
+      return layout[idx].nested && layout[idx].optional_leaf
+               ? static_cast<size_t>(pages[idx].num_input_values) * sizeof(uint32_t)
+               : size_t{0};
+    },
+    alignof(uint32_t),
+    [](prepass_layout& entry, size_t offset) { entry.nested_map_offset = offset; });
+  assign_region(
+    [&](size_t idx) {
+      return layout[idx].nested
+               ? static_cast<size_t>(pages[idx].nesting_info_size) * sizeof(PageNestingPrepassState)
+               : size_t{0};
+    },
+    alignof(PageNestingPrepassState),
+    [](prepass_layout& entry, size_t offset) { entry.nested_nesting_offset = offset; });
+  auto const list_region_start = arena_size;
+  assign_region(
+    [&](size_t idx) {
+      return layout[idx].list ? static_cast<size_t>(pages[idx].num_input_values) * sizeof(uint32_t)
+                              : size_t{0};
+    },
+    alignof(uint32_t),
+    [](prepass_layout& entry, size_t offset) { entry.list_map_offset = offset; });
+  assign_region(
+    [&](size_t idx) {
+      return layout[idx].list
+               ? static_cast<size_t>(pages[idx].nesting_info_size) * sizeof(PageNestingPrepassState)
+               : size_t{0};
+    },
+    alignof(PageNestingPrepassState),
+    [](prepass_layout& entry, size_t offset) { entry.list_nesting_offset = offset; });
+
+  try {
+    pass.prepass_arena.resize(arena_size, _stream);
+  } catch (std::bad_alloc const&) {
+    // Keep selected reads viable when only the optional list compatibility
+    // map cannot fit. Flat/nested prepass allocation failures remain real OOMs.
+    if (arena_size == list_region_start) { throw; }
+    for (size_t idx = 0; idx < num_pages; ++idx) {
+      layout[idx].list                        = false;
+      pages[idx].generic_list_prepass_enabled = false;
+      pages[idx].legacy_list_prepass_enabled  = false;
+      pages[idx].delta_list_prepass_enabled   = false;
+    }
+    arena_size = list_region_start;
+    pass.prepass_arena.resize(arena_size, _stream);
+  }
+
+  auto* const arena = static_cast<uint8_t*>(pass.prepass_arena.data());
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page = pages[idx];
-    if (page.generic_list_prepass_enabled || page.legacy_list_prepass_enabled ||
-        page.delta_list_prepass_enabled) {
-      page.list_prepass_nz_idx = list_map_ptr;
-      list_map_ptr += page.num_input_values;
-      page.list_prepass_nesting = list_prepass_ptr;
-      list_prepass_ptr += page.nesting_info_size;
+    auto& page        = pages[idx];
+    auto const& entry = layout[idx];
+    if (entry.flat && entry.optional_leaf) {
+      page.flat_prepass_nz_idx = reinterpret_cast<uint32_t*>(arena + entry.flat_map_offset);
+    }
+    if (entry.nested) {
+      if (entry.optional_leaf) {
+        page.nested_prepass_nz_idx = reinterpret_cast<uint32_t*>(arena + entry.nested_map_offset);
+      }
+      page.nested_prepass_nesting =
+        reinterpret_cast<PageNestingPrepassState*>(arena + entry.nested_nesting_offset);
+    }
+    if (entry.list) {
+      page.list_prepass_nz_idx = reinterpret_cast<uint32_t*>(arena + entry.list_map_offset);
+      page.list_prepass_nesting =
+        reinterpret_cast<PageNestingPrepassState*>(arena + entry.list_nesting_offset);
     }
   }
+
+  // Most all-family reads select nearly every page, where an extra H2D index
+  // copy costs more than the early return in a direct grid. Compact only sparse
+  // publisher families and keep their host staging pinned for the async copy.
+  auto prepare_compact_indices = [&](auto is_selected, auto& destination) {
+    auto const selected_count =
+      static_cast<size_t>(std::count_if(layout.begin(), layout.end(), is_selected));
+    if (selected_count == 0 || selected_count * 4 > num_pages * 3) {
+      destination =
+        rmm::device_uvector<size_t>{0, _stream, cudf::get_current_device_resource_ref()};
+      return selected_count;
+    }
+    auto host_indices = cudf::detail::make_pinned_vector_async<size_t>(selected_count, _stream);
+    size_t out        = 0;
+    for (size_t idx = 0; idx < num_pages; ++idx) {
+      if (is_selected(layout[idx])) { host_indices[out++] = idx; }
+    }
+    destination = cudf::detail::make_device_uvector_async(
+      host_indices, _stream, cudf::get_current_device_resource_ref());
+    return selected_count;
+  };
+  subpass.flat_prepass_selected_pages = prepare_compact_indices(
+    [](prepass_layout const& entry) { return entry.flat; }, subpass.flat_prepass_page_indices);
+  subpass.nested_prepass_selected_pages = prepare_compact_indices(
+    [](prepass_layout const& entry) { return entry.nested; }, subpass.nested_prepass_page_indices);
+  subpass.list_prepass_selected_pages = prepare_compact_indices(
+    [](prepass_layout const& entry) { return entry.list; }, subpass.list_prepass_page_indices);
 }
 
 namespace {

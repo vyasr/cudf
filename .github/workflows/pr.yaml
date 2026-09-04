@@ -259,7 +259,7 @@ jobs:
     with:
       build_type: pull-request
       build-datetime: ${{ needs.build-details.outputs.build-datetime }}
-      node_type: cpu16
+      node_type: cpu8
       script: ci/build_cpp.sh
   cmake-tests:
     needs: [checks, changed-files]

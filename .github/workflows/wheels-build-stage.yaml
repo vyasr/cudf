@@ -6,8 +6,14 @@ on:
       build-datetime:
         required: false
         type: string
+      branch:
+        required: false
+        type: string
       build_type:
         required: true
+        type: string
+      date:
+        required: false
         type: string
       matrix_filter:
         default: "."
@@ -23,6 +29,9 @@ on:
         type: boolean
       script:
         required: true
+        type: string
+      sha:
+        required: false
         type: string
       stage:
         required: true
@@ -66,10 +75,15 @@ jobs:
       - name: checkout code repo
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Standardize repository information
         uses: rapidsai/shared-actions/rapids-github-info@main
+        with:
+          branch: ${{ inputs.branch }}
+          date: ${{ inputs.date }}
+          sha: ${{ inputs.sha }}
       - name: Setup proxy cache
         uses: nv-gha-runners/setup-proxy-cache@eadc57871cde0c92a223d0f486ab669a2360f978 # main
         continue-on-error: true

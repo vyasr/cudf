@@ -52,24 +52,6 @@ check_cython_performance_hints() {
   fi
 }
 
-install_build_requirements() {
-  local package_name=$1
-
-  rapids-logger "Generating build requirements for '${package_name}'"
-  rapids-dependency-file-generator \
-    --output requirements \
-    --file-key "py_build_${package_name}" \
-    --file-key "py_rapids_build_${package_name}" \
-    --matrix "cuda=${RAPIDS_CUDA_VERSION%.*};arch=$(arch);py=${RAPIDS_PY_VERSION};cuda_suffixed=true;use_cuda_wheels=true" \
-  | tee /tmp/requirements-build.txt
-
-  rapids-logger "Installing build requirements for '${package_name}'"
-  rapids-pip-retry install \
-    -v \
-    --prefer-binary \
-    -r /tmp/requirements-build.txt
-}
-
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 
 # pylibcudf
@@ -118,7 +100,6 @@ LIBCUDF_STREAMING_WHEELHOUSE="${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-do
 add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcudf_streaming_*.whl'
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
-install_build_requirements cudf_streaming
 
 set_stable_abi
 ./ci/build_wheel.sh cudf-streaming python/cudf_streaming --stable 2>&1 | tee cudf-streaming-wheel-build-output.log

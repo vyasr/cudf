@@ -6,24 +6,6 @@ set -euo pipefail
 
 source rapids-init-pip
 
-install_build_requirements() {
-  local package_name=$1
-
-  rapids-logger "Generating build requirements for '${package_name}'"
-  rapids-dependency-file-generator \
-    --output requirements \
-    --file-key "py_build_${package_name}" \
-    --file-key "py_rapids_build_${package_name}" \
-    --matrix "cuda=${RAPIDS_CUDA_VERSION%.*};arch=$(arch);py=${RAPIDS_PY_VERSION};cuda_suffixed=true;use_cuda_wheels=true" \
-  | tee /tmp/requirements-build.txt
-
-  rapids-logger "Installing build requirements for '${package_name}'"
-  rapids-pip-retry install \
-    -v \
-    --prefer-binary \
-    -r /tmp/requirements-build.txt
-}
-
 set_wheel_output_dir() {
   local package_key=$1
 
@@ -42,7 +24,6 @@ record_wheel_artifact() {
 
 # libcudf
 set_wheel_output_dir libcudf
-install_build_requirements libcudf
 export SKBUILD_CMAKE_ARGS="-DUSE_NVCOMP_RUNTIME_WHEEL=ON"
 ./ci/build_wheel.sh libcudf python/libcudf
 
@@ -73,7 +54,6 @@ set_wheel_output_dir libcudf_streaming
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 
-install_build_requirements libcudf_streaming
 unset SKBUILD_CMAKE_ARGS
 ./ci/build_wheel.sh libcudf_streaming python/libcudf_streaming
 

@@ -297,8 +297,15 @@ constexpr uint32_t level_prepass_all            = 0x1ff;
  */
 struct level_prepass_debug_stats {
   size_t publisher_launches{};
+  size_t flat_publisher_launches{};
+  size_t nested_publisher_launches{};
+  size_t list_publisher_launches{};
   size_t selected_pages{};
+  size_t required_flat_elisions{};
   size_t allocated_bytes{};
+  size_t arena_grow_events{};
+  size_t peak_requested_arena_bytes{};
+  size_t peak_retained_arena_bytes{};
   size_t fallback_pages{};
 };
 

@@ -108,6 +108,53 @@ TEST_F(ParquetReaderTest, LevelPrepassDebugStatsRespectSelector)
     EXPECT_EQ(stats.allocated_bytes, 0);
     EXPECT_EQ(stats.fallback_pages, 0);
   }
+
+  // Required flat pages retain the identity-map contract. Their decoder-visible
+  // counts are published during host layout, so they need neither a dense
+  // valid-rank map nor a flat publisher launch.
+  auto required_input = cudf::test::fixed_width_column_wrapper<int>{{1, 2, 3, 4, 5, 6, 7, 8}};
+  auto const required_filepath =
+    write_parquet_temp_file(cudf::table_view{{required_input}}, "LevelPrepassRequiredStats");
+  auto const required_options =
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{required_filepath}).build();
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x1ff"};
+    tmp_env_var const debug_stats{"LIBCUDF_PARQUET_LEVEL_PREPASS_DEBUG_STATS", "1"};
+    reset_level_prepass_debug_stats();
+    auto const result = cudf::io::read_parquet(required_options);
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(result.tbl->view().column(0), required_input);
+
+    auto const stats = get_level_prepass_debug_stats();
+    EXPECT_EQ(stats.flat_publisher_launches, 0);
+    EXPECT_EQ(stats.required_flat_elisions, 1);
+    EXPECT_EQ(stats.allocated_bytes, 0);
+  }
+}
+
+TEST_F(ParquetReaderTest, LevelPrepassRequiredFlatUsesHostBounds)
+{
+  std::vector<int> values(257);
+  std::iota(values.begin(), values.end(), 0);
+  cudf::test::fixed_width_column_wrapper<int> input(values.begin(), values.end());
+  auto const filepath =
+    write_parquet_temp_file(cudf::table_view{{input}}, "LevelPrepassRequiredFlatBounds");
+
+  for (auto const [skip_rows, num_rows] :
+       std::array<std::pair<cudf::size_type, cudf::size_type>, 4>{
+         {{1, 31}, {31, 33}, {32, 33}, {255, 2}}}) {
+    auto const options = cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath})
+                           .skip_rows(skip_rows)
+                           .num_rows(num_rows)
+                           .build();
+    auto const read_with_selector = [&](char const* selector) {
+      tmp_env_var const level_prepass{"LIBCUDF_PARQUET_LEVEL_PREPASS", selector};
+      return cudf::io::read_parquet(options);
+    };
+
+    auto const legacy  = read_with_selector("0");
+    auto const prepass = read_with_selector("0x1ff");
+    CUDF_TEST_EXPECT_TABLES_EQUAL(legacy.tbl->view(), prepass.tbl->view());
+  }
 }
 
 TEST_F(ParquetReaderTest, UserBounds)

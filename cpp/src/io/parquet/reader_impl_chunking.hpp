@@ -7,6 +7,7 @@
 
 #include "reader_impl_helpers.hpp"
 
+#include <cudf/detail/utilities/vector_factories.hpp>
 #include <cudf/types.hpp>
 
 namespace cudf::io::parquet::detail {
@@ -86,6 +87,9 @@ struct subpass_intermediate_data {
       flat_prepass_page_indices{0, stream},
       nested_prepass_page_indices{0, stream},
       list_prepass_page_indices{0, stream},
+      flat_prepass_page_indices_host{cudf::detail::make_pinned_vector_async<size_t>(0, stream)},
+      nested_prepass_page_indices_host{cudf::detail::make_pinned_vector_async<size_t>(0, stream)},
+      list_prepass_page_indices_host{cudf::detail::make_pinned_vector_async<size_t>(0, stream)},
       page_string_offset_indices(0, stream),
       string_offset_buffer(0, stream),
       delta_temp_buf(0, stream),
@@ -109,6 +113,11 @@ struct subpass_intermediate_data {
   rmm::device_uvector<size_t> flat_prepass_page_indices;
   rmm::device_uvector<size_t> nested_prepass_page_indices;
   rmm::device_uvector<size_t> list_prepass_page_indices;
+  // Keep pinned H2D sources alive until this subpass has finished its publisher stream work.
+  // A compact publisher can start immediately after its async index copy is enqueued.
+  cudf::detail::host_vector<size_t> flat_prepass_page_indices_host;
+  cudf::detail::host_vector<size_t> nested_prepass_page_indices_host;
+  cudf::detail::host_vector<size_t> list_prepass_page_indices_host;
   size_t flat_prepass_selected_pages{0};
   size_t nested_prepass_selected_pages{0};
   size_t list_prepass_selected_pages{0};

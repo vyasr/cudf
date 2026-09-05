@@ -63,12 +63,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   // page contains. The prepass must never scan past that decoded prefix: doing
   // so reads beyond lvl_decode_buf and can silently corrupt an unrelated
   // column when another prepass allocation changes the device-memory layout.
-  int const decoded_value_limit =
-    pp->num_decoded_level_values > 0
-      ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
-      : s->setup.page.num_input_values;
-  int const first_row   = min(s->setup.first_row, decoded_value_limit);
-  int const value_limit = min(decoded_value_limit, first_row + s->setup.num_rows);
+  auto const bounds     = compute_flat_prepass_bounds(*pp, s->setup.col, min_row, num_rows);
+  int const first_row   = bounds.first_row;
+  int const value_limit = bounds.value_limit;
   if (!should_process_nulls(s)) {
     if (t == 0) {
       pp->flat_prepass_prefix_valid_count = first_row;

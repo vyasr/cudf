@@ -39,6 +39,13 @@ template <typename PageType, typename ChunkType>
 CUDF_HOST_DEVICE inline level_prepass_family classify_level_prepass_family(PageType const& page,
                                                                            ChunkType const& chunk)
 {
+  // Dictionary pages carry no repetition/definition-level state for a value
+  // decoder.  In particular, their num_input_values is not a data-page map
+  // capacity, so they must be excluded before either constrained sizing or
+  // prepass-arena layout converts it to size_t.
+  if ((page.flags & PAGEINFO_FLAGS_DICTIONARY) != 0 || page.num_input_values <= 0) {
+    return level_prepass_family::NONE;
+  }
   bool const is_list   = chunk.max_level[level_type::REPETITION] > 0;
   bool const is_nested = !is_list && chunk.max_nesting_depth > 1;
   bool const is_delta  = BitAnd(page.kernel_mask,
@@ -877,6 +884,39 @@ CUDF_HOST_DEVICE [[nodiscard]] inline size_t precompute_page_num_values_in_range
   // If skipping rows, still need to process the first rows to (e.g.) count skipped nulls.
   size_t const pass_rows_from_page = pass_end_row - page_start_row;
   return (page_rows > pass_rows_from_page) ? pass_rows_from_page : page_rows;
+}
+
+/** @brief Flat page bounds consumed by the level-prepass publisher. */
+struct flat_prepass_bounds {
+  int32_t first_row{};
+  int32_t value_limit{};
+};
+
+/**
+ * @brief Compute the selected input-value range for a flat page-level prepass.
+ *
+ * This keeps the selected range calculation in one place so publisher variants do not duplicate
+ * row-bound or decoded-level-limit behavior.
+ */
+CUDF_HOST_DEVICE [[nodiscard]] inline flat_prepass_bounds compute_flat_prepass_bounds(
+  PageInfo const& page, ColumnChunkDesc const& chunk, size_t min_row, size_t num_rows)
+{
+  size_t const page_start_row = chunk.start_row + page.chunk_row;
+  size_t const page_end_row   = page_start_row + page.num_rows;
+  size_t const end_row        = min_row + num_rows;
+  if (page_start_row >= end_row || page_end_row <= min_row) { return {}; }
+
+  auto const first_row =
+    static_cast<int32_t>(page_start_row >= min_row ? 0 : min_row - page_start_row);
+  auto const selected_rows =
+    static_cast<int32_t>((page_start_row + first_row + (page.num_rows - first_row) <= end_row)
+                           ? page.num_rows - first_row
+                           : end_row - (page_start_row + first_row));
+  auto const decoded_value_limit =
+    page.num_decoded_level_values > 0
+      ? cuda::std::min(page.num_input_values, page.num_decoded_level_values)
+      : page.num_input_values;
+  return {first_row, cuda::std::min(decoded_value_limit, first_row + selected_rows)};
 }
 
 CUDF_HOST_DEVICE inline void compute_page_level_decode_sizes(PageInfo const& page,

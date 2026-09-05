@@ -43,8 +43,15 @@ namespace {
 
 struct level_prepass_debug_stats_atomic {
   std::atomic<size_t> publisher_launches{0};
+  std::atomic<size_t> flat_publisher_launches{0};
+  std::atomic<size_t> nested_publisher_launches{0};
+  std::atomic<size_t> list_publisher_launches{0};
   std::atomic<size_t> selected_pages{0};
+  std::atomic<size_t> required_flat_elisions{0};
   std::atomic<size_t> allocated_bytes{0};
+  std::atomic<size_t> arena_grow_events{0};
+  std::atomic<size_t> peak_requested_arena_bytes{0};
+  std::atomic<size_t> peak_retained_arena_bytes{0};
   std::atomic<size_t> fallback_pages{0};
 };
 
@@ -54,14 +61,28 @@ level_prepass_debug_stats_atomic& level_prepass_debug_stats_storage()
   return stats;
 }
 
+void update_max(std::atomic<size_t>& target, size_t value)
+{
+  auto current = target.load(std::memory_order_relaxed);
+  while (current < value &&
+         !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {}
+}
+
 }  // namespace
 
 void reset_level_prepass_debug_stats()
 {
   auto& stats = level_prepass_debug_stats_storage();
   stats.publisher_launches.store(0, std::memory_order_relaxed);
+  stats.flat_publisher_launches.store(0, std::memory_order_relaxed);
+  stats.nested_publisher_launches.store(0, std::memory_order_relaxed);
+  stats.list_publisher_launches.store(0, std::memory_order_relaxed);
   stats.selected_pages.store(0, std::memory_order_relaxed);
+  stats.required_flat_elisions.store(0, std::memory_order_relaxed);
   stats.allocated_bytes.store(0, std::memory_order_relaxed);
+  stats.arena_grow_events.store(0, std::memory_order_relaxed);
+  stats.peak_requested_arena_bytes.store(0, std::memory_order_relaxed);
+  stats.peak_retained_arena_bytes.store(0, std::memory_order_relaxed);
   stats.fallback_pages.store(0, std::memory_order_relaxed);
 }
 
@@ -69,8 +90,15 @@ level_prepass_debug_stats get_level_prepass_debug_stats()
 {
   auto& stats = level_prepass_debug_stats_storage();
   return {stats.publisher_launches.load(std::memory_order_relaxed),
+          stats.flat_publisher_launches.load(std::memory_order_relaxed),
+          stats.nested_publisher_launches.load(std::memory_order_relaxed),
+          stats.list_publisher_launches.load(std::memory_order_relaxed),
           stats.selected_pages.load(std::memory_order_relaxed),
+          stats.required_flat_elisions.load(std::memory_order_relaxed),
           stats.allocated_bytes.load(std::memory_order_relaxed),
+          stats.arena_grow_events.load(std::memory_order_relaxed),
+          stats.peak_requested_arena_bytes.load(std::memory_order_relaxed),
+          stats.peak_retained_arena_bytes.load(std::memory_order_relaxed),
           stats.fallback_pages.load(std::memory_order_relaxed)};
 }
 
@@ -78,8 +106,16 @@ void add_level_prepass_debug_stats(level_prepass_debug_stats const& added)
 {
   auto& stats = level_prepass_debug_stats_storage();
   stats.publisher_launches.fetch_add(added.publisher_launches, std::memory_order_relaxed);
+  stats.flat_publisher_launches.fetch_add(added.flat_publisher_launches, std::memory_order_relaxed);
+  stats.nested_publisher_launches.fetch_add(added.nested_publisher_launches,
+                                            std::memory_order_relaxed);
+  stats.list_publisher_launches.fetch_add(added.list_publisher_launches, std::memory_order_relaxed);
   stats.selected_pages.fetch_add(added.selected_pages, std::memory_order_relaxed);
+  stats.required_flat_elisions.fetch_add(added.required_flat_elisions, std::memory_order_relaxed);
   stats.allocated_bytes.fetch_add(added.allocated_bytes, std::memory_order_relaxed);
+  stats.arena_grow_events.fetch_add(added.arena_grow_events, std::memory_order_relaxed);
+  update_max(stats.peak_requested_arena_bytes, added.peak_requested_arena_bytes);
+  update_max(stats.peak_retained_arena_bytes, added.peak_retained_arena_bytes);
   stats.fallback_pages.fetch_add(added.fallback_pages, std::memory_order_relaxed);
 }
 
@@ -293,7 +329,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                       subpass.flat_prepass_page_indices.size()},
       _stream);
     if (_level_prepass_debug_stats_enabled) {
-      add_level_prepass_debug_stats({.publisher_launches = 1});
+      add_level_prepass_debug_stats({.publisher_launches = 1, .flat_publisher_launches = 1});
     }
   }
   if (has_selected_nested_prepass) {
@@ -309,7 +345,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                       subpass.nested_prepass_page_indices.size()},
       _stream);
     if (_level_prepass_debug_stats_enabled) {
-      add_level_prepass_debug_stats({.publisher_launches = 1});
+      add_level_prepass_debug_stats({.publisher_launches = 1, .nested_publisher_launches = 1});
     }
   }
   if (has_selected_list_prepass) {
@@ -325,7 +361,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                       subpass.list_prepass_page_indices.size()},
       _stream);
     if (_level_prepass_debug_stats_enabled) {
-      add_level_prepass_debug_stats({.publisher_launches = 1});
+      add_level_prepass_debug_stats({.publisher_launches = 1, .list_publisher_launches = 1});
     }
   }
 

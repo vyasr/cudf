@@ -365,6 +365,7 @@ void reader_impl::allocate_level_decode_space()
   cudf::scoped_range const prepass_host_plan{"parquet::level_prepass::host_plan"};
   struct prepass_layout {
     bool flat{false};
+    bool flat_publisher{false};
     bool nested{false};
     bool list{false};
     bool optional_leaf{false};
@@ -376,6 +377,7 @@ void reader_impl::allocate_level_decode_space()
   };
   auto const page_mask = subpass_page_mask_span();
   std::vector<prepass_layout> layout(num_pages);
+  size_t required_flat_elisions = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page          = pages[idx];
     auto const& chunk   = pass.chunks[page.chunk_idx];
@@ -399,6 +401,10 @@ void reader_impl::allocate_level_decode_space()
     page.list_prepass_input_value_count    = 0;
     page.list_prepass_input_row_count      = 0;
 
+    // Page flags and decoded page metadata are finalized before subpass layout.
+    // Reclassify here instead of relying on the pass-level hint so dictionary
+    // and sentinel pages cannot enter the arena/dispatch contract.
+    page.prepass_family = classify_level_prepass_family(page, chunk);
     auto const prepass_family_enabled =
       level_prepass_family_is_enabled(page.prepass_family, _level_prepass_mode);
     page.flat_prepass_enabled =
@@ -409,7 +415,24 @@ void reader_impl::allocate_level_decode_space()
       active && prepass_family_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
     entry.flat = page.flat_prepass_enabled || page.legacy_flat_prepass_enabled ||
                  page.delta_flat_prepass_enabled;
-    if (entry.flat) { page.flat_prepass_nz_count = -2; }
+    if (entry.flat) {
+      if (entry.optional_leaf) {
+        // Nullable flat pages need the publisher to materialize their dense
+        // valid-rank map and validity state.
+        page.flat_prepass_nz_count = -2;
+        entry.flat_publisher       = true;
+      } else {
+        // A required flat page uses the existing identity-map contract. Its
+        // selected bounds are known before PageInfo's normal H2D transfer, so
+        // publishing these scalars here avoids a whole-CTA publisher launch
+        // without later overwriting device-produced PageInfo metadata.
+        auto const bounds = compute_flat_prepass_bounds(page, chunk, pass.skip_rows, pass.num_rows);
+        page.flat_prepass_prefix_valid_count = bounds.first_row;
+        page.flat_prepass_nz_count           = bounds.value_limit;
+        page.flat_prepass_null_count         = 0;
+        ++required_flat_elisions;
+      }
+    }
 
     page.nested_prepass_enabled = active && prepass_family_enabled &&
                                   page.prepass_family == level_prepass_family::GENERIC_NESTED;
@@ -505,8 +528,12 @@ void reader_impl::allocate_level_decode_space()
     [](prepass_layout& entry, size_t offset) { entry.list_nesting_offset = offset; });
 
   auto const prepass_arena_capacity_before = pass.prepass_arena.capacity();
+  bool arena_grew                          = false;
   try {
-    pass.prepass_arena.resize(arena_size, _stream);
+    if (arena_size > prepass_arena_capacity_before) {
+      pass.prepass_arena.resize(arena_size, _stream);
+      arena_grew = true;
+    }
   } catch (std::bad_alloc const&) {
     // Keep selected reads viable when only the optional list compatibility
     // map cannot fit. Flat/nested prepass allocation failures remain real OOMs.
@@ -519,7 +546,10 @@ void reader_impl::allocate_level_decode_space()
       pages[idx].delta_list_prepass_enabled   = false;
     }
     arena_size = list_region_start;
-    pass.prepass_arena.resize(arena_size, _stream);
+    if (arena_size > pass.prepass_arena.capacity()) {
+      pass.prepass_arena.resize(arena_size, _stream);
+      arena_grew = true;
+    }
   }
 
   auto* const arena = static_cast<uint8_t*>(pass.prepass_arena.data());
@@ -546,37 +576,48 @@ void reader_impl::allocate_level_decode_space()
   // Most all-family reads select nearly every page, where an extra H2D index
   // copy costs more than the early return in a direct grid. Compact only sparse
   // publisher families and keep their host staging pinned for the async copy.
-  auto prepare_compact_indices = [&](auto is_selected, auto& destination) {
+  auto prepare_compact_indices = [&](auto is_selected, auto& destination, auto& host_destination) {
     auto const selected_count =
       static_cast<size_t>(std::count_if(layout.begin(), layout.end(), is_selected));
     if (selected_count == 0 || selected_count * 4 > num_pages * 3) {
       destination =
         rmm::device_uvector<size_t>{0, _stream, cudf::get_current_device_resource_ref()};
+      host_destination = cudf::detail::make_pinned_vector_async<size_t>(0, _stream);
       return selected_count;
     }
-    auto host_indices = cudf::detail::make_pinned_vector_async<size_t>(selected_count, _stream);
-    size_t out        = 0;
+    host_destination = cudf::detail::make_pinned_vector_async<size_t>(selected_count, _stream);
+    size_t out       = 0;
     for (size_t idx = 0; idx < num_pages; ++idx) {
-      if (is_selected(layout[idx])) { host_indices[out++] = idx; }
+      if (is_selected(layout[idx])) { host_destination[out++] = idx; }
     }
     destination = cudf::detail::make_device_uvector_async(
-      host_indices, _stream, cudf::get_current_device_resource_ref());
+      host_destination, _stream, cudf::get_current_device_resource_ref());
     return selected_count;
   };
-  subpass.flat_prepass_selected_pages = prepare_compact_indices(
-    [](prepass_layout const& entry) { return entry.flat; }, subpass.flat_prepass_page_indices);
-  subpass.nested_prepass_selected_pages = prepare_compact_indices(
-    [](prepass_layout const& entry) { return entry.nested; }, subpass.nested_prepass_page_indices);
-  subpass.list_prepass_selected_pages = prepare_compact_indices(
-    [](prepass_layout const& entry) { return entry.list; }, subpass.list_prepass_page_indices);
+  subpass.flat_prepass_selected_pages =
+    prepare_compact_indices([](prepass_layout const& entry) { return entry.flat_publisher; },
+                            subpass.flat_prepass_page_indices,
+                            subpass.flat_prepass_page_indices_host);
+  subpass.nested_prepass_selected_pages =
+    prepare_compact_indices([](prepass_layout const& entry) { return entry.nested; },
+                            subpass.nested_prepass_page_indices,
+                            subpass.nested_prepass_page_indices_host);
+  subpass.list_prepass_selected_pages =
+    prepare_compact_indices([](prepass_layout const& entry) { return entry.list; },
+                            subpass.list_prepass_page_indices,
+                            subpass.list_prepass_page_indices_host);
 
   if (_level_prepass_debug_stats_enabled) {
     add_level_prepass_debug_stats(
       {.selected_pages = subpass.flat_prepass_selected_pages +
                          subpass.nested_prepass_selected_pages +
                          subpass.list_prepass_selected_pages,
-       .allocated_bytes = pass.prepass_arena.capacity() - prepass_arena_capacity_before,
-       .fallback_pages  = list_fallback_pages});
+       .required_flat_elisions     = required_flat_elisions,
+       .allocated_bytes            = pass.prepass_arena.capacity() - prepass_arena_capacity_before,
+       .arena_grow_events          = static_cast<size_t>(arena_grew),
+       .peak_requested_arena_bytes = arena_size,
+       .peak_retained_arena_bytes  = pass.prepass_arena.capacity(),
+       .fallback_pages             = list_fallback_pages});
   }
 }
 

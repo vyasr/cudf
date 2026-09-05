@@ -11,10 +11,6 @@ BASE_PIP_CONSTRAINT="$(mktemp)"
 cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"
 trap 'rm -f "${BASE_PIP_CONSTRAINT}"' EXIT
 
-reset_python_wheel_build_environment() {
-  cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
-}
-
 add_wheel_constraint() {
   local package_name=$1
   local wheelhouse=$2
@@ -40,7 +36,7 @@ RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 export RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
 
 # pylibcudf
-reset_python_wheel_build_environment
+cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
 LIBCUDF_WHEELHOUSE="$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")")"
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 build_package_wheel \
@@ -66,7 +62,7 @@ finalize_package_wheel \
 
 # cudf
 PYLIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
-reset_python_wheel_build_environment
+cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
 build_package_wheel cudf cudf python/cudf --stable
@@ -85,7 +81,7 @@ finalize_package_wheel \
   "$(rapids-artifact-name wheel_python cudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf-streaming
-reset_python_wheel_build_environment
+cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
 LIBCUDF_STREAMING_WHEELHOUSE="${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "${RAPIDS_CUDA_VERSION}")")}"
 add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcudf_streaming_*.whl'
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'

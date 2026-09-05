@@ -417,10 +417,11 @@ void reader_impl::allocate_level_decode_space()
                  page.delta_flat_prepass_enabled;
     if (entry.flat) {
       if (entry.optional_leaf) {
-        // Nullable flat pages need the publisher to materialize their dense
-        // valid-rank map and validity state.
+        // The definition-level preprocessing CTA publishes nullable flat
+        // pages' dense valid-rank map and validity state immediately after it
+        // materializes the definition buffer.  Keeping this out of the
+        // standalone publisher removes a redundant launch and global reread.
         page.flat_prepass_nz_count = -2;
-        entry.flat_publisher       = true;
       } else {
         // A required flat page uses the existing identity-map contract. Its
         // selected bounds are known before PageInfo's normal H2D transfer, so
@@ -608,9 +609,10 @@ void reader_impl::allocate_level_decode_space()
                             subpass.list_prepass_page_indices_host);
 
   if (_level_prepass_debug_stats_enabled) {
+    auto const selected_flat_pages = static_cast<size_t>(std::count_if(
+      layout.begin(), layout.end(), [](prepass_layout const& entry) { return entry.flat; }));
     add_level_prepass_debug_stats(
-      {.selected_pages = subpass.flat_prepass_selected_pages +
-                         subpass.nested_prepass_selected_pages +
+      {.selected_pages = selected_flat_pages + subpass.nested_prepass_selected_pages +
                          subpass.list_prepass_selected_pages,
        .required_flat_elisions     = required_flat_elisions,
        .allocated_bytes            = pass.prepass_arena.capacity() - prepass_arena_capacity_before,

@@ -30,6 +30,68 @@ constexpr int preprocess_block_size   = 512;
 constexpr int level_decode_block_size = 128;
 
 template <typename level_t>
+__device__ void publish_flat_prepass_from_decoded_levels(
+  PageInfo* pp,
+  level_scan_state const* s,
+  level_t const* def,
+  typename cub::BlockScan<int, level_decode_block_size>::TempStorage& scan_storage,
+  int& block_valid_count_shared,
+  cg::thread_block const& block)
+{
+  auto const bounds =
+    compute_flat_prepass_bounds(*pp, s->setup.col, s->setup.first_row, s->setup.num_rows);
+  int const first_row    = bounds.first_row;
+  int const value_limit  = bounds.value_limit;
+  int const t            = block.thread_rank();
+  int valid_count        = 0;
+  int prefix_valid_count = 0;
+  auto& ni               = pp->nesting_decode[0];
+
+  for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
+    int const value_pos = value_base + t;
+    int const is_valid  = value_pos < value_limit && def[value_pos] > 0;
+    int thread_valid_count, block_valid_count;
+    cub::BlockScan<int, level_decode_block_size>(scan_storage)
+      .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+    auto const valid_mask  = ballot(is_valid);
+    bool const in_output   = value_pos >= first_row && value_pos < value_limit;
+    auto const output_mask = ballot(in_output);
+    int const write_start  = __ffs(output_mask) - 1;
+    if (write_start >= 0 && (t % cudf::detail::warp_size) == 0 && ni.valid_map != nullptr) {
+      int const write_end = cudf::detail::warp_size - __clz(output_mask);
+      store_validity(ni.valid_map_offset + value_base + (t - (t % cudf::detail::warp_size)) +
+                       write_start - first_row,
+                     ni.valid_map,
+                     valid_mask >> write_start,
+                     write_end - write_start);
+    }
+    if (is_valid) { pp->flat_prepass_nz_idx[valid_count + thread_valid_count] = value_pos; }
+    if (t == 0) { block_valid_count_shared = block_valid_count; }
+    block.sync();
+    if (t == 0) {
+      if (value_base + level_decode_block_size <= first_row) {
+        prefix_valid_count += block_valid_count_shared;
+      } else if (value_base < first_row) {
+        for (int prefix_pos = value_base; prefix_pos < first_row; ++prefix_pos) {
+          prefix_valid_count += def[prefix_pos] > 0;
+        }
+      }
+    }
+    valid_count += block_valid_count_shared;
+    block.sync();
+  }
+  if (t == 0) {
+    int const selected_value_count      = max(value_limit - first_row, 0);
+    int const selected_valid_count      = valid_count - prefix_valid_count;
+    pp->flat_prepass_prefix_valid_count = prefix_valid_count;
+    pp->flat_prepass_nz_count           = valid_count;
+    pp->flat_prepass_null_count         = selected_value_count - selected_valid_count;
+    ni.null_count                       = pp->flat_prepass_null_count;
+  }
+  block.sync();
+}
+
+template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   precompute_flat_level_state_kernel(PageInfo* pages,
                                      device_span<ColumnChunkDesc const> chunks,
@@ -551,6 +613,18 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                decoder_stream_t::smem_stage_size);
   copy_barrier.arrive_and_wait();
   decoder.decode_next(t, num_to_decode);
+
+  // Optional flat pages already have their definition levels materialized by
+  // this CTA.  Publish the identical page-global map and validity state here
+  // rather than launching a second CTA that rereads the decoded buffer.  A
+  // non-null map pointer is the existing optional-flat contract; required
+  // flat pages are host-published identity maps and do not enter this path.
+  if (stream_id == level_type::DEFINITION && pp->flat_prepass_nz_idx != nullptr) {
+    __shared__ typename cub::BlockScan<int, level_decode_block_size>::TempStorage flat_scan_storage;
+    __shared__ int flat_block_valid_count;
+    publish_flat_prepass_from_decoded_levels(
+      pp, s, out, flat_scan_storage, flat_block_valid_count, block);
+  }
 }
 
 }  // anonymous namespace

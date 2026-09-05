@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-# shellcheck source=ci/build_wheel_stage_common.sh
-source ./ci/build_wheel_stage_common.sh
+# shellcheck source=ci/build_wheel_common.sh
+source ./ci/build_wheel_common.sh
 
 BASE_PIP_CONSTRAINT="$(mktemp)"
 cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"

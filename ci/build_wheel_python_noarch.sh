@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-# shellcheck source=ci/build_wheel_stage_common.sh
-source ./ci/build_wheel_stage_common.sh
+# shellcheck source=ci/build_wheel_common.sh
+source ./ci/build_wheel_common.sh
 
 build_noarch_wheel() {
   local package_key=$1

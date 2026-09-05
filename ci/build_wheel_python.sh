@@ -35,11 +35,6 @@ add_wheel_constraint() {
   echo "${package_name}-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${wheelhouse}"/${wheel_pattern})" >> "${PIP_CONSTRAINT}"
 }
 
-set_stable_abi() {
-  RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
-  export RAPIDS_PY_API
-}
-
 check_cython_performance_hints() {
   local package_name=$1
   local build_log=$2
@@ -53,12 +48,13 @@ check_cython_performance_hints() {
 }
 
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
+# All wheels in this stage use the stable Python ABI.
+export RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
 
 # pylibcudf
 set_wheel_output_dir pylibcudf
 LIBCUDF_WHEELHOUSE="$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")")"
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
-set_stable_abi
 ./ci/build_wheel.sh pylibcudf python/pylibcudf --stable 2>&1 | tee pylibcudf-wheel-build-output.log
 check_cython_performance_hints pylibcudf pylibcudf-wheel-build-output.log
 
@@ -79,7 +75,6 @@ PYLIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
 set_wheel_output_dir cudf
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
-set_stable_abi
 ./ci/build_wheel.sh cudf python/cudf --stable
 
 python -m auditwheel repair \
@@ -101,7 +96,6 @@ add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcud
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
 
-set_stable_abi
 ./ci/build_wheel.sh cudf-streaming python/cudf_streaming --stable 2>&1 | tee cudf-streaming-wheel-build-output.log
 check_cython_performance_hints cudf-streaming cudf-streaming-wheel-build-output.log
 

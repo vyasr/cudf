@@ -2,7 +2,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+source rapids-configure-sccache
+source rapids-datetime-string
 source rapids-init-pip
+
+export SCCACHE_S3_USE_PREPROCESSOR_CACHE_MODE=true
+
+RAPIDS_VERSION_SUFFIX=".post${RAPIDS_DATETIME_STRING}" \
+  rapids-generate-version > ./VERSION
+
+RAPIDS_VERSION_SUFFIX=".post${RAPIDS_DATETIME_STRING}" \
+  rapids-generate-version > ./python/cudf/cudf/VERSION
 
 set_wheel_output_dir() {
   local package_key=$1
@@ -23,6 +33,7 @@ build_package_wheel() {
     shift 2
   fi
 
+  export SCCACHE_S3_PREPROCESSOR_CACHE_KEY_PREFIX="${package_name}-${RAPIDS_CONDA_ARCH}-cuda${RAPIDS_CUDA_VERSION%%.*}-wheel-preprocessor-cache"
   set_wheel_output_dir "${package_key}"
   if [[ -n "${build_log}" ]]; then
     ./ci/build_wheel.sh "${package_name}" "${package_dir}" "$@" 2>&1 | tee "${build_log}"

@@ -4,27 +4,18 @@
 
 set -euo pipefail
 
-source rapids-init-pip
+# shellcheck source=ci/build_wheel_stage_common.sh
+source ./ci/build_wheel_stage_common.sh
 
 BASE_PIP_CONSTRAINT="$(mktemp)"
 cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"
 trap 'rm -f "${BASE_PIP_CONSTRAINT}"' EXIT
 
-set_wheel_output_dir() {
+set_python_wheel_output_dir() {
   local package_key=$1
 
   cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
-  export RAPIDS_WHEEL_BLD_OUTPUT_DIR="${PWD}/wheel-output/${package_key}"
-  mkdir -p "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
-}
-
-record_wheel_artifact() {
-  local package_key=$1
-  local package_name=$2
-  {
-    echo "${package_key}_artifact_name=${package_name}"
-    echo "${package_key}_output_dir=${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
-  } >> "${GITHUB_OUTPUT}"
+  set_wheel_output_dir "${package_key}"
 }
 
 add_wheel_constraint() {
@@ -52,7 +43,7 @@ RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 export RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
 
 # pylibcudf
-set_wheel_output_dir pylibcudf
+set_python_wheel_output_dir pylibcudf
 LIBCUDF_WHEELHOUSE="$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")")"
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 ./ci/build_wheel.sh pylibcudf python/pylibcudf --stable 2>&1 | tee pylibcudf-wheel-build-output.log
@@ -72,7 +63,7 @@ record_wheel_artifact pylibcudf "$(rapids-artifact-name wheel_python pylibcudf c
 
 # cudf
 PYLIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
-set_wheel_output_dir cudf
+set_python_wheel_output_dir cudf
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
 ./ci/build_wheel.sh cudf python/cudf --stable
@@ -90,7 +81,7 @@ python -m auditwheel repair \
 record_wheel_artifact cudf "$(rapids-artifact-name wheel_python cudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf-streaming
-set_wheel_output_dir cudf_streaming
+set_python_wheel_output_dir cudf_streaming
 LIBCUDF_STREAMING_WHEELHOUSE="${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "${RAPIDS_CUDA_VERSION}")")}"
 add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcudf_streaming_*.whl'
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'

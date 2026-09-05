@@ -28,7 +28,12 @@ unzip -d "${WHEEL_EXPORT_DIR}" "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"/*
 LIBCUDF_LIBRARY="$(find "${WHEEL_EXPORT_DIR}" -type f -name libcudf.so)"
 ./ci/check_symbols.sh "${LIBCUDF_LIBRARY}"
 
-./ci/validate_wheel.sh python/libcudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+if [[ "${RAPIDS_CUDA_MAJOR}" == "12" ]]; then
+  libcudf_max_wheel_size=700M
+else
+  libcudf_max_wheel_size=350M
+fi
+./ci/validate_wheel.sh python/libcudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" "${libcudf_max_wheel_size}"
 record_wheel_artifact libcudf "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # libcudf-streaming. Its distinct scikit-build project consumes the freshly built
@@ -52,7 +57,7 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/libcudf_streaming/dist/*
 
-./ci/validate_wheel.sh python/libcudf_streaming "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+./ci/validate_wheel.sh python/libcudf_streaming "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 100M
 record_wheel_artifact \
   libcudf_streaming \
   "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "${RAPIDS_CUDA_VERSION}")"

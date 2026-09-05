@@ -58,7 +58,7 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/pylibcudf/dist/*
 
-./ci/validate_wheel.sh python/pylibcudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+./ci/validate_wheel.sh python/pylibcudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 20M
 record_wheel_artifact pylibcudf "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf
@@ -77,7 +77,7 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/cudf/dist/*
 
-./ci/validate_wheel.sh python/cudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+./ci/validate_wheel.sh python/cudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 15M
 record_wheel_artifact cudf "$(rapids-artifact-name wheel_python cudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf-streaming
@@ -101,7 +101,7 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/cudf_streaming/dist/*
 
-./ci/validate_wheel.sh python/cudf_streaming "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
+./ci/validate_wheel.sh python/cudf_streaming "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 75M
 record_wheel_artifact \
   cudf_streaming \
   "$(rapids-artifact-name wheel_python cudf-streaming cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"

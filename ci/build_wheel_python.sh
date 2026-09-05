@@ -11,11 +11,8 @@ BASE_PIP_CONSTRAINT="$(mktemp)"
 cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"
 trap 'rm -f "${BASE_PIP_CONSTRAINT}"' EXIT
 
-set_python_wheel_output_dir() {
-  local package_key=$1
-
+reset_python_wheel_build_environment() {
   cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
-  set_wheel_output_dir "${package_key}"
 }
 
 add_wheel_constraint() {
@@ -43,10 +40,15 @@ RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 export RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
 
 # pylibcudf
-set_python_wheel_output_dir pylibcudf
+reset_python_wheel_build_environment
 LIBCUDF_WHEELHOUSE="$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")")"
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
-./ci/build_wheel.sh pylibcudf python/pylibcudf --stable 2>&1 | tee pylibcudf-wheel-build-output.log
+build_package_wheel \
+  pylibcudf \
+  pylibcudf \
+  python/pylibcudf \
+  --log pylibcudf-wheel-build-output.log \
+  --stable
 check_cython_performance_hints pylibcudf pylibcudf-wheel-build-output.log
 
 python -m auditwheel repair \
@@ -58,15 +60,18 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/pylibcudf/dist/*
 
-./ci/validate_wheel.sh python/pylibcudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 20M
-record_wheel_artifact pylibcudf "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
+finalize_package_wheel \
+  pylibcudf \
+  python/pylibcudf \
+  20M \
+  "$(rapids-artifact-name wheel_python pylibcudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf
 PYLIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
-set_python_wheel_output_dir cudf
+reset_python_wheel_build_environment
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
-./ci/build_wheel.sh cudf python/cudf --stable
+build_package_wheel cudf cudf python/cudf --stable
 
 python -m auditwheel repair \
   --exclude libcudf.so \
@@ -77,17 +82,25 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/cudf/dist/*
 
-./ci/validate_wheel.sh python/cudf "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 15M
-record_wheel_artifact cudf "$(rapids-artifact-name wheel_python cudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
+finalize_package_wheel \
+  cudf \
+  python/cudf \
+  15M \
+  "$(rapids-artifact-name wheel_python cudf cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"
 
 # cudf-streaming
-set_python_wheel_output_dir cudf_streaming
+reset_python_wheel_build_environment
 LIBCUDF_STREAMING_WHEELHOUSE="${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "${RAPIDS_CUDA_VERSION}")")}"
 add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcudf_streaming_*.whl'
 add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
 add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
 
-./ci/build_wheel.sh cudf-streaming python/cudf_streaming --stable 2>&1 | tee cudf-streaming-wheel-build-output.log
+build_package_wheel \
+  cudf_streaming \
+  cudf-streaming \
+  python/cudf_streaming \
+  --log cudf-streaming-wheel-build-output.log \
+  --stable
 check_cython_performance_hints cudf-streaming cudf-streaming-wheel-build-output.log
 
 python -m auditwheel repair \
@@ -101,7 +114,8 @@ python -m auditwheel repair \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
   python/cudf_streaming/dist/*
 
-./ci/validate_wheel.sh python/cudf_streaming "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" 75M
-record_wheel_artifact \
+finalize_package_wheel \
   cudf_streaming \
+  python/cudf_streaming \
+  75M \
   "$(rapids-artifact-name wheel_python cudf-streaming cudf --stable --cuda "${RAPIDS_CUDA_VERSION}")"

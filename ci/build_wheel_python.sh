@@ -11,14 +11,6 @@ BASE_PIP_CONSTRAINT="$(mktemp)"
 cp "${PIP_CONSTRAINT}" "${BASE_PIP_CONSTRAINT}"
 trap 'rm -f "${BASE_PIP_CONSTRAINT}"' EXIT
 
-add_wheel_constraint() {
-  local package_name=$1
-  local wheelhouse=$2
-  local wheel_pattern=$3
-
-  echo "${package_name}-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${wheelhouse}"/${wheel_pattern})" >> "${PIP_CONSTRAINT}"
-}
-
 check_cython_performance_hints() {
   local package_name=$1
   local build_log=$2
@@ -38,7 +30,7 @@ export RAPIDS_PY_API="cp${RAPIDS_PY_VERSION//./}"
 # pylibcudf
 cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
 LIBCUDF_WHEELHOUSE="$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf cudf --cuda "${RAPIDS_CUDA_VERSION}")")"
-add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
+echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 build_package_wheel \
   pylibcudf \
   pylibcudf \
@@ -63,8 +55,8 @@ finalize_package_wheel \
 # cudf
 PYLIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
 cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
-add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
-add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
+echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
+echo "pylibcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${PYLIBCUDF_WHEELHOUSE}"/pylibcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 build_package_wheel cudf cudf python/cudf --stable
 
 python -m auditwheel repair \
@@ -83,9 +75,9 @@ finalize_package_wheel \
 # cudf-streaming
 cp "${BASE_PIP_CONSTRAINT}" "${PIP_CONSTRAINT}"
 LIBCUDF_STREAMING_WHEELHOUSE="${RAPIDS_LIBCUDF_STREAMING_WHEELHOUSE:-$(rapids-download-from-github "$(rapids-artifact-name wheel_cpp libcudf-streaming cudf --cuda "${RAPIDS_CUDA_VERSION}")")}"
-add_wheel_constraint libcudf-streaming "${LIBCUDF_STREAMING_WHEELHOUSE}" 'libcudf_streaming_*.whl'
-add_wheel_constraint libcudf "${LIBCUDF_WHEELHOUSE}" 'libcudf_*.whl'
-add_wheel_constraint pylibcudf "${PYLIBCUDF_WHEELHOUSE}" 'pylibcudf_*.whl'
+echo "libcudf-streaming-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_STREAMING_WHEELHOUSE}"/libcudf_streaming_*.whl)" >> "${PIP_CONSTRAINT}"
+echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
+echo "pylibcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${PYLIBCUDF_WHEELHOUSE}"/pylibcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 
 build_package_wheel \
   cudf_streaming \

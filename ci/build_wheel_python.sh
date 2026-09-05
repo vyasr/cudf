@@ -53,8 +53,6 @@ check_cython_performance_hints pylibcudf pylibcudf-wheel-build-output.log
 
 python -m auditwheel repair \
   --exclude libcudf.so \
-  --exclude libnvcomp.so.* \
-  --exclude libkvikio.so \
   --exclude librapids_logger.so \
   --exclude librmm.so \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \
@@ -75,8 +73,6 @@ build_package_wheel cudf cudf python/cudf --stable
 
 python -m auditwheel repair \
   --exclude libcudf.so \
-  --exclude libnvcomp.so.* \
-  --exclude libkvikio.so \
   --exclude librapids_logger.so \
   --exclude librmm.so \
   -w "${RAPIDS_WHEEL_BLD_OUTPUT_DIR}" \

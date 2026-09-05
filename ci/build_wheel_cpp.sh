@@ -8,8 +8,8 @@ set -euo pipefail
 source ./ci/build_wheel_common.sh
 
 # libcudf
-export SKBUILD_CMAKE_ARGS="-DUSE_NVCOMP_RUNTIME_WHEEL=ON"
-build_package_wheel libcudf libcudf python/libcudf
+SKBUILD_CMAKE_ARGS="-DUSE_NVCOMP_RUNTIME_WHEEL=ON" \
+  build_package_wheel libcudf libcudf python/libcudf
 
 RAPIDS_CUDA_MAJOR="${RAPIDS_CUDA_VERSION%%.*}"
 python -m auditwheel repair \
@@ -45,7 +45,6 @@ LIBCUDF_WHEELHOUSE="${RAPIDS_WHEEL_BLD_OUTPUT_DIR}"
 RAPIDS_PY_CUDA_SUFFIX="$(rapids-wheel-ctk-name-gen "${RAPIDS_CUDA_VERSION}")"
 echo "libcudf-${RAPIDS_PY_CUDA_SUFFIX} @ file://$(echo "${LIBCUDF_WHEELHOUSE}"/libcudf_*.whl)" >> "${PIP_CONSTRAINT}"
 
-unset SKBUILD_CMAKE_ARGS
 build_package_wheel libcudf_streaming libcudf_streaming python/libcudf_streaming
 
 python -m auditwheel repair \

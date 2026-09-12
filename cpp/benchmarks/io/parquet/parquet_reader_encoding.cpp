@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -56,14 +57,33 @@ void set_encoding_recursive(cudf::io::column_in_metadata& col_meta,
   }
 }
 
+/**
+ * @brief Map a `validity` axis value to a null probability.
+ *
+ * `no_validity` produces no validity mask at all, so the column is written `required`.
+ * `nullable_0` still produces a mask, so the column is written `optional` -- the
+ * distinction matters because the Parquet level prepass keys off the definition levels
+ * a mask implies, not off the null count.
+ */
+std::optional<double> null_probability_from_validity(std::string_view validity)
+{
+  if (validity == "no_validity") { return std::nullopt; }
+  constexpr std::string_view prefix{"nullable_"};
+  CUDF_EXPECTS(validity.starts_with(prefix),
+               "Unsupported validity: " + std::string{validity});
+  return std::stod(std::string{validity.substr(prefix.size())}) / 100.0;
+}
+
 data_profile make_list_profile(cudf::size_type cardinality,
                                cudf::size_type run_length,
                                cudf::size_type nesting,
-                               cudf::type_id leaf_type)
+                               cudf::type_id leaf_type,
+                               std::optional<double> null_prob)
 {
   return data_profile_builder()
     .cardinality(cardinality)
     .avg_run_length(run_length)
+    .null_probability(null_prob)
     .list_depth(nesting)
     .list_type(leaf_type);
 }
@@ -72,14 +92,15 @@ std::unique_ptr<cudf::table> create_nested_table(std::vector<cudf::type_id> cons
                                                  size_t data_size,
                                                  cudf::size_type cardinality,
                                                  cudf::size_type run_length,
-                                                 cudf::size_type nesting)
+                                                 cudf::size_type nesting,
+                                                 std::optional<double> null_prob)
 {
   auto const target_column_size = std::max<size_t>(data_size / leaf_types.size(), 1);
   std::vector<cudf::size_type> row_counts;
   row_counts.reserve(leaf_types.size());
 
   for (auto const leaf_type : leaf_types) {
-    auto const profile = make_list_profile(0, run_length, nesting, leaf_type);
+    auto const profile = make_list_profile(0, run_length, nesting, leaf_type, null_prob);
     row_counts.push_back(
       create_random_table({cudf::type_id::LIST}, table_size_bytes{target_column_size}, profile)
         ->num_rows());
@@ -95,7 +116,7 @@ std::unique_ptr<cudf::table> create_nested_table(std::vector<cudf::type_id> cons
     auto const list_cardinality =
       cardinality == 0 ? 0 : std::min<cudf::size_type>(cardinality, num_rows - 1);
     auto const profile =
-      make_list_profile(list_cardinality, run_length, nesting, leaf_types[col_idx]);
+      make_list_profile(list_cardinality, run_length, nesting, leaf_types[col_idx], null_prob);
     columns.push_back(create_random_column(
       cudf::type_id::LIST, row_count{num_rows}, profile, static_cast<unsigned>(col_idx + 1)));
   }
@@ -115,8 +136,8 @@ void bench_read_encoding(nvbench::state& state,
   auto const nesting     = use_nullable_page_size_matrix
                              ? cudf::size_type{0}
                              : static_cast<cudf::size_type>(state.get_int64("nesting"));
-  auto const validity =
-    use_nullable_page_size_matrix ? state.get_string("validity") : "no_validity";
+  auto const validity   = state.get_string("validity");
+  auto const null_prob  = null_probability_from_validity(validity);
   auto const page_rows = use_nullable_page_size_matrix
                            ? static_cast<cudf::size_type>(state.get_int64("page_rows"))
                            : cudf::size_type{0};
@@ -126,13 +147,10 @@ void bench_read_encoding(nvbench::state& state,
     auto const leaf_types = cycle_dtypes(d_types, num_cols);
     auto profile_builder =
       data_profile_builder().cardinality(cardinality).avg_run_length(run_length);
-    if (validity == "no_validity") {
-      profile_builder.no_validity();
-    } else {
-      profile_builder.null_probability(validity == "nullable_1" ? 0.01 : 0.50);
-    }
+    profile_builder.null_probability(null_prob);
     auto const tbl =
-      nesting > 0 ? create_nested_table(leaf_types, data_size, cardinality, run_length, nesting)
+      nesting > 0
+        ? create_nested_table(leaf_types, data_size, cardinality, run_length, nesting, null_prob)
                   : create_random_table(leaf_types, table_size_bytes{data_size}, profile_builder);
     auto const view = tbl->view();
 
@@ -185,7 +203,9 @@ NVBENCH_BENCH(BM_parquet_read_delta_binary)
   .add_int64_axis("cardinality", {0, 1000})
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("nesting", {0, 1})
-  .add_int64_axis("data_size", {512 << 20});
+  .add_int64_axis("data_size", {512 << 20})
+  .add_string_axis("validity", {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
+  .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_delta_string)
   .set_name("parquet_read_delta_string")
@@ -195,7 +215,9 @@ NVBENCH_BENCH(BM_parquet_read_delta_string)
   .add_int64_axis("cardinality", {0, 1000})
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("nesting", {0, 1})
-  .add_int64_axis("data_size", {512 << 20});
+  .add_int64_axis("data_size", {512 << 20})
+  .add_string_axis("validity", {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
+  .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_delta_binary_nullable_page_sizes)
   .set_name("parquet_read_delta_binary_nullable_page_sizes")
@@ -206,7 +228,8 @@ NVBENCH_BENCH(BM_parquet_read_delta_binary_nullable_page_sizes)
   .add_int64_axis("cardinality", {0})
   .add_int64_axis("run_length", {1})
   .add_int64_axis("page_rows", {31, 32, 33, 255, 256, 257})
-  .add_int64_axis("data_size", {8 << 20});
+  .add_int64_axis("data_size", {8 << 20})
+  .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_delta_string_nullable_page_sizes)
   .set_name("parquet_read_delta_string_nullable_page_sizes")
@@ -217,4 +240,5 @@ NVBENCH_BENCH(BM_parquet_read_delta_string_nullable_page_sizes)
   .add_int64_axis("cardinality", {0})
   .add_int64_axis("run_length", {1})
   .add_int64_axis("page_rows", {31, 32, 33, 255, 256, 257})
-  .add_int64_axis("data_size", {8 << 20});
+  .add_int64_axis("data_size", {8 << 20})
+  .add_string_axis("prepass_mode", {"default"});

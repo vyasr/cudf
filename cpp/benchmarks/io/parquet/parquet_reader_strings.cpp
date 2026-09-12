@@ -125,7 +125,8 @@ NVBENCH_BENCH(BM_parquet_read_long_strings)
   .add_int64_axis("data_size", {512 << 20})
   .add_int64_power_of_two_axis("avg_string_length", nvbench::range(4, 16, 2))  // 16, 64, ... -> 64k
   .add_int64_axis("row_group_size_bytes", {0})
-  .add_int64_axis("row_group_size_rows", {0});
+  .add_int64_axis("row_group_size_rows", {0})
+  .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_file_shape)
   .set_name("parquet_read_file_shape")
@@ -134,4 +135,5 @@ NVBENCH_BENCH(BM_parquet_read_file_shape)
   .add_int64_axis("num_rows", {10'000'000, 100'000'000})
   .add_int64_axis("num_row_groups", {1, 10})
   .add_int64_axis("pages_per_row_group", {1'000, 10'000})
-  .add_int64_axis("has_page_idx", {true, false});
+  .add_int64_axis("has_page_idx", {true, false})
+  .add_string_axis("prepass_mode", {"default"});

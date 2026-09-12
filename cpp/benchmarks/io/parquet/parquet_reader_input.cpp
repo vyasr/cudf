@@ -52,8 +52,13 @@ void BM_parquet_read_data(nvbench::state& state,
 {
   auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
   auto const run_length  = static_cast<cudf::size_type>(state.get_int64("run_length"));
-  BM_parquet_read_data_common<DataType>(
-    state, data_profile_builder().cardinality(cardinality).avg_run_length(run_length), type_list);
+  auto const null_prob   = null_probability_from_percent(state.get_int64("null_percent"));
+  BM_parquet_read_data_common<DataType>(state,
+                                        data_profile_builder()
+                                          .cardinality(cardinality)
+                                          .avg_run_length(run_length)
+                                          .null_probability(null_prob),
+                                        type_list);
 }
 
 template <data_type DataType>
@@ -62,12 +67,14 @@ void BM_parquet_read_fixed_width_struct(nvbench::state& state,
 {
   auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
   auto const run_length  = static_cast<cudf::size_type>(state.get_int64("run_length"));
+  auto const null_prob   = null_probability_from_percent(state.get_int64("null_percent"));
   std::vector<cudf::type_id> s_types{
     cudf::type_id::INT32, cudf::type_id::FLOAT32, cudf::type_id::INT64};
   BM_parquet_read_data_common<DataType>(state,
                                         data_profile_builder()
                                           .cardinality(cardinality)
                                           .avg_run_length(run_length)
+                                          .null_probability(null_prob)
                                           .struct_types(s_types),
                                         type_list);
 }
@@ -114,6 +121,7 @@ void BM_parquet_read_io_small_mixed(nvbench::state& state)
   auto const source_type   = retrieve_io_type_enum(state.get_string("io_type"));
   auto const rg_size_bytes = state.get_int64("row_group_size_bytes");
   auto const rg_size_rows  = state.get_int64("row_group_size_rows");
+  auto const null_prob     = null_probability_from_percent(state.get_int64("null_percent"));
   cuio_source_sink_pair source_sink(source_type);
 
   // want 80 pages total, across 4 columns, so 20 pages per column
@@ -122,10 +130,12 @@ void BM_parquet_read_io_small_mixed(nvbench::state& state)
   cudf::size_type constexpr num_rows       = page_size_rows * (80 / n_col);
 
   {
-    auto const tbl = create_random_table(
-      mix_dtypes(d_type, n_col, num_strings),
-      row_count{num_rows},
-      data_profile_builder().cardinality(cardinality).avg_run_length(run_length));
+    auto const tbl  = create_random_table(mix_dtypes(d_type, n_col, num_strings),
+                                         row_count{num_rows},
+                                         data_profile_builder()
+                                           .cardinality(cardinality)
+                                           .avg_run_length(run_length)
+                                           .null_probability(null_prob));
     auto const view = tbl->view();
 
     cudf::io::parquet_writer_options write_opts =
@@ -160,7 +170,9 @@ NVBENCH_BENCH_TYPES(BM_parquet_read_data, NVBENCH_TYPE_AXES(d_type_list))
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("data_size", {512 << 20})
   .add_int64_axis("row_group_size_bytes", {0})
-  .add_int64_axis("row_group_size_rows", {0});
+  .add_int64_axis("row_group_size_rows", {0})
+  .add_int64_axis("null_percent", {1})
+  .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_flat_nullable_pages)
   .set_name("parquet_read_flat_nullable_pages")
@@ -178,7 +190,9 @@ NVBENCH_BENCH(BM_parquet_read_io_small_mixed)
   .add_int64_axis("num_string_cols", {1, 2, 3})
   .add_int64_axis("data_size", {512 << 20})
   .add_int64_axis("row_group_size_bytes", {0})
-  .add_int64_axis("row_group_size_rows", {0});
+  .add_int64_axis("row_group_size_rows", {0})
+  .add_int64_axis("null_percent", {1})
+  .add_string_axis("prepass_mode", {"default"});
 
 // a benchmark for structs that only contain fixed-width types
 using d_type_list_struct_only = nvbench::enum_type_list<data_type::STRUCT>;
@@ -192,4 +206,6 @@ NVBENCH_BENCH_TYPES(BM_parquet_read_fixed_width_struct, NVBENCH_TYPE_AXES(d_type
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("data_size", {512 << 20})
   .add_int64_axis("row_group_size_bytes", {0})
-  .add_int64_axis("row_group_size_rows", {0});
+  .add_int64_axis("row_group_size_rows", {0})
+  .add_int64_axis("null_percent", {1})
+  .add_string_axis("prepass_mode", {"default"});

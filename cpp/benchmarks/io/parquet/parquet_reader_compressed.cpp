@@ -64,4 +64,5 @@ NVBENCH_BENCH(BM_parquet_read_io_compression)
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("data_size", {512 << 20})
   .add_int64_axis("row_group_size_bytes", {0})
-  .add_int64_axis("row_group_size_rows", {0});
+  .add_int64_axis("row_group_size_rows", {0})
+  .add_string_axis("prepass_mode", {"default"});

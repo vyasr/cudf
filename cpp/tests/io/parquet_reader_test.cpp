@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -105,13 +106,55 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
     EXPECT_EQ(level_prepass_mode_from_environment(), 0x1ff);
   }
   {
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x200"};
+    // Probe bits live above the family mask and are accepted alongside families.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x7ff"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x7ff);
+  }
+  {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x800"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
   {
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "invalid"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
+}
+
+TEST_F(ParquetReaderTest, LevelPrepassSelectorDefaultsToFamiliesOnly)
+{
+  using cudf::io::parquet::detail::level_prepass_family_mask;
+  using cudf::io::parquet::detail::level_prepass_mode_from_environment;
+  using cudf::io::parquet::detail::level_prepass_probe_mask;
+
+  // tmp_env_var can only set, so restore any ambient selector by hand rather than
+  // leaking an unsetenv into every test that runs after this one.
+  class unset_env_var {
+   public:
+    explicit unset_env_var(char const* name) : name_{name}
+    {
+      if (auto const* previous = std::getenv(name_); previous != nullptr) {
+        previous_value_ = std::string{previous};
+      }
+      unsetenv(name_);
+    }
+    unset_env_var(unset_env_var const&)            = delete;
+    unset_env_var& operator=(unset_env_var const&) = delete;
+    ~unset_env_var()
+    {
+      if (previous_value_.has_value()) { setenv(name_, previous_value_->c_str(), 1); }
+    }
+
+   private:
+    char const* name_;
+    std::optional<std::string> previous_value_;
+  };
+
+  // An unset selector must enable every consumer family and no experimental probe,
+  // so that adding a probe bit can never change default reader behaviour.
+  unset_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS"};
+  auto const mode = level_prepass_mode_from_environment();
+  EXPECT_EQ(mode, level_prepass_family_mask);
+  EXPECT_EQ(mode & level_prepass_probe_mask, 0u);
 }
 
 TEST_F(ParquetReaderTest, UserBounds)

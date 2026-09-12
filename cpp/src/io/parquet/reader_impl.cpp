@@ -42,14 +42,15 @@ uint32_t level_prepass_mode_from_environment()
   constexpr char const* name = "LIBCUDF_PARQUET_LEVEL_PREPASS";
   auto const* value          = std::getenv(name);
   // Keep an explicit zero as the temporary rollback mode, but use the
-  // validated page-global prepass for normal reads.
-  if (value == nullptr || *value == '\0') { return level_prepass_all; }
+  // validated page-global prepass for normal reads. Probe bits are deliberately
+  // excluded from the default so an experiment never ships on by accident.
+  if (value == nullptr || *value == '\0') { return level_prepass_family_mask; }
 
   errno           = 0;
   char* end       = nullptr;
   auto const base = value[0] == '0' && (value[1] == 'x' || value[1] == 'X') ? 16 : 10;
   auto parsed     = std::strtoul(value, &end, base);
-  if (errno != 0 || end == value || *end != '\0' || parsed > level_prepass_all) {
+  if (errno != 0 || end == value || *end != '\0' || parsed > level_prepass_selector_mask) {
     CUDF_LOG_WARN("Ignoring invalid %s=%s; using legacy Parquet level decode", name, value);
     return 0;
   }
@@ -653,10 +654,10 @@ reader_impl::reader_impl(std::size_t chunk_read_limit,
 {
   _level_prepass_mode = level_prepass_mode_from_environment();
   if (_level_prepass_mode != 0) {
-    CUDF_LOG_INFO(
-      "LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x; no prepass consumer family "
-      "is enabled in this build",
-      _level_prepass_mode);
+    CUDF_LOG_INFO("LIBCUDF_PARQUET_LEVEL_PREPASS resolved to 0x%x (families 0x%x, probes 0x%x)",
+                  _level_prepass_mode,
+                  _level_prepass_mode & level_prepass_family_mask,
+                  _level_prepass_mode & level_prepass_probe_mask);
   }
 
   // The direct parquet-dict → DICTIONARY32 transcode fast path only supports single-pass,

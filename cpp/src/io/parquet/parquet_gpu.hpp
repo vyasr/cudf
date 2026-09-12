@@ -284,7 +284,20 @@ constexpr uint32_t level_prepass_delta_nested   = 0x020;
 constexpr uint32_t level_prepass_generic_list   = 0x040;
 constexpr uint32_t level_prepass_legacy_list    = 0x080;
 constexpr uint32_t level_prepass_delta_list     = 0x100;
-constexpr uint32_t level_prepass_all            = 0x1ff;
+
+/// Consumer-family bits. Selected by default when the environment does not override.
+constexpr uint32_t level_prepass_family_mask = 0x1ff;
+constexpr uint32_t level_prepass_all         = level_prepass_family_mask;
+
+// Experimental kernel-reshaping probes. These live outside `level_prepass_family_mask`
+// so that widening the probe set can never change the default returned by
+// `level_prepass_mode_from_environment()` for an unset environment variable.
+constexpr uint32_t level_prepass_direct_map = 0x200;
+constexpr uint32_t level_prepass_use_prefix = 0x400;
+constexpr uint32_t level_prepass_probe_mask = 0x600;
+
+constexpr uint32_t level_prepass_selector_mask =
+  level_prepass_family_mask | level_prepass_probe_mask;
 
 /**
  * @brief Read the temporary Parquet level-prepass selector from the environment.

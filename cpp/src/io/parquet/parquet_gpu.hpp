@@ -1357,7 +1357,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       cuda::stream_ref stream,
                       bool use_flat_prepass   = false,
                       bool use_nested_prepass = false,
-                      bool use_list_prepass   = false);
+                      bool use_list_prepass   = false,
+                      bool direct_map         = false);
 
 /**
  * @brief Launches kernel for initializing encoder row group fragments

@@ -1300,7 +1300,8 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                                   cudf::device_span<bool const> page_mask,
                                   cudf::device_span<size_t> initial_str_offsets,
                                   cudf::device_span<size_t const> page_string_offset_indices,
-                                  kernel_error::pointer error_code)
+                                  kernel_error::pointer error_code,
+                                  bool direct_map)
 {
   constexpr bool has_dict_t     = has_dict<kernel_mask_t>();
   constexpr bool has_bools_t    = has_bools<kernel_mask_t>();
@@ -1514,6 +1515,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                              : ((processed_count < s->setup.page.num_input_values) &&
                                 (s->progress.input_row_count <= last_row)))) {
     int next_valid_count;
+    // Non-null only for the direct-map probe: lets the value helpers index the
+    // page-global map instead of the shared rolling ring.
+    uint32_t const* value_nz_idx = nullptr;
     block.sync();
     if constexpr (!use_list_prepass_t) {
       processed_count += min(rolling_buf_size, s->setup.page.num_input_values - processed_count);
@@ -1531,10 +1535,20 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                                               ? flat_prepass_valid_count_before(
                                prepass_nz_idx, prepass_nz_count, capped_target_value_count)
                                               : capped_target_value_count;
-      for (int map_pos = valid_count + t; map_pos < next_valid_count;
-           map_pos += decode_block_size_t) {
-        sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(map_pos)] =
-          process_nulls ? prepass_nz_idx[map_pos] : map_pos;
+      // The map is already dense, sequential and page-global; restaging it into a
+      // 256-entry shared ring buys nothing, so the probe reads it in place.
+      // Only decode_fixed_width_values can consume the map directly; the string,
+      // split and dict-int32 helpers still index the shared ring, so the refill
+      // must stay for them or they read uninitialised indices.
+      constexpr bool map_capable_helper_t = !is_dict_int32_t && !has_strings_t && !split_decode_t;
+      if (direct_map && process_nulls && map_capable_helper_t) {
+        value_nz_idx = prepass_nz_idx;
+      } else {
+        for (int map_pos = valid_count + t; map_pos < next_valid_count;
+             map_pos += decode_block_size_t) {
+          sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(map_pos)] =
+            process_nulls ? prepass_nz_idx[map_pos] : map_pos;
+        }
       }
       if (t == 0) {
         s->progress.input_row_count =
@@ -1613,7 +1627,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
           s, sb, valid_count, next_valid_count, t);
       } else {
         decode_fixed_width_values<decode_block_size_t, has_lists_t, copy_mode_t>(
-          s, sb, valid_count, next_valid_count, t);
+          s, sb, valid_count, next_valid_count, t, value_nz_idx);
       }
     };
 
@@ -1749,7 +1763,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       cuda::stream_ref stream,
                       bool use_flat_prepass,
                       bool use_nested_prepass,
-                      bool use_list_prepass)
+                      bool use_list_prepass,
+                      bool direct_map)
 {
   // No template parameters on lambdas until C++20, so use type tags instead
   auto launch_kernel = [&](auto block_size_tag, auto kernel_mask_tag) {
@@ -1769,7 +1784,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, true, false, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1779,7 +1795,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1793,7 +1810,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, true, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1803,7 +1821,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1817,7 +1836,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, true>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1827,7 +1847,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code);
+                                                     error_code,
+                                                     direct_map);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1840,7 +1861,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    page_mask,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
-                                                   error_code);
+                                                   error_code,
+                                                   direct_map);
       CUDF_CUDA_TRY(cudaGetLastError());
     } else {
       decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, false>
@@ -1851,7 +1873,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    page_mask,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
-                                                   error_code);
+                                                   error_code,
+                                                   direct_map);
       CUDF_CUDA_TRY(cudaGetLastError());
     }
   };

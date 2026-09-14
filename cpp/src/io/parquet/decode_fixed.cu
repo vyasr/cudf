@@ -1558,11 +1558,16 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       int const capped_target_value_count = min(processed_count, last_row);
       if (!process_nulls) {
         next_valid_count = capped_target_value_count;
-      } else if (scan_rank) {
+      } else if (scan_rank &&
+                 (!has_strings_t || 4 * prepass_nz_count >= s->setup.page.num_input_values)) {
         // The value cursor advances by at most rolling_buf_size per iteration, so at
         // most that many new valid ranks appear. Counting them block-wide replaces a
         // ~log2(nz_count)-deep chain of dependent global loads, which every thread
         // walks redundantly, with a pair of coalesced ones.
+        //
+        // The scan costs two block barriers per batch regardless of how many valid
+        // ranks it finds. For sparse string pages that fixed cost measured worse than
+        // the search it replaces, so those fall back to the search.
         int delta = 0;
         for (int base = 0; base < rolling_buf_size; base += decode_block_size_t) {
           int const rank = valid_count + base + t;

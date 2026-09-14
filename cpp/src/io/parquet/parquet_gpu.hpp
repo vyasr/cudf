@@ -295,7 +295,8 @@ constexpr uint32_t level_prepass_all         = level_prepass_family_mask;
 constexpr uint32_t level_prepass_direct_map = 0x200;
 constexpr uint32_t level_prepass_use_prefix = 0x400;
 constexpr uint32_t level_prepass_narrow_map = 0x800;
-constexpr uint32_t level_prepass_probe_mask = 0xe00;
+constexpr uint32_t level_prepass_scan_rank  = 0x1000;
+constexpr uint32_t level_prepass_probe_mask = 0x1e00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -1363,7 +1364,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_flat_prepass   = false,
                       bool use_nested_prepass = false,
                       bool use_list_prepass   = false,
-                      bool direct_map         = false);
+                      bool direct_map         = false,
+                      bool scan_rank          = false);
 
 /**
  * @brief Launches kernel for initializing encoder row group fragments

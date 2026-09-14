@@ -317,7 +317,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                              use_flat_prepass,
                              use_nested_prepass,
                              use_list_prepass,
-                             (_level_prepass_mode & level_prepass_direct_map) != 0);
+                             (_level_prepass_mode & level_prepass_direct_map) != 0,
+                             (_level_prepass_mode & level_prepass_scan_rank) != 0);
   };
 
   // launch string decoder for plain encoded flat columns

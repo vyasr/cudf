@@ -1322,7 +1322,8 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                                   cudf::device_span<size_t> initial_str_offsets,
                                   cudf::device_span<size_t const> page_string_offset_indices,
                                   kernel_error::pointer error_code,
-                                  bool direct_map)
+                                  bool direct_map,
+                                  bool scan_rank)
 {
   constexpr bool has_dict_t     = has_dict<kernel_mask_t>();
   constexpr bool has_bools_t    = has_bools<kernel_mask_t>();
@@ -1555,9 +1556,25 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
-      next_valid_count                    = process_nulls ? flat_prepass_valid_count_before(
-                                           prepass_map, prepass_nz_count, capped_target_value_count)
-                                                          : capped_target_value_count;
+      if (!process_nulls) {
+        next_valid_count = capped_target_value_count;
+      } else if (scan_rank) {
+        // The value cursor advances by at most rolling_buf_size per iteration, so at
+        // most that many new valid ranks appear. Counting them block-wide replaces a
+        // ~log2(nz_count)-deep chain of dependent global loads, which every thread
+        // walks redundantly, with a pair of coalesced ones.
+        int delta = 0;
+        for (int base = 0; base < rolling_buf_size; base += decode_block_size_t) {
+          int const rank = valid_count + base + t;
+          int const pred = (rank < prepass_nz_count) &&
+                           (static_cast<int>(prepass_map[rank]) < capped_target_value_count);
+          delta += __syncthreads_count(pred);
+        }
+        next_valid_count = valid_count + delta;
+      } else {
+        next_valid_count =
+          flat_prepass_valid_count_before(prepass_map, prepass_nz_count, capped_target_value_count);
+      }
       // The map is already dense, sequential and page-global; restaging it into a
       // 256-entry shared ring buys nothing, so the probe reads it in place.
       // Only decode_fixed_width_values can consume the map directly; the string,
@@ -1788,7 +1805,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_flat_prepass,
                       bool use_nested_prepass,
                       bool use_list_prepass,
-                      bool direct_map)
+                      bool direct_map,
+                      bool scan_rank)
 {
   // No template parameters on lambdas until C++20, so use type tags instead
   auto launch_kernel = [&](auto block_size_tag, auto kernel_mask_tag) {
@@ -1809,7 +1827,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, true, false, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1820,7 +1839,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1835,7 +1855,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, true, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1846,7 +1867,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1861,7 +1883,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, true>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1872,7 +1895,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
                                                      error_code,
-                                                     direct_map);
+                                                     direct_map,
+                                                     scan_rank);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1886,7 +1910,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
                                                    error_code,
-                                                   direct_map);
+                                                   direct_map,
+                                                   scan_rank);
       CUDF_CUDA_TRY(cudaGetLastError());
     } else {
       decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, false>
@@ -1898,7 +1923,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
                                                    error_code,
-                                                   direct_map);
+                                                   direct_map,
+                                                   scan_rank);
       CUDF_CUDA_TRY(cudaGetLastError());
     }
   };

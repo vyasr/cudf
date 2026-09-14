@@ -473,11 +473,22 @@ void reader_impl::allocate_level_decode_space()
     page.nested_prepass_enabled            = selected_generic_nested;
     page.legacy_nested_prepass_enabled     = selected_legacy_nested;
     page.delta_nested_prepass_enabled      = selected_delta_nested;
+    // The map width field is shared with the flat path: a page belongs to exactly one
+    // prepass family, so the two never contend for it. Only the generic-nested consumer
+    // decodes the narrow form; legacy and delta nested pages keep absolute positions.
+    if (selected_nested) {
+      page.flat_prepass_map_width =
+        ((_level_prepass_mode & level_prepass_narrow_map) != 0 && selected_generic_nested &&
+         page.num_input_values <= std::numeric_limits<uint16_t>::max())
+          ? uint8_t{2}
+          : uint8_t{4};
+    }
     if (selected_nested) {
       // Required nested leaves have an identity valid-rank mapping. They
       // still publish per-depth state, but do not retain a redundant map.
       if (chunk.max_level[level_type::DEFINITION] != 0) {
-        nested_prepass_map_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+        nested_prepass_map_size += cudf::util::round_up_unsafe(
+          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
       }
       nested_prepass_nesting_size +=
         static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
@@ -487,7 +498,7 @@ void reader_impl::allocate_level_decode_space()
   subpass.nested_prepass_data =
     rmm::device_buffer(nested_prepass_size, _stream, cudf::get_current_device_resource_ref());
   auto* nested_prepass_ptr = static_cast<uint8_t*>(subpass.nested_prepass_data.data());
-  auto* nested_map_ptr     = reinterpret_cast<uint32_t*>(nested_prepass_ptr);
+  auto* nested_map_ptr     = nested_prepass_ptr;
   auto* nested_nesting_ptr = reinterpret_cast<PageNestingPrepassState*>(
     nested_prepass_ptr == nullptr ? nullptr : nested_prepass_ptr + nested_prepass_map_size);
   for (size_t idx = 0; idx < num_pages; ++idx) {
@@ -496,8 +507,9 @@ void reader_impl::allocate_level_decode_space()
         page.delta_nested_prepass_enabled) {
       auto const& chunk = pass.chunks[page.chunk_idx];
       if (chunk.max_level[level_type::DEFINITION] != 0) {
-        page.nested_prepass_nz_idx = nested_map_ptr;
-        nested_map_ptr += page.num_input_values;
+        page.nested_prepass_nz_idx = reinterpret_cast<uint32_t*>(nested_map_ptr);
+        nested_map_ptr += cudf::util::round_up_unsafe(
+          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
       }
       page.nested_prepass_nesting = nested_nesting_ptr;
       nested_nesting_ptr += page.nesting_info_size;

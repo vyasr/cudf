@@ -416,10 +416,18 @@ struct rolling_nz_idx_sink {
 struct page_local_nz_idx_sink {
   uint32_t* indices;
   int rank_base;
+  int width{4};
 
   __device__ void store(int valid_rank, uint32_t dst_pos) const
   {
-    indices[valid_rank - rank_base] = dst_pos;
+    int const local = valid_rank - rank_base;
+    if (width == 2) {
+      // Store the nulls preceding this rank; bounded by num_input_values, matching the
+      // flat producer's encoding so `flat_prepass_map_view` decodes either form.
+      reinterpret_cast<uint16_t*>(indices)[local] = static_cast<uint16_t>(dst_pos - local);
+    } else {
+      indices[local] = dst_pos;
+    }
   }
 };
 
@@ -1313,26 +1321,10 @@ CUDF_HOST_DEVICE constexpr bool is_split_decode()
  * string offset buffer
  * @param error_code Error code to set if an error is encountered
  */
-/** Return the valid-rank immediately before a raw flat input position. */
-__device__ int flat_prepass_valid_count_before(uint32_t const* nz_idx, int count, int input_pos)
-{
-  int first = 0;
-  int last  = count;
-  while (first < last) {
-    int const middle = first + (last - first) / 2;
-    if (static_cast<int>(nz_idx[middle]) < input_pos) {
-      first = middle + 1;
-    } else {
-      last = middle;
-    }
-  }
-  return first;
-}
-
 /**
- * @brief Map-view overload of the above.
+ * @brief Return the valid-rank immediately before a raw flat input position.
  *
- * Both representations are monotonically non-decreasing in rank, so the search is
+ * Both map representations are monotonically non-decreasing in rank, so the search is
  * valid for either.
  */
 __device__ int flat_prepass_valid_count_before(flat_prepass_map_view map, int count, int input_pos)
@@ -1520,10 +1512,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     block.sync();
   } else if constexpr (use_nested_prepass_t) {
     processed_count = first_row;
-    valid_count     = process_nulls
-                        ? flat_prepass_valid_count_before(
-                        pp->nested_prepass_nz_idx, pp->nested_prepass_nz_count, first_row)
-                        : first_row;
+    valid_count =
+      process_nulls
+        ? flat_prepass_valid_count_before(
+            flat_prepass_map_view{pp->nested_prepass_nz_idx, pp->flat_prepass_map_width},
+            pp->nested_prepass_nz_count,
+            first_row)
+        : first_row;
     if constexpr (has_dict_t) {
       skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
     } else if constexpr (has_bools_t) {
@@ -1593,9 +1588,10 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     } else if constexpr (use_flat_prepass_t || use_nested_prepass_t) {
       // Only the generic-flat producer emits the narrow map, so the nested view is
       // always the 4-byte form.
-      auto const prepass_map = use_flat_prepass_t
-                                 ? flat_prepass_map(pp)
-                                 : flat_prepass_map_view{pp->nested_prepass_nz_idx, 4};
+      auto const prepass_map =
+        use_flat_prepass_t
+          ? flat_prepass_map(pp)
+          : flat_prepass_map_view{pp->nested_prepass_nz_idx, pp->flat_prepass_map_width};
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
@@ -2118,9 +2114,10 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
     pp->num_decoded_level_values > 0
       ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
       : s->setup.page.num_input_values;
-  auto const sink             = pp->nested_prepass_nz_idx != nullptr
-                                  ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base}
-                                  : page_local_nz_idx_sink{nullptr, map_rank_base};
+  auto const sink =
+    pp->nested_prepass_nz_idx != nullptr
+      ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base, pp->flat_prepass_map_width}
+      : page_local_nz_idx_sink{nullptr, map_rank_base};
   int const final_valid_count = pp->nested_prepass_nz_idx != nullptr
                                   ? update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
                                       decoded_value_limit,

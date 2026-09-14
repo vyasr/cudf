@@ -29,7 +29,12 @@ namespace {
 constexpr int preprocess_block_size   = 512;
 constexpr int level_decode_block_size = 128;
 
-template <typename level_t>
+/**
+ * @brief Number of warps cooperating on one page in the flat level prepass.
+ */
+constexpr int level_decode_num_warps = level_decode_block_size / cudf::detail::warp_size;
+
+template <typename level_t, bool warp_scan_t>
 CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   precompute_flat_level_state_kernel(PageInfo* pages,
                                      device_span<ColumnChunkDesc const> chunks,
@@ -38,7 +43,10 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                                      size_t num_rows)
 {
   __shared__ __align__(16) full_page_decode_state state_g;
+  // Only one of these is ever instantiated; the unused branch is compiled out so the
+  // block-scan variant does not pay for the warp-scan scratch or vice versa.
   __shared__ typename cub::BlockScan<int, level_decode_block_size>::TempStorage scan_storage;
+  __shared__ int warp_valid_counts[level_decode_num_warps];
   __shared__ int block_valid_count_shared;
   auto const block   = cg::this_thread_block();
   int const page_idx = blockIdx.x;
@@ -82,12 +90,30 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   auto const* def = reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   int valid_count = 0;
   for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
-    int const value_pos = value_base + t;
-    int const is_valid  = value_pos < value_limit && def[value_pos] > 0;
+    int const value_pos   = value_base + t;
+    int const is_valid    = value_pos < value_limit && def[value_pos] > 0;
+    auto const valid_mask = ballot(is_valid);
     int thread_valid_count, block_valid_count;
-    cub::BlockScan<int, level_decode_block_size>(scan_storage)
-      .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
-    auto const valid_mask  = ballot(is_valid);
+    if constexpr (warp_scan_t) {
+      // The ballot above already encodes every thread's predicate, so a block-wide scan
+      // is redundant work: a lane's rank within its warp is a popc of the mask below it,
+      // and only the small cross-warp prefix needs to be shared.
+      int const lane    = t % cudf::detail::warp_size;
+      int const warp_id = t / cudf::detail::warp_size;
+      if (lane == 0) { warp_valid_counts[warp_id] = __popc(valid_mask); }
+      block.sync();
+      int warp_prefix   = 0;
+      block_valid_count = 0;
+      for (int w = 0; w < level_decode_num_warps; ++w) {
+        auto const count = warp_valid_counts[w];
+        if (w < warp_id) { warp_prefix += count; }
+        block_valid_count += count;
+      }
+      thread_valid_count = warp_prefix + __popc(valid_mask & ((1u << lane) - 1));
+    } else {
+      cub::BlockScan<int, level_decode_block_size>(scan_storage)
+        .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+    }
     bool const in_output   = value_pos >= first_row && value_pos < value_limit;
     auto const output_mask = ballot(in_output);
     int const write_start  = __ffs(output_mask) - 1;
@@ -109,10 +135,16 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
         pp->flat_prepass_nz_idx[rank] = value_pos;
       }
     }
-    if (t == 0) { block_valid_count_shared = block_valid_count; }
-    block.sync();
-    valid_count += block_valid_count_shared;
-    block.sync();
+    if constexpr (warp_scan_t) {
+      valid_count += block_valid_count;
+      // Guard warp_valid_counts against the next iteration's writes.
+      block.sync();
+    } else {
+      if (t == 0) { block_valid_count_shared = block_valid_count; }
+      block.sync();
+      valid_count += block_valid_count_shared;
+      block.sync();
+    }
   }
   if (t == 0) {
     auto const map = flat_prepass_map(pp);
@@ -633,17 +665,24 @@ void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
-                                 cuda::stream_ref stream)
+                                 cuda::stream_ref stream,
+                                 bool warp_scan)
 {
   if (pages.size() == 0) { return; }
   dim3 const grid(pages.size(), 1);
   dim3 const block(level_decode_block_size, 1);
+  auto launch = [&](auto level_tag, auto warp_scan_tag) {
+    using level_t              = decltype(level_tag);
+    constexpr bool warp_scan_t = decltype(warp_scan_tag)::value;
+    precompute_flat_level_state_kernel<level_t, warp_scan_t>
+      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+  };
   if (level_type_size == 1) {
-    precompute_flat_level_state_kernel<uint8_t>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+    warp_scan ? launch(uint8_t{}, cuda::std::true_type{})
+              : launch(uint8_t{}, cuda::std::false_type{});
   } else {
-    precompute_flat_level_state_kernel<uint16_t>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
+    warp_scan ? launch(uint16_t{}, cuda::std::true_type{})
+              : launch(uint16_t{}, cuda::std::false_type{});
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

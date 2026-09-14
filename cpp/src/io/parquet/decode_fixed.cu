@@ -805,7 +805,11 @@ __device__ int update_validity_and_row_indices_flat(
  *
  * @return Maximum depth valid count after processing
  */
-template <int decode_block_size, bool nullable, typename level_t, typename state_buf>
+template <int decode_block_size,
+          bool nullable,
+          bool fast_barriers_t,
+          typename level_t,
+          typename state_buf>
 __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
                                                      auto* s,
                                                      state_buf* sb,
@@ -836,7 +840,12 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
   bool const is_first_lane = (warp_lane == 0);
 
   __syncthreads();
-  __shared__ block_scan_temp_storage<decode_block_size> temp_storage;
+  // One scratch buffer per scan site. `scan_block_exclusive_sum` already syncs
+  // internally after publishing its warp counts; the extra caller-side sync exists
+  // only to stop the next scan from clobbering shared scratch. Giving each site its
+  // own buffer removes that hazard, and the ni.value_count barriers below already
+  // separate consecutive depth and batch iterations.
+  __shared__ block_scan_temp_storage<decode_block_size> temp_storage[4];
 
   while (value_count < target_value_count) {
     bool const within_batch = value_count + t < target_value_count;
@@ -865,8 +874,9 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
     int num_prior_new_rows, total_num_new_rows;
     {
       block_scan_results new_row_scan_results;
-      scan_block_exclusive_sum<decode_block_size>(is_new_row, new_row_scan_results, temp_storage);
-      __syncthreads();
+      scan_block_exclusive_sum<decode_block_size>(
+        is_new_row, new_row_scan_results, temp_storage[0]);
+      if constexpr (!fast_barriers_t) { __syncthreads(); }
       num_prior_new_rows = new_row_scan_results.thread_count_within_block;
       total_num_new_rows = new_row_scan_results.block_count;
     }
@@ -883,8 +893,8 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
     {
       block_scan_results value_count_scan_results;
       scan_block_exclusive_sum<decode_block_size>(
-        in_nesting_bounds, value_count_scan_results, temp_storage);
-      __syncthreads();
+        in_nesting_bounds, value_count_scan_results, temp_storage[1]);
+      if constexpr (!fast_barriers_t) { __syncthreads(); }
 
       thread_value_count_within_warp = value_count_scan_results.thread_count_within_warp;
       warp_value_count               = value_count_scan_results.warp_count;
@@ -921,8 +931,8 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
                                                     warp_index,
                                                     thread_mask,
                                                     valid_count_scan_results,
-                                                    temp_storage);
-        __syncthreads();
+                                                    temp_storage[2]);
+        if constexpr (!fast_barriers_t) { __syncthreads(); }
         thread_valid_count = valid_count_scan_results.thread_count_within_block;
         block_valid_count  = valid_count_scan_results.block_count;
       }
@@ -940,8 +950,8 @@ __device__ int update_validity_and_row_indices_lists(int32_t target_value_count,
         {
           block_scan_results next_value_count_scan_results;
           scan_block_exclusive_sum<decode_block_size>(
-            next_in_nesting_bounds, next_value_count_scan_results, temp_storage);
-          __syncthreads();
+            next_in_nesting_bounds, next_value_count_scan_results, temp_storage[3]);
+          if constexpr (!fast_barriers_t) { __syncthreads(); }
 
           next_thread_value_count_within_warp =
             next_value_count_scan_results.thread_count_within_warp;
@@ -1636,7 +1646,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     } else if (process_nulls) {
       if constexpr (has_lists_t) {
         next_valid_count =
-          update_validity_and_row_indices_lists<decode_block_size_t, true, level_t>(
+          update_validity_and_row_indices_lists<decode_block_size_t, true, false, level_t>(
             processed_count, s, sb, def, rep, t);
       } else if constexpr (has_nesting_t) {
         next_valid_count = update_validity_and_row_indices_nested<decode_block_size_t, level_t>(
@@ -1652,7 +1662,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     else {
       if constexpr (has_lists_t) {
         next_valid_count =
-          update_validity_and_row_indices_lists<decode_block_size_t, false, level_t>(
+          update_validity_and_row_indices_lists<decode_block_size_t, false, false, level_t>(
             processed_count, s, sb, nullptr, rep, t);
       } else {
         // direct copy: no nulls, no lists, no need to update validity or row indices
@@ -2173,7 +2183,7 @@ void precompute_nested_level_state(cudf::detail::hostdevice_span<PageInfo> pages
 
 namespace {
 
-template <typename level_t, int decode_block_size_t>
+template <typename level_t, int decode_block_size_t, bool fast_barriers_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   precompute_list_level_state_kernel(PageInfo* pages,
                                      device_span<ColumnChunkDesc const> chunks,
@@ -2223,13 +2233,19 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   while (processed_count < decoded_value_limit && s->progress.input_row_count <= last_row) {
     processed_count += min(rolling_buf_size, decoded_value_limit - processed_count);
     if (process_nulls) {
-      valid_count =
-        update_validity_and_row_indices_lists<decode_block_size_t, true, level_t, state_buf_t>(
-          processed_count, s, sb, def, rep, t, pp->list_prepass_nz_idx);
+      valid_count = update_validity_and_row_indices_lists<decode_block_size_t,
+                                                          true,
+                                                          fast_barriers_t,
+                                                          level_t,
+                                                          state_buf_t>(
+        processed_count, s, sb, def, rep, t, pp->list_prepass_nz_idx);
     } else {
-      valid_count =
-        update_validity_and_row_indices_lists<decode_block_size_t, false, level_t, state_buf_t>(
-          processed_count, s, sb, nullptr, rep, t, pp->list_prepass_nz_idx);
+      valid_count = update_validity_and_row_indices_lists<decode_block_size_t,
+                                                          false,
+                                                          fast_barriers_t,
+                                                          level_t,
+                                                          state_buf_t>(
+        processed_count, s, sb, nullptr, rep, t, pp->list_prepass_nz_idx);
     }
     block.sync();
   }
@@ -2254,18 +2270,25 @@ void precompute_list_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
-                                 cuda::stream_ref stream)
+                                 cuda::stream_ref stream,
+                                 bool fast_barriers)
 {
   if (pages.size() == 0) { return; }
   constexpr int decode_block_size = 128;
   dim3 const block(decode_block_size, 1);
   dim3 const grid(pages.size(), 1);
+  auto launch = [&](auto level_tag, auto fast_tag) {
+    using level_t                  = decltype(level_tag);
+    constexpr bool fast_barriers_t = decltype(fast_tag)::value;
+    precompute_list_level_state_kernel<level_t, decode_block_size, fast_barriers_t>
+      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+  };
   if (level_type_size == 1) {
-    precompute_list_level_state_kernel<uint8_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+    fast_barriers ? launch(uint8_t{}, cuda::std::true_type{})
+                  : launch(uint8_t{}, cuda::std::false_type{});
   } else {
-    precompute_list_level_state_kernel<uint16_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+    fast_barriers ? launch(uint16_t{}, cuda::std::true_type{})
+                  : launch(uint16_t{}, cuda::std::false_type{});
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

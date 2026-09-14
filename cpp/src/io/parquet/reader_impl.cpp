@@ -265,7 +265,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                 skip_rows,
                                 num_rows,
                                 level_type_size,
-                                _stream);
+                                _stream,
+                                (_level_prepass_mode & level_prepass_list_bar) != 0);
   }
 
   // get the number of streams we need from the pool and tell them to wait on the H2D copies

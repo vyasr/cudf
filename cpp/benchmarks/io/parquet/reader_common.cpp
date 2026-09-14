@@ -78,7 +78,8 @@ std::optional<std::string> prepass_selector_for_mode(std::string_view mode)
   if (mode == "scan_rank") { return std::string{"0x1dff"}; }
   if (mode == "warp_scan") { return std::string{"0x3dff"}; }
   if (mode == "nested_ws") { return std::string{"0x7dff"}; }
-  if (mode == "probes") { return std::string{"0x7fff"}; }
+  if (mode == "list_bar") { return std::string{"0xfdff"}; }
+  if (mode == "probes") { return std::string{"0xffff"}; }
   if (mode.starts_with("0x")) { return std::string{mode}; }
   CUDF_FAIL("Unsupported prepass_mode: " + std::string{mode});
 }

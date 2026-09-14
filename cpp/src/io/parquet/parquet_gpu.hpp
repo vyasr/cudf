@@ -298,7 +298,8 @@ constexpr uint32_t level_prepass_narrow_map = 0x800;
 constexpr uint32_t level_prepass_scan_rank  = 0x1000;
 constexpr uint32_t level_prepass_warp_scan  = 0x2000;
 constexpr uint32_t level_prepass_nested_ws  = 0x4000;
-constexpr uint32_t level_prepass_probe_mask = 0x7e00;
+constexpr uint32_t level_prepass_list_bar   = 0x8000;
+constexpr uint32_t level_prepass_probe_mask = 0xfe00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -1315,7 +1316,8 @@ void precompute_list_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
-                                 cuda::stream_ref stream);
+                                 cuda::stream_ref stream,
+                                 bool fast_barriers = false);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

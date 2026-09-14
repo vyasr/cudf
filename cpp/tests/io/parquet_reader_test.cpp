@@ -107,11 +107,11 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
   }
   {
     // Probe bits live above the family mask and are accepted alongside families.
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x7fff"};
-    EXPECT_EQ(level_prepass_mode_from_environment(), 0x7fff);
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0xffff"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0xffff);
   }
   {
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x8000"};
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x10000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
   {

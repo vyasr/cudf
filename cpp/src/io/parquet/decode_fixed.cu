@@ -541,7 +541,7 @@ __device__ int update_validity_and_row_indices_nested(
  * Its map is page-local even though the state restored by setup_local_page_info()
  * may carry a non-zero valid-rank base from prior output work.
  */
-template <int decode_block_size, typename level_t, typename nz_idx_sink>
+template <int decode_block_size, bool warp_scan_t, typename level_t, typename nz_idx_sink>
 __device__ int update_nested_level_prepass(int32_t target_value_count,
                                            auto* s,
                                            nz_idx_sink sink,
@@ -565,9 +565,16 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
 
   using block_scan   = cub::BlockScan<int, decode_block_size>;
   using block_reduce = cub::BlockReduce<int, decode_block_size>;
+  // The warp-scan variant needs only two counts per warp, so it shares the union
+  // with the CUB storage it replaces rather than adding to the shared footprint.
+  struct warp_scan_storage {
+    int valid[num_warps];
+    int selected[num_warps];
+  };
   __shared__ union {
     typename block_scan::TempStorage scan_storage;
     typename block_reduce::TempStorage reduce_storage;
+    warp_scan_storage warp;
   } temp_storage;
 
   __syncthreads();
@@ -589,17 +596,43 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
       auto& ni           = s->nesting.nesting_info[d_idx];
       int const is_valid = (def_level >= ni.max_def_level && in_row_bounds) ? 1 : 0;
 
-      int thread_valid_count, block_valid_count;
-      block_scan(temp_storage.scan_storage)
-        .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+      // A ballot of is_valid is needed for store_validity below, and it already encodes
+      // every thread's predicate -- so the block scan and the block reduce are both
+      // derivable from it. `in_write_row_bounds_mask` is depth-independent, so
+      // popc(valid & in_bounds) reproduces the reduce's predicate exactly. Hoisted out
+      // of the valid_map guard because a ballot must execute warp-uniformly.
+      uint32_t const warp_validity_mask = ballot(is_valid);
 
-      __syncthreads();
-      int const selected_valid_count =
-        block_reduce(temp_storage.reduce_storage).Sum(is_valid && in_write_row_bounds);
-      __syncthreads();
+      int thread_valid_count, block_valid_count, selected_valid_count;
+      if constexpr (warp_scan_t) {
+        int const lane    = t % cudf::detail::warp_size;
+        int const warp_id = t / cudf::detail::warp_size;
+        if (lane == 0) {
+          temp_storage.warp.valid[warp_id] = __popc(warp_validity_mask);
+          temp_storage.warp.selected[warp_id] =
+            __popc(warp_validity_mask & in_write_row_bounds_mask);
+        }
+        __syncthreads();
+        int warp_prefix      = 0;
+        block_valid_count    = 0;
+        selected_valid_count = 0;
+        for (int w = 0; w < num_warps; ++w) {
+          int const count = temp_storage.warp.valid[w];
+          if (w < warp_id) { warp_prefix += count; }
+          block_valid_count += count;
+          selected_valid_count += temp_storage.warp.selected[w];
+        }
+        thread_valid_count = warp_prefix + __popc(warp_validity_mask & ((1u << lane) - 1));
+      } else {
+        block_scan(temp_storage.scan_storage)
+          .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+        __syncthreads();
+        selected_valid_count =
+          block_reduce(temp_storage.reduce_storage).Sum(is_valid && in_write_row_bounds);
+        __syncthreads();
+      }
 
       if (ni.valid_map != nullptr) {
-        uint32_t const warp_validity_mask = ballot(is_valid);
         if (write_start >= 0 && (t % cudf::detail::warp_size) == 0) {
           int const vindex     = value_count + t;
           int const bit_offset = ni.valid_map_offset + vindex + write_start - first_row;
@@ -2012,7 +2045,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
 
 namespace {
 
-template <typename level_t, int decode_block_size_t>
+template <typename level_t, int decode_block_size_t, bool warp_scan_t>
 CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   precompute_nested_level_state_kernel(PageInfo* pages,
                                        device_span<ColumnChunkDesc const> chunks,
@@ -2075,25 +2108,26 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
     pp->num_decoded_level_values > 0
       ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
       : s->setup.page.num_input_values;
-  auto const sink = pp->nested_prepass_nz_idx != nullptr
-                      ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base}
-                      : page_local_nz_idx_sink{nullptr, map_rank_base};
-  int const final_valid_count =
-    pp->nested_prepass_nz_idx != nullptr
-      ? update_nested_level_prepass<decode_block_size_t>(decoded_value_limit,
-                                                         s,
-                                                         sink,
-                                                         def,
-                                                         &pp->nested_prepass_prefix_valid_count,
-                                                         map_rank_base,
-                                                         t)
-      : update_nested_level_prepass<decode_block_size_t>(decoded_value_limit,
-                                                         s,
-                                                         discard_nz_idx_sink{},
-                                                         def,
-                                                         &pp->nested_prepass_prefix_valid_count,
-                                                         map_rank_base,
-                                                         t);
+  auto const sink             = pp->nested_prepass_nz_idx != nullptr
+                                  ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base}
+                                  : page_local_nz_idx_sink{nullptr, map_rank_base};
+  int const final_valid_count = pp->nested_prepass_nz_idx != nullptr
+                                  ? update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
+                                      decoded_value_limit,
+                                      s,
+                                      sink,
+                                      def,
+                                      &pp->nested_prepass_prefix_valid_count,
+                                      map_rank_base,
+                                      t)
+                                  : update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
+                                      decoded_value_limit,
+                                      s,
+                                      discard_nz_idx_sink{},
+                                      def,
+                                      &pp->nested_prepass_prefix_valid_count,
+                                      map_rank_base,
+                                      t);
   if (t == 0) {
     for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
       auto const& source                = s->nesting.nesting_info[depth];
@@ -2114,18 +2148,25 @@ void precompute_nested_level_state(cudf::detail::hostdevice_span<PageInfo> pages
                                    size_t min_row,
                                    size_t num_rows,
                                    int level_type_size,
-                                   cuda::stream_ref stream)
+                                   cuda::stream_ref stream,
+                                   bool warp_scan)
 {
   if (pages.size() == 0) { return; }
   constexpr int decode_block_size = 128;
   dim3 const block(decode_block_size, 1);
   dim3 const grid(pages.size(), 1);
+  auto launch = [&](auto level_tag, auto warp_scan_tag) {
+    using level_t              = decltype(level_tag);
+    constexpr bool warp_scan_t = decltype(warp_scan_tag)::value;
+    precompute_nested_level_state_kernel<level_t, decode_block_size, warp_scan_t>
+      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+  };
   if (level_type_size == 1) {
-    precompute_nested_level_state_kernel<uint8_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+    warp_scan ? launch(uint8_t{}, cuda::std::true_type{})
+              : launch(uint8_t{}, cuda::std::false_type{});
   } else {
-    precompute_nested_level_state_kernel<uint16_t, decode_block_size>
-      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, min_row, num_rows, page_mask);
+    warp_scan ? launch(uint16_t{}, cuda::std::true_type{})
+              : launch(uint16_t{}, cuda::std::false_type{});
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

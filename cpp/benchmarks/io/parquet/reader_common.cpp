@@ -73,7 +73,6 @@ std::optional<std::string> prepass_selector_for_mode(std::string_view mode)
   if (mode == "all") { return std::string{"0x1ff"}; }
   // Families plus one experimental probe, matching the bits in parquet_gpu.hpp.
   if (mode == "direct_map") { return std::string{"0x3ff"}; }
-  if (mode == "use_prefix") { return std::string{"0x5ff"}; }
   if (mode == "narrow_map") { return std::string{"0x9ff"}; }
   if (mode == "scan_rank") { return std::string{"0x1dff"}; }
   if (mode == "warp_scan") { return std::string{"0x3dff"}; }

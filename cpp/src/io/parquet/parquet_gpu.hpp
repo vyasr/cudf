@@ -293,7 +293,9 @@ constexpr uint32_t level_prepass_all         = level_prepass_family_mask;
 // so that widening the probe set can never change the default returned by
 // `level_prepass_mode_from_environment()` for an unset environment variable.
 constexpr uint32_t level_prepass_direct_map = 0x200;
-constexpr uint32_t level_prepass_use_prefix = 0x400;
+// 0x400 is unallocated: a previously declared `use_prefix` probe was never implemented,
+// so the selector accepted it and silently did nothing. Left as a hole rather than
+// reused, to keep already-recorded measurement selectors meaningful.
 constexpr uint32_t level_prepass_narrow_map = 0x800;
 constexpr uint32_t level_prepass_scan_rank  = 0x1000;
 constexpr uint32_t level_prepass_warp_scan  = 0x2000;

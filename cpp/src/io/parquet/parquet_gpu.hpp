@@ -294,7 +294,8 @@ constexpr uint32_t level_prepass_all         = level_prepass_family_mask;
 // `level_prepass_mode_from_environment()` for an unset environment variable.
 constexpr uint32_t level_prepass_direct_map = 0x200;
 constexpr uint32_t level_prepass_use_prefix = 0x400;
-constexpr uint32_t level_prepass_probe_mask = 0x600;
+constexpr uint32_t level_prepass_narrow_map = 0x800;
+constexpr uint32_t level_prepass_probe_mask = 0xe00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -502,6 +503,10 @@ struct PageInfo {
   // Temporary page-global state for the opt-in generic flat level prepass.
   // A null map denotes either legacy dispatch or the required-column identity path.
   uint32_t* flat_prepass_nz_idx{};
+  // Element width in bytes of the flat prepass map: 4 stores absolute page-input
+  // positions, 2 stores `position - rank` (the null count preceding that rank).
+  // The narrow form is only selected for pages whose value count bounds the delta.
+  uint8_t flat_prepass_map_width{4};
   int32_t flat_prepass_nz_count{-1};
   int32_t flat_prepass_prefix_valid_count{-1};
   int32_t flat_prepass_null_count{};

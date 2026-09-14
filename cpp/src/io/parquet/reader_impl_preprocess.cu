@@ -410,13 +410,25 @@ void reader_impl::allocate_level_decode_space()
     page.flat_prepass_enabled            = selected_generic_flat;
     page.legacy_flat_prepass_enabled     = selected_legacy_flat;
     page.delta_flat_prepass_enabled      = selected_delta_flat;
+    // The narrow map stores `position - rank`, which is bounded by the page's value
+    // count, so a page below the 16-bit limit can halve the map's footprint without
+    // knowing anything about its null count. Only the generic-flat consumer decodes
+    // the narrow form; legacy and delta flat pages keep absolute positions.
+    page.flat_prepass_map_width =
+      ((_level_prepass_mode & level_prepass_narrow_map) != 0 && selected_generic_flat &&
+       page.num_input_values <= std::numeric_limits<uint16_t>::max())
+        ? uint8_t{2}
+        : uint8_t{4};
     if (selected_flat && optional) {
-      flat_prepass_size += static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);
+      // Round each page's slice up to 4 bytes so a narrow page never leaves the next
+      // page's uint32_t view misaligned.
+      flat_prepass_size += cudf::util::round_up_unsafe(
+        static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
     }
   }
   subpass.flat_prepass_data =
     rmm::device_buffer(flat_prepass_size, _stream, cudf::get_current_device_resource_ref());
-  auto* flat_prepass_ptr = static_cast<uint32_t*>(subpass.flat_prepass_data.data());
+  auto* flat_prepass_ptr = static_cast<uint8_t*>(subpass.flat_prepass_data.data());
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page               = pages[idx];
     auto const& chunk        = pass.chunks[page.chunk_idx];
@@ -427,8 +439,9 @@ void reader_impl::allocate_level_decode_space()
                                 ((_level_prepass_mode & level_prepass_delta_flat) != 0 &&
                                  page.prepass_family == level_prepass_family::DELTA_FLAT));
     if (selected_flat && chunk.max_level[level_type::DEFINITION] != 0) {
-      page.flat_prepass_nz_idx = flat_prepass_ptr;
-      flat_prepass_ptr += page.num_input_values;
+      page.flat_prepass_nz_idx = reinterpret_cast<uint32_t*>(flat_prepass_ptr);
+      flat_prepass_ptr += cudf::util::round_up_unsafe(
+        static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
     }
   }
 

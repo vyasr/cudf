@@ -99,15 +99,25 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                      valid_mask >> write_start,
                      write_end - write_start);
     }
-    if (is_valid) { pp->flat_prepass_nz_idx[valid_count + thread_valid_count] = value_pos; }
+    if (is_valid) {
+      auto const rank = valid_count + thread_valid_count;
+      if (pp->flat_prepass_map_width == 2) {
+        // Store the null count preceding this rank; bounded by num_input_values.
+        reinterpret_cast<uint16_t*>(pp->flat_prepass_nz_idx)[rank] =
+          static_cast<uint16_t>(value_pos - rank);
+      } else {
+        pp->flat_prepass_nz_idx[rank] = value_pos;
+      }
+    }
     if (t == 0) { block_valid_count_shared = block_valid_count; }
     block.sync();
     valid_count += block_valid_count_shared;
     block.sync();
   }
   if (t == 0) {
-    int prefix = 0;
-    while (prefix < valid_count && pp->flat_prepass_nz_idx[prefix] < first_row) {
+    auto const map = flat_prepass_map(pp);
+    int prefix     = 0;
+    while (prefix < valid_count && map[prefix] < static_cast<uint32_t>(first_row)) {
       ++prefix;
     }
     int const selected_value_count      = max(value_limit - first_row, 0);

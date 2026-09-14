@@ -1286,6 +1286,27 @@ __device__ int flat_prepass_valid_count_before(uint32_t const* nz_idx, int count
   return first;
 }
 
+/**
+ * @brief Map-view overload of the above.
+ *
+ * Both representations are monotonically non-decreasing in rank, so the search is
+ * valid for either.
+ */
+__device__ int flat_prepass_valid_count_before(flat_prepass_map_view map, int count, int input_pos)
+{
+  int first = 0;
+  int last  = count;
+  while (first < last) {
+    int const middle = first + (last - first) / 2;
+    if (static_cast<int>(map[middle]) < input_pos) {
+      first = middle + 1;
+    } else {
+      last = middle;
+    }
+  }
+  return first;
+}
+
 template <typename level_t,
           int decode_block_size_t,
           decode_kernel_mask kernel_mask_t,
@@ -1432,7 +1453,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     // value-stream alignment without replaying the definition-level walk.
     processed_count = first_row;
     valid_count     = process_nulls ? flat_prepass_valid_count_before(
-                                    pp->flat_prepass_nz_idx, pp->flat_prepass_nz_count, first_row)
+                                    flat_prepass_map(pp), pp->flat_prepass_nz_count, first_row)
                                     : first_row;
     if constexpr (has_dict_t) {
       skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
@@ -1526,28 +1547,31 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     if constexpr (use_list_prepass_t) {
       next_valid_count = min(valid_count + rolling_buf_size, pp->list_prepass_nz_count);
     } else if constexpr (use_flat_prepass_t || use_nested_prepass_t) {
-      auto const* const prepass_nz_idx =
-        use_flat_prepass_t ? pp->flat_prepass_nz_idx : pp->nested_prepass_nz_idx;
+      // Only the generic-flat producer emits the narrow map, so the nested view is
+      // always the 4-byte form.
+      auto const prepass_map = use_flat_prepass_t
+                                 ? flat_prepass_map(pp)
+                                 : flat_prepass_map_view{pp->nested_prepass_nz_idx, 4};
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
-      next_valid_count                    = process_nulls
-                                              ? flat_prepass_valid_count_before(
-                               prepass_nz_idx, prepass_nz_count, capped_target_value_count)
-                                              : capped_target_value_count;
+      next_valid_count                    = process_nulls ? flat_prepass_valid_count_before(
+                                           prepass_map, prepass_nz_count, capped_target_value_count)
+                                                          : capped_target_value_count;
       // The map is already dense, sequential and page-global; restaging it into a
       // 256-entry shared ring buys nothing, so the probe reads it in place.
       // Only decode_fixed_width_values can consume the map directly; the string,
       // split and dict-int32 helpers still index the shared ring, so the refill
-      // must stay for them or they read uninitialised indices.
+      // must stay for them or they read uninitialised indices. The direct path also
+      // requires absolute positions, so it is unavailable for the narrow map.
       constexpr bool map_capable_helper_t = !is_dict_int32_t && !has_strings_t && !split_decode_t;
-      if (direct_map && process_nulls && map_capable_helper_t) {
-        value_nz_idx = prepass_nz_idx;
+      if (direct_map && process_nulls && map_capable_helper_t && prepass_map.width == 4) {
+        value_nz_idx = static_cast<uint32_t const*>(prepass_map.data);
       } else {
         for (int map_pos = valid_count + t; map_pos < next_valid_count;
              map_pos += decode_block_size_t) {
           sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(map_pos)] =
-            process_nulls ? prepass_nz_idx[map_pos] : map_pos;
+            process_nulls ? prepass_map[map_pos] : map_pos;
         }
       }
       if (t == 0) {

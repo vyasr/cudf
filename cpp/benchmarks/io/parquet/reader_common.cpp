@@ -74,7 +74,8 @@ std::optional<std::string> prepass_selector_for_mode(std::string_view mode)
   // Families plus one experimental probe, matching the bits in parquet_gpu.hpp.
   if (mode == "direct_map") { return std::string{"0x3ff"}; }
   if (mode == "use_prefix") { return std::string{"0x5ff"}; }
-  if (mode == "probes") { return std::string{"0x7ff"}; }
+  if (mode == "narrow_map") { return std::string{"0x9ff"}; }
+  if (mode == "probes") { return std::string{"0xfff"}; }
   if (mode.starts_with("0x")) { return std::string{mode}; }
   CUDF_FAIL("Unsupported prepass_mode: " + std::string{mode});
 }

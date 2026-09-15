@@ -148,4 +148,55 @@ void launch_hash_csr_outer_retrieve_kernel(cuda::std::int64_t output_size,
                                         stream);
 }
 
+template void
+launch_hash_csr_build_count_kernel<hash_csr_primitive_equal, hash_csr_primitive_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_primitive_equal,
+  hash_csr_primitive_hasher,
+  cuda::stream_ref);
+template void launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash_csr_row_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_non_nested_equal,
+  hash_csr_row_hasher,
+  cuda::stream_ref);
+template void launch_hash_csr_build_count_kernel<hash_csr_nested_equal, hash_csr_row_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_nested_equal,
+  hash_csr_row_hasher,
+  cuda::stream_ref);
+
+#define CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(OUTER, EQUAL, HASHER)                            \
+  template void launch_hash_csr_probe_count_kernel<OUTER, EQUAL, HASHER>(size_type,            \
+                                                                         bitmask_type const*,  \
+                                                                         size_type*,           \
+                                                                         size_type*,           \
+                                                                         cuda::std::uint32_t*, \
+                                                                         cuda::std::uint64_t*, \
+                                                                         hash_table_ref,       \
+                                                                         csr_ref,              \
+                                                                         EQUAL,                \
+                                                                         HASHER,               \
+                                                                         cuda::stream_ref)
+
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(false, hash_csr_primitive_equal, hash_csr_primitive_hasher);
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(true, hash_csr_primitive_equal, hash_csr_primitive_hasher);
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(false, hash_csr_non_nested_equal, hash_csr_row_hasher);
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(true, hash_csr_non_nested_equal, hash_csr_row_hasher);
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(false, hash_csr_nested_equal, hash_csr_row_hasher);
+CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT(true, hash_csr_nested_equal, hash_csr_row_hasher);
+
+#undef CUDF_INSTANTIATE_HASH_CSR_PROBE_COUNT
+
 }  // namespace cudf::detail

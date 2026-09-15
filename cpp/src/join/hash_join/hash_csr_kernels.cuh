@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "dispatch.cuh"
 #include "hash_csr.cuh"
 
 #include <cudf/detail/utilities/cuda.cuh>
@@ -21,6 +22,26 @@
 #include <cuda/stream>
 
 namespace cudf::detail {
+
+// `dispatch_join_comparator` has exactly these three concrete comparator forms. Keep their
+// aliases here so the count launchers can be explicitly instantiated in hash_csr_kernels.cu.
+// This prevents every HashCSR caller from emitting an identical copy of the corresponding
+// device kernel.
+using hash_csr_dynamic_nulls = cudf::nullate::DYNAMIC;
+using hash_csr_row_hasher =
+  decltype(std::declval<cudf::detail::row::hash::row_hasher const&>().device_hasher(
+    std::declval<hash_csr_dynamic_nulls>()));
+using hash_csr_primitive_hasher =
+  cudf::detail::row::primitive::row_hasher<cudf::hashing::detail::default_hash>;
+using hash_csr_primitive_equal = primitive_pair_equal;
+using hash_csr_non_nested_equal =
+  pair_equal<decltype(std::declval<cudf::detail::row::equality::two_table_comparator const&>()
+                        .template equal_to<false>(std::declval<hash_csr_dynamic_nulls>(),
+                                                  std::declval<null_equality>()))>;
+using hash_csr_nested_equal =
+  pair_equal<decltype(std::declval<cudf::detail::row::equality::two_table_comparator const&>()
+                        .template equal_to<true>(std::declval<hash_csr_dynamic_nulls>(),
+                                                 std::declval<null_equality>()))>;
 
 constexpr thread_index_type hash_csr_block_size = 256;
 constexpr thread_index_type hash_csr_warps_per_block =
@@ -230,6 +251,59 @@ void launch_hash_csr_probe_count_kernel(size_type num_rows,
                                                                            hasher);
   CUDF_CUDA_TRY(cudaGetLastError());
 }
+
+extern template void
+launch_hash_csr_build_count_kernel<hash_csr_primitive_equal, hash_csr_primitive_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_primitive_equal,
+  hash_csr_primitive_hasher,
+  cuda::stream_ref);
+extern template void
+launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash_csr_row_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_non_nested_equal,
+  hash_csr_row_hasher,
+  cuda::stream_ref);
+extern template void launch_hash_csr_build_count_kernel<hash_csr_nested_equal, hash_csr_row_hasher>(
+  size_type,
+  bitmask_type const*,
+  build_position_type*,
+  size_type*,
+  hash_table_ref,
+  hash_csr_nested_equal,
+  hash_csr_row_hasher,
+  cuda::stream_ref);
+
+#define CUDF_EXTERN_HASH_CSR_PROBE_COUNT(OUTER, EQUAL, HASHER)                   \
+  extern template void launch_hash_csr_probe_count_kernel<OUTER, EQUAL, HASHER>( \
+    size_type,                                                                   \
+    bitmask_type const*,                                                         \
+    size_type*,                                                                  \
+    size_type*,                                                                  \
+    cuda::std::uint32_t*,                                                        \
+    cuda::std::uint64_t*,                                                        \
+    hash_table_ref,                                                              \
+    csr_ref,                                                                     \
+    EQUAL,                                                                       \
+    HASHER,                                                                      \
+    cuda::stream_ref)
+
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(false, hash_csr_primitive_equal, hash_csr_primitive_hasher);
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(true, hash_csr_primitive_equal, hash_csr_primitive_hasher);
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(false, hash_csr_non_nested_equal, hash_csr_row_hasher);
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(true, hash_csr_non_nested_equal, hash_csr_row_hasher);
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(false, hash_csr_nested_equal, hash_csr_row_hasher);
+CUDF_EXTERN_HASH_CSR_PROBE_COUNT(true, hash_csr_nested_equal, hash_csr_row_hasher);
+
+#undef CUDF_EXTERN_HASH_CSR_PROBE_COUNT
 
 void launch_hash_csr_inner_retrieve_kernel(cuda::std::int64_t output_size,
                                            size_type num_probe_rows,

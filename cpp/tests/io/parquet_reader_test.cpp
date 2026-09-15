@@ -408,6 +408,38 @@ TEST_F(ParquetReaderTest, NullableStructBoolAndStringUserBounds)
   }
 }
 
+TEST_F(ParquetReaderTest, NullableNestedWithoutNullsPublishesPrepassState)
+{
+  // A nullable nested column whose pages happen to contain no nulls takes the level
+  // prepass producer's no-nulls short circuit. That path must still publish per-depth
+  // state: the consumer copies nested_prepass_nesting[] into the live nesting info
+  // unconditionally at the end of the kernel, so skipping the publish leaves it reading
+  // whatever the never-initialised prepass buffer happened to hold.
+  constexpr int row_count = 512;
+  auto values = cudf::detail::make_counting_transform_iterator(0, [](int row) { return row * 3; });
+  auto all_valid = cudf::detail::make_counting_transform_iterator(0, [](int) { return true; });
+  cudf::test::fixed_width_column_wrapper<int32_t> int_child(values, values + row_count, all_valid);
+  cudf::test::fixed_width_column_wrapper<double> dbl_child(values, values + row_count, all_valid);
+  auto struct_col = cudf::test::structs_column_wrapper{{int_child, dbl_child}, all_valid};
+  cudf::table_view const expected{{struct_col}};
+
+  auto const filepath = temp_env->get_temp_filepath("NullableNestedWithoutNulls.parquet");
+  cudf::io::write_parquet(
+    cudf::io::parquet_writer_options::builder(cudf::io::sink_info{filepath}, expected)
+      .dictionary_policy(cudf::io::dictionary_policy::NEVER)
+      .max_page_size_rows(128)
+      .max_page_fragment_size(128));
+
+  // Legacy and every prepass configuration must agree, and must report no nulls.
+  for (auto const* mode : {"0", "0x1ff", "0xffff"}) {
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", mode};
+    auto const result = cudf::io::read_parquet(
+      cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath}));
+    CUDF_TEST_EXPECT_TABLES_EQUAL(*result.tbl, expected);
+    EXPECT_EQ(result.tbl->get_column(0).null_count(), 0) << "prepass mode " << mode;
+  }
+}
+
 TEST_F(ParquetReaderTest, NullableStructDictionaryAndByteStreamSplit)
 {
   // Exercise nullable STRUCT reads for dictionary and BYTE_STREAM_SPLIT encoded leaves, including

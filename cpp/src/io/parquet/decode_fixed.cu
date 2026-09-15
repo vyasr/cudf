@@ -2087,9 +2087,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   }
 
   bool const process_nulls = should_process_nulls(s);
-  bool const is_required   = s->setup.col.max_level[level_type::DEFINITION] == 0;
   if (!process_nulls) {
-    if (!is_required) { return; }
+    // Every value is valid at every depth, whether the page is required or merely
+    // nullable-with-no-nulls, so both publish the same identity state. Returning early
+    // for the nullable case would leave nested_prepass_nesting[] unwritten while the
+    // consumer copies it unconditionally into the live nesting info.
     int const final_count =
       min(s->setup.first_row + s->setup.num_rows, s->setup.page.num_input_values);
     if (t == 0) {

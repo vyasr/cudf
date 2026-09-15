@@ -145,15 +145,27 @@ hash_join<Hasher>::join_retrieve(cudf::table_view const& left,
     cudf::prefetch::detail::prefetch(*left_indices, stream);
     cudf::prefetch::detail::prefetch(*right_indices, stream);
 
-    launch_hash_csr_retrieve_kernel<Join != join_kind::INNER_JOIN>(actual_size,
-                                                                   left.num_rows(),
-                                                                   offsets.data(),
-                                                                   probe_groups.data(),
-                                                                   _impl->csr(),
-                                                                   0,
-                                                                   left_indices->data(),
-                                                                   right_indices->data(),
-                                                                   stream);
+    if constexpr (Join == join_kind::INNER_JOIN) {
+      launch_hash_csr_inner_retrieve_kernel(actual_size,
+                                            left.num_rows(),
+                                            offsets.data(),
+                                            probe_groups.data(),
+                                            _impl->csr(),
+                                            0,
+                                            left_indices->data(),
+                                            right_indices->data(),
+                                            stream);
+    } else {
+      launch_hash_csr_outer_retrieve_kernel(actual_size,
+                                            left.num_rows(),
+                                            offsets.data(),
+                                            probe_groups.data(),
+                                            _impl->csr(),
+                                            0,
+                                            left_indices->data(),
+                                            right_indices->data(),
+                                            stream);
+    }
 
     return std::pair(std::move(left_indices), std::move(right_indices));
   }();

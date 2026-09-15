@@ -2,8 +2,6 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
-#pragma once
-
 #include "common.cuh"
 #include "dispatch.cuh"
 #include "hash_csr_kernels.cuh"
@@ -184,5 +182,27 @@ hash_join<Hasher>::join_retrieve(cudf::table_view const& left,
     return join_indices;
   }
 }
+
+template std::pair<std::unique_ptr<rmm::device_uvector<size_type>>,
+                   std::unique_ptr<rmm::device_uvector<size_type>>>
+hash_join<hash_join_hasher>::join_retrieve<join_kind::INNER_JOIN>(
+  cudf::table_view const&,
+  std::optional<std::size_t>,
+  cuda::stream_ref,
+  rmm::device_async_resource_ref) const;
+template std::pair<std::unique_ptr<rmm::device_uvector<size_type>>,
+                   std::unique_ptr<rmm::device_uvector<size_type>>>
+hash_join<hash_join_hasher>::join_retrieve<join_kind::LEFT_JOIN>(
+  cudf::table_view const&,
+  std::optional<std::size_t>,
+  cuda::stream_ref,
+  rmm::device_async_resource_ref) const;
+template std::pair<std::unique_ptr<rmm::device_uvector<size_type>>,
+                   std::unique_ptr<rmm::device_uvector<size_type>>>
+hash_join<hash_join_hasher>::join_retrieve<join_kind::FULL_JOIN>(
+  cudf::table_view const&,
+  std::optional<std::size_t>,
+  cuda::stream_ref,
+  rmm::device_async_resource_ref) const;
 
 }  // namespace cudf::detail

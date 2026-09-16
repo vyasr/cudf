@@ -500,8 +500,12 @@ void reader_impl::allocate_level_decode_space()
       // Required nested leaves have an identity valid-rank mapping. They
       // still publish per-depth state, but do not retain a redundant map.
       if (chunk.max_level[level_type::DEFINITION] != 0) {
-        nested_prepass_map_size += cudf::util::round_up_unsafe(
-          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+        nested_prepass_map_size +=
+          (use_bitmask_map && selected_generic_nested)
+            ? flat_prepass_bitmask_bytes(page.num_input_values)
+            : cudf::util::round_up_unsafe(
+                static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width,
+                size_t{4});
       }
       nested_prepass_nesting_size +=
         static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
@@ -521,8 +525,16 @@ void reader_impl::allocate_level_decode_space()
       auto const& chunk = pass.chunks[page.chunk_idx];
       if (chunk.max_level[level_type::DEFINITION] != 0) {
         page.nested_prepass_nz_idx = reinterpret_cast<uint32_t*>(nested_map_ptr);
-        nested_map_ptr += cudf::util::round_up_unsafe(
-          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+        if (use_bitmask_map && page.nested_prepass_enabled) {
+          auto const bytes = flat_prepass_bitmask_bytes(page.num_input_values);
+          // Shares the flat field: a page belongs to exactly one prepass family, so the
+          // two never contend for it (same rationale as flat_prepass_map_width).
+          page.flat_prepass_word_rank = reinterpret_cast<uint32_t*>(nested_map_ptr + bytes / 2);
+          nested_map_ptr += bytes;
+        } else {
+          nested_map_ptr += cudf::util::round_up_unsafe(
+            static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+        }
       }
       page.nested_prepass_nesting = nested_nesting_ptr;
       nested_nesting_ptr += page.nesting_info_size;

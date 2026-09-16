@@ -556,7 +556,10 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
                                            level_t const* const def,
                                            int* const prefix_valid_count,
                                            int const map_rank_base,
-                                           int t)
+                                           int t,
+                                           uint32_t* const bitmask_bits  = nullptr,
+                                           uint32_t* const bitmask_ranks = nullptr,
+                                           int const bitmask_total_words = 0)
 {
   constexpr int num_warps      = decode_block_size / cudf::detail::warp_size;
   constexpr int max_batch_size = num_warps * cudf::detail::warp_size;
@@ -666,7 +669,18 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
           *prefix_valid_count =
             max_depth_valid_count + thread_valid_count + is_valid - map_rank_base;
         }
-        if (is_valid) { sink.store(max_depth_valid_count + thread_valid_count, value_count + t); }
+        if (bitmask_bits != nullptr) {
+          // Leaf-depth validity as one word per 32 values, with a page-local rank so the
+          // consumer's rank(position) matches the page-local ranks the dense sink emits.
+          uint32_t const leaf_mask = ballot(is_valid);
+          if ((t % cudf::detail::warp_size) == 0) {
+            int const word      = (value_count >> 5) + (t / cudf::detail::warp_size);
+            bitmask_bits[word]  = leaf_mask;
+            bitmask_ranks[word] = max_depth_valid_count + thread_valid_count - map_rank_base;
+          }
+        } else if (is_valid) {
+          sink.store(max_depth_valid_count + thread_valid_count, value_count + t);
+        }
         max_depth_valid_count += block_valid_count;
       }
       __syncthreads();
@@ -674,6 +688,19 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
     value_count += batch_size;
   }
 
+  if (bitmask_bits != nullptr) {
+    // Same boundary hazard as the flat producer: the loop only covers words below the
+    // capped target, but the consumer asks rank() at positions up to the page value
+    // count. Define the remainder rather than leave the uninitialised buffer visible.
+    int const covered_words =
+      ((capped_target_value_count + decode_block_size - 1) / decode_block_size) *
+      (decode_block_size / 32);
+    for (int w = covered_words + t; w < bitmask_total_words; w += decode_block_size) {
+      bitmask_bits[w]  = 0;
+      bitmask_ranks[w] = max_depth_valid_count - map_rank_base;
+    }
+    __syncthreads();
+  }
   if (t == 0) {
     for (int d_idx = 0; d_idx <= max_depth; ++d_idx) {
       auto& ni = s->nesting.nesting_info[d_idx];
@@ -1515,12 +1542,14 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
   } else if constexpr (use_nested_prepass_t) {
     processed_count = first_row;
     valid_count =
-      process_nulls
-        ? flat_prepass_valid_count_before(
+      !process_nulls ? first_row
+      : (pp->flat_prepass_word_rank != nullptr)
+        ? flat_prepass_bitmask_view{pp->nested_prepass_nz_idx, pp->flat_prepass_word_rank}.rank(
+            first_row)
+        : flat_prepass_valid_count_before(
             flat_prepass_map_view{pp->nested_prepass_nz_idx, pp->flat_prepass_map_width},
             pp->nested_prepass_nz_count,
-            first_row)
-        : first_row;
+            first_row);
     if constexpr (has_dict_t) {
       skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
     } else if constexpr (has_bools_t) {
@@ -1598,15 +1627,18 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
-      bool const use_bitmask =
-        use_flat_prepass_t && process_nulls && pp->flat_prepass_word_rank != nullptr;
+      bool const use_bitmask = (use_flat_prepass_t || use_nested_prepass_t) && process_nulls &&
+                               pp->flat_prepass_word_rank != nullptr;
       if (use_bitmask) {
         // Walk positions rather than ranks. rank(position) is two loads and a popc, and
         // the 32 threads sharing a word read it as a broadcast, so the whole batch costs
         // ~0.25 B per value against 4 B per valid value for the dense map. This also
         // subsumes both the binary search and the scan_rank probe, which exist only to
         // answer rank() against a select()-shaped structure.
-        auto const bm       = flat_prepass_bitmask(pp);
+        auto const bm =
+          use_flat_prepass_t
+            ? flat_prepass_bitmask_view{pp->flat_prepass_nz_idx, pp->flat_prepass_word_rank}
+            : flat_prepass_bitmask_view{pp->nested_prepass_nz_idx, pp->flat_prepass_word_rank};
         int const pos_begin = min(prev_processed_count, last_row);
         next_valid_count    = bm.rank(capped_target_value_count);
         for (int pos = pos_begin + t; pos < capped_target_value_count; pos += decode_block_size_t) {
@@ -2142,8 +2174,15 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
     pp->num_decoded_level_values > 0
       ? min(s->setup.page.num_input_values, pp->num_decoded_level_values)
       : s->setup.page.num_input_values;
+  // When the bitmask representation is selected the same buffer holds bits rather than
+  // positions, so the dense sink must not also write it.
+  bool const use_bitmask        = pp->flat_prepass_word_rank != nullptr;
+  uint32_t* const bitmask_bits  = use_bitmask ? pp->nested_prepass_nz_idx : nullptr;
+  uint32_t* const bitmask_ranks = use_bitmask ? pp->flat_prepass_word_rank : nullptr;
+  int const bitmask_total_words =
+    use_bitmask ? static_cast<int>(flat_prepass_bitmask_words(pp->num_input_values)) : 0;
   auto const sink =
-    pp->nested_prepass_nz_idx != nullptr
+    (pp->nested_prepass_nz_idx != nullptr && !use_bitmask)
       ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base, pp->flat_prepass_map_width}
       : page_local_nz_idx_sink{nullptr, map_rank_base};
   int const final_valid_count = pp->nested_prepass_nz_idx != nullptr
@@ -2154,7 +2193,10 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
                                       def,
                                       &pp->nested_prepass_prefix_valid_count,
                                       map_rank_base,
-                                      t)
+                                      t,
+                                      bitmask_bits,
+                                      bitmask_ranks,
+                                      bitmask_total_words)
                                   : update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
                                       decoded_value_limit,
                                       s,

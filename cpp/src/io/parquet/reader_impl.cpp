@@ -306,6 +306,16 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       decoder_mask == decode_kernel_mask::STRING_STREAM_SPLIT_LIST;
     bool const use_list_prepass =
       list_generic_mask && (_level_prepass_mode & level_prepass_generic_list) != 0;
+    // The legacy kernel variant is only needed for pages no prepass consumer will claim.
+    // Ask the pages rather than infer it from the mask: the per-page flags can diverge
+    // from the mask-level ones, for instance when the list map budget fallback clears
+    // them for a subpass whose mask still selects the list prepass.
+    bool const needs_legacy =
+      (_level_prepass_mode & level_prepass_skip_shadow) == 0 ||
+      std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [&](PageInfo const& page) {
+        return page.kernel_mask == decoder_mask && !page.flat_prepass_enabled &&
+               !page.nested_prepass_enabled && !page.generic_list_prepass_enabled;
+      });
     detail::decode_page_data(subpass.pages,
                              pass.chunks,
                              num_rows,
@@ -321,7 +331,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                              use_nested_prepass,
                              use_list_prepass,
                              (_level_prepass_mode & level_prepass_direct_map) != 0,
-                             (_level_prepass_mode & level_prepass_scan_rank) != 0);
+                             (_level_prepass_mode & level_prepass_scan_rank) != 0,
+                             needs_legacy);
   };
 
   // launch string decoder for plain encoded flat columns

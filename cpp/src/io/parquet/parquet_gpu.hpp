@@ -301,7 +301,39 @@ constexpr uint32_t level_prepass_scan_rank  = 0x1000;
 constexpr uint32_t level_prepass_warp_scan  = 0x2000;
 constexpr uint32_t level_prepass_nested_ws  = 0x4000;
 constexpr uint32_t level_prepass_list_bar   = 0x8000;
-constexpr uint32_t level_prepass_probe_mask = 0xfe00;
+// Skip the legacy decode launch for masks whose every page a prepass consumer claims.
+// Allocated above the original probe range rather than in the 0x400 hole because
+// selectors already on record (0x7dff, 0xffff) set that bit.
+constexpr uint32_t level_prepass_skip_shadow = 0x10000;
+// Replace the dense rank->position map with a validity bitmask plus a per-word rank
+// prefix. The map costs 4 B per *valid* value; the bitmask costs 0.25 B per value and
+// is therefore smaller than the definition levels it replaces at every null rate.
+constexpr uint32_t level_prepass_bitmask_map = 0x20000;
+
+/**
+ * @brief Bytes needed for one page's flat prepass bitmask slice.
+ *
+ * Layout is the bit vector followed by an equally sized per-word rank table, so the
+ * table begins at exactly half the slice. The word count is rounded up to the
+ * producer's 128-value block so a block that straddles the end of the page still has
+ * all four of its words in bounds.
+ */
+CUDF_HOST_DEVICE constexpr size_t flat_prepass_bitmask_words(int num_input_values)
+{
+  constexpr int producer_block_values = 128;
+  // rank(position) is asked for positions up to and including the page's value count,
+  // and rank(n) reads word n/32, so size for n + 1 values. Rounding to the producer's
+  // block keeps a block that straddles the end of the page fully in bounds.
+  auto const blocks =
+    (static_cast<size_t>(num_input_values) + 1 + producer_block_values - 1) / producer_block_values;
+  return blocks * (producer_block_values / 32);
+}
+
+CUDF_HOST_DEVICE constexpr size_t flat_prepass_bitmask_bytes(int num_input_values)
+{
+  return 2 * flat_prepass_bitmask_words(num_input_values) * sizeof(uint32_t);
+}
+constexpr uint32_t level_prepass_probe_mask = 0x3fe00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -509,6 +541,10 @@ struct PageInfo {
   // Temporary page-global state for the opt-in generic flat level prepass.
   // A null map denotes either legacy dispatch or the required-column identity path.
   uint32_t* flat_prepass_nz_idx{};
+  // Bitmask representation (level_prepass_bitmask_map): flat_prepass_nz_idx holds one
+  // bit per input value and this holds the number of valid values preceding each
+  // 32-value word, making rank(position) two loads and a popc.
+  uint32_t* flat_prepass_word_rank{};
   // Element width in bytes of the flat prepass map: 4 stores absolute page-input
   // positions, 2 stores `position - rank` (the null count preceding that rank).
   // The narrow form is only selected for pages whose value count bounds the delta.
@@ -1373,7 +1409,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_nested_prepass = false,
                       bool use_list_prepass   = false,
                       bool direct_map         = false,
-                      bool scan_rank          = false);
+                      bool scan_rank          = false,
+                      bool needs_legacy       = true);
 
 /**
  * @brief Launches kernel for initializing encoder row group fragments

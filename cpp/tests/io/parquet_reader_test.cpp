@@ -111,7 +111,13 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
     EXPECT_EQ(level_prepass_mode_from_environment(), 0xffff);
   }
   {
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x10000"};
+    // Allocated probes above the original 0xfe00 range are accepted.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x30000"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x30000);
+  }
+  {
+    // The first value above the selector mask is rejected.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x40000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
   {

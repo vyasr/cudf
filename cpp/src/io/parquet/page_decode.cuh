@@ -172,6 +172,41 @@ struct flat_prepass_map_view {
   [[nodiscard]] __device__ bool empty() const { return data == nullptr; }
 };
 
+/**
+ * @brief Bitmask form of the flat prepass map: one bit per input value plus the valid
+ * count preceding each 32-value word.
+ *
+ * The dense map answers select(rank) in one load but costs 4 B per valid value, which
+ * exceeds the 1-2 B per value of the definition levels it replaces whenever more than
+ * a quarter of values are valid (F3). This form costs 0.25 B per value regardless of
+ * null rate, and answers rank(position) -- the direction the consumer actually needs
+ * once its refill loop walks positions rather than ranks -- in two loads and a popc.
+ */
+struct flat_prepass_bitmask_view {
+  uint32_t const* bits{};
+  uint32_t const* word_rank{};
+
+  /** @brief Number of valid values strictly before @p pos. */
+  [[nodiscard]] __device__ int rank(int pos) const
+  {
+    int const word = pos >> 5;
+    return static_cast<int>(word_rank[word]) + __popc(bits[word] & ((1u << (pos & 31)) - 1));
+  }
+
+  [[nodiscard]] __device__ bool is_valid(int pos) const
+  {
+    return (bits[pos >> 5] >> (pos & 31)) & 1u;
+  }
+
+  [[nodiscard]] __device__ bool empty() const { return bits == nullptr; }
+};
+
+/** @brief Build a bitmask view for a page's flat prepass state. */
+__device__ inline flat_prepass_bitmask_view flat_prepass_bitmask(PageInfo const* pp)
+{
+  return flat_prepass_bitmask_view{pp->flat_prepass_nz_idx, pp->flat_prepass_word_rank};
+}
+
 /** @brief Build a map view for a page's flat prepass state. */
 __device__ inline flat_prepass_map_view flat_prepass_map(PageInfo const* pp)
 {

@@ -1488,9 +1488,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     // This instantiation is dispatched only for flat generic pages. Preserve
     // value-stream alignment without replaying the definition-level walk.
     processed_count = first_row;
-    valid_count     = process_nulls ? flat_prepass_valid_count_before(
-                                    flat_prepass_map(pp), pp->flat_prepass_nz_count, first_row)
-                                    : first_row;
+    valid_count     = !process_nulls ? first_row
+                      : (pp->flat_prepass_word_rank != nullptr)
+                        ? flat_prepass_bitmask(pp).rank(first_row)
+                        : flat_prepass_valid_count_before(
+                        flat_prepass_map(pp), pp->flat_prepass_nz_count, first_row);
     if constexpr (has_dict_t) {
       skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
     } else if constexpr (has_bools_t) {
@@ -1579,6 +1581,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     // page-global map instead of the shared rolling ring.
     uint32_t const* value_nz_idx = nullptr;
     block.sync();
+    int const prev_processed_count = processed_count;
     if constexpr (!use_list_prepass_t) {
       processed_count += min(rolling_buf_size, s->setup.page.num_input_values - processed_count);
     }
@@ -1595,7 +1598,23 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
-      if (!process_nulls) {
+      bool const use_bitmask =
+        use_flat_prepass_t && process_nulls && pp->flat_prepass_word_rank != nullptr;
+      if (use_bitmask) {
+        // Walk positions rather than ranks. rank(position) is two loads and a popc, and
+        // the 32 threads sharing a word read it as a broadcast, so the whole batch costs
+        // ~0.25 B per value against 4 B per valid value for the dense map. This also
+        // subsumes both the binary search and the scan_rank probe, which exist only to
+        // answer rank() against a select()-shaped structure.
+        auto const bm       = flat_prepass_bitmask(pp);
+        int const pos_begin = min(prev_processed_count, last_row);
+        next_valid_count    = bm.rank(capped_target_value_count);
+        for (int pos = pos_begin + t; pos < capped_target_value_count; pos += decode_block_size_t) {
+          if (bm.is_valid(pos)) {
+            sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(bm.rank(pos))] = pos;
+          }
+        }
+      } else if (!process_nulls) {
         next_valid_count = capped_target_value_count;
       } else if (scan_rank &&
                  (!has_strings_t || 4 * prepass_nz_count >= s->setup.page.num_input_values)) {
@@ -1626,7 +1645,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       // must stay for them or they read uninitialised indices. The direct path also
       // requires absolute positions, so it is unavailable for the narrow map.
       constexpr bool map_capable_helper_t = !is_dict_int32_t && !has_strings_t && !split_decode_t;
-      if (direct_map && process_nulls && map_capable_helper_t && prepass_map.width == 4) {
+      if (use_bitmask) {
+        // The bitmask branch above already filled the ring.
+      } else if (direct_map && process_nulls && map_capable_helper_t && prepass_map.width == 4) {
         value_nz_idx = static_cast<uint32_t const*>(prepass_map.data);
       } else {
         for (int map_pos = valid_count + t; map_pos < next_valid_count;
@@ -1850,7 +1871,8 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_nested_prepass,
                       bool use_list_prepass,
                       bool direct_map,
-                      bool scan_rank)
+                      bool scan_rank,
+                      bool needs_legacy)
 {
   // No template parameters on lambdas until C++20, so use type tags instead
   auto launch_kernel = [&](auto block_size_tag, auto kernel_mask_tag) {
@@ -1944,6 +1966,10 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
+    // The legacy variant early-outs per page for anything a prepass consumer will
+    // handle, so when no page of this mask needs it the launch is a full grid of
+    // immediate returns, serialized on this stream behind the real decode kernel.
+    if (!needs_legacy) { return; }
     if (level_type_size == 1) {
       decode_page_data_generic_legacy<uint8_t, decode_block_size, mask, false, false, false>
         <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),

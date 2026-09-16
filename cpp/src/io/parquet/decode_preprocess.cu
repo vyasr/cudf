@@ -94,12 +94,12 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
     int const is_valid    = value_pos < value_limit && def[value_pos] > 0;
     auto const valid_mask = ballot(is_valid);
     int thread_valid_count, block_valid_count;
+    int const lane    = t % cudf::detail::warp_size;
+    int const warp_id = t / cudf::detail::warp_size;
     if constexpr (warp_scan_t) {
       // The ballot above already encodes every thread's predicate, so a block-wide scan
       // is redundant work: a lane's rank within its warp is a popc of the mask below it,
       // and only the small cross-warp prefix needs to be shared.
-      int const lane    = t % cudf::detail::warp_size;
-      int const warp_id = t / cudf::detail::warp_size;
       if (lane == 0) { warp_valid_counts[warp_id] = __popc(valid_mask); }
       block.sync();
       int warp_prefix   = 0;
@@ -125,7 +125,16 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                      valid_mask >> write_start,
                      write_end - write_start);
     }
-    if (is_valid) {
+    if (pp->flat_prepass_word_rank != nullptr) {
+      // One store per 32 values instead of one per valid value. thread_valid_count at
+      // lane 0 is already the block-exclusive prefix at this word's first value, so
+      // the rank table costs nothing beyond the store itself.
+      if (lane == 0) {
+        int const word                   = (value_base >> 5) + warp_id;
+        pp->flat_prepass_nz_idx[word]    = valid_mask;
+        pp->flat_prepass_word_rank[word] = valid_count + thread_valid_count;
+      }
+    } else if (is_valid) {
       auto const rank = valid_count + thread_valid_count;
       if (pp->flat_prepass_map_width == 2) {
         // Store the null count preceding this rank; bounded by num_input_values.
@@ -146,11 +155,31 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
       block.sync();
     }
   }
+  if (pp->flat_prepass_word_rank != nullptr) {
+    // The loop above only covers blocks below value_limit, but the consumer asks for
+    // rank() at positions up to the page's value count -- including exactly at a block
+    // boundary, where the word it needs belongs to the next, unvisited block. Fill the
+    // remainder so every word the consumer can address is defined. Unwritten words
+    // would otherwise be read as whatever the uninitialised buffer held.
+    int const covered_words =
+      ((value_limit + level_decode_block_size - 1) / level_decode_block_size) *
+      (level_decode_block_size / 32);
+    int const total_words = static_cast<int>(flat_prepass_bitmask_words(pp->num_input_values));
+    for (int w = covered_words + t; w < total_words; w += level_decode_block_size) {
+      pp->flat_prepass_nz_idx[w]    = 0;
+      pp->flat_prepass_word_rank[w] = valid_count;
+    }
+    block.sync();
+  }
   if (t == 0) {
-    auto const map = flat_prepass_map(pp);
-    int prefix     = 0;
-    while (prefix < valid_count && map[prefix] < static_cast<uint32_t>(first_row)) {
-      ++prefix;
+    int prefix = 0;
+    if (pp->flat_prepass_word_rank != nullptr) {
+      prefix = flat_prepass_bitmask(pp).rank(first_row);
+    } else {
+      auto const map = flat_prepass_map(pp);
+      while (prefix < valid_count && map[prefix] < static_cast<uint32_t>(first_row)) {
+        ++prefix;
+      }
     }
     int const selected_value_count      = max(value_limit - first_row, 0);
     int const selected_valid_count      = valid_count - prefix;

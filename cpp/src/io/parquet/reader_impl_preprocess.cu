@@ -388,7 +388,8 @@ void reader_impl::allocate_level_decode_space()
 
   // Required pages publish an identity contract and therefore need no map
   // allocation.
-  size_t flat_prepass_size = 0;
+  size_t flat_prepass_size   = 0;
+  bool const use_bitmask_map = (_level_prepass_mode & level_prepass_bitmask_map) != 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page                 = pages[idx];
     auto const& chunk          = pass.chunks[page.chunk_idx];
@@ -404,6 +405,7 @@ void reader_impl::allocate_level_decode_space()
       delta_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
     bool const selected_flat = selected_generic_flat || selected_legacy_flat || selected_delta_flat;
     page.flat_prepass_nz_idx = nullptr;
+    page.flat_prepass_word_rank          = nullptr;
     page.flat_prepass_nz_count           = selected_flat ? -2 : -1;
     page.flat_prepass_prefix_valid_count = -1;
     page.flat_prepass_null_count         = 0;
@@ -420,10 +422,14 @@ void reader_impl::allocate_level_decode_space()
         ? uint8_t{2}
         : uint8_t{4};
     if (selected_flat && optional) {
-      // Round each page's slice up to 4 bytes so a narrow page never leaves the next
-      // page's uint32_t view misaligned.
-      flat_prepass_size += cudf::util::round_up_unsafe(
-        static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+      if (use_bitmask_map && selected_generic_flat) {
+        flat_prepass_size += flat_prepass_bitmask_bytes(page.num_input_values);
+      } else {
+        // Round each page's slice up to 4 bytes so a narrow page never leaves the next
+        // page's uint32_t view misaligned.
+        flat_prepass_size += cudf::util::round_up_unsafe(
+          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+      }
     }
   }
   subpass.flat_prepass_data =
@@ -440,8 +446,15 @@ void reader_impl::allocate_level_decode_space()
                                  page.prepass_family == level_prepass_family::DELTA_FLAT));
     if (selected_flat && chunk.max_level[level_type::DEFINITION] != 0) {
       page.flat_prepass_nz_idx = reinterpret_cast<uint32_t*>(flat_prepass_ptr);
-      flat_prepass_ptr += cudf::util::round_up_unsafe(
-        static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+      if (use_bitmask_map && page.flat_prepass_enabled) {
+        auto const bytes = flat_prepass_bitmask_bytes(page.num_input_values);
+        // Bits first, then the per-word rank table, each half of the slice.
+        page.flat_prepass_word_rank = reinterpret_cast<uint32_t*>(flat_prepass_ptr + bytes / 2);
+        flat_prepass_ptr += bytes;
+      } else {
+        flat_prepass_ptr += cudf::util::round_up_unsafe(
+          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+      }
     }
   }
 

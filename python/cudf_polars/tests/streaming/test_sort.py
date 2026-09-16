@@ -60,14 +60,9 @@ def df():
 
 
 def large_frames():
-    # Three partitions are sufficient to exercise distributed merge ordering;
-    # additional partitions only repeat the same merge path in this unit test.
-    nrows = 4_201
-    x = [1.0] * nrows
+    x = [1.0] * 10_000
     x[-1] = float("nan")
-    y = (
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * ((nrows + 9) // 10)
-    )[:nrows]
+    y = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * 1000
 
     yield pytest.param(
         pl.LazyFrame(
@@ -92,7 +87,7 @@ def large_frames():
         id="two_cols",
     )
 
-    idx = list(range(nrows))
+    idx = list(range(10_000))
     yield pytest.param(
         pl.LazyFrame(
             {

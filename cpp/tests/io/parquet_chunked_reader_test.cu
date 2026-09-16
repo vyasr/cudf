@@ -1305,10 +1305,10 @@ TEST_F(ParquetChunkedReaderInputLimitConstrainedTest, SingleFixedWidthColumn)
 
   // semi-reasonable limit
   constexpr int expected_a[] = {1, 25, 5, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 2 * 1024 * 1024, expected_a);
+  input_limit_test_read(test_filenames, tbl, 0, 2 * 1024 * 1024, expected_a, false);
   // an unreasonable limit
   constexpr int expected_b[] = {1, 50, 50, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 1, expected_b);
+  input_limit_test_read(test_filenames, tbl, 0, 1, expected_b, false);
 }
 
 TEST_F(ParquetChunkedReaderInputLimitConstrainedTest, MixedColumns)
@@ -1340,9 +1340,9 @@ TEST_F(ParquetChunkedReaderInputLimitConstrainedTest, MixedColumns)
   input_limit_test_write(test_filenames, tbl);
 
   constexpr int expected_a[] = {1, 50, 13, 7};
-  input_limit_test_read(test_filenames, tbl, 0, 2 * 1024 * 1024, expected_a);
+  input_limit_test_read(test_filenames, tbl, 0, 2 * 1024 * 1024, expected_a, false);
   constexpr int expected_b[] = {1, 50, 50, 50};
-  input_limit_test_read(test_filenames, tbl, 0, 1, expected_b);
+  input_limit_test_read(test_filenames, tbl, 0, 1, expected_b, false);
 }
 
 struct ParquetChunkedReaderInputLimitTest : public cudf::test::BaseFixture {};
@@ -1577,9 +1577,9 @@ TEST_F(ParquetChunkedReaderInputLimitTest, List)
   //   once.
   //
   constexpr int expected_a[] = {3, 3, 1, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 64 * 1024 * 1024, expected_a);
+  input_limit_test_read(test_filenames, tbl, 0, 64 * 1024 * 1024, expected_a, false);
   constexpr int expected_b[] = {5, 5, 2, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 32 * 1024 * 1024, expected_b);
+  input_limit_test_read(test_filenames, tbl, 0, 32 * 1024 * 1024, expected_b, false);
   // Include output chunking as well, and verify each input format is split.
   constexpr int expected_c[] = {10, 9, 8, 7};
   input_limit_test_read(test_filenames, tbl, 8 * 1024 * 1024, 16 * 1024 * 1024, expected_c, true);
@@ -1756,9 +1756,9 @@ TEST_F(ParquetChunkedReaderInputLimitTest, Mixed)
   //   once.
   //
   constexpr int expected_a[] = {5, 5, 2, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 64 * 1024 * 1024, expected_a);
+  input_limit_test_read(test_filenames, tbl, 0, 64 * 1024 * 1024, expected_a, false);
   constexpr int expected_b[] = {10, 9, 3, 1};
-  input_limit_test_read(test_filenames, tbl, 0, 32 * 1024 * 1024, expected_b);
+  input_limit_test_read(test_filenames, tbl, 0, 32 * 1024 * 1024, expected_b, false);
   // Include output chunking as well, and verify each input format is split.
   constexpr int expected_c[] = {20, 18, 15, 12};
   input_limit_test_read(test_filenames, tbl, 8 * 1024 * 1024, 16 * 1024 * 1024, expected_c, true);

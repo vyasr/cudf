@@ -1354,13 +1354,56 @@ __device__ int flat_prepass_valid_count_before(flat_prepass_map_view map, int co
   return first;
 }
 
+/**
+ * @brief Resident-block target for the generic decode kernel.
+ *
+ * The historical value of 8 dates from when this kernel decoded definition and
+ * repetition levels itself (eeb4d27801, 2024); with 128 threads it pins the register
+ * budget at exactly 64, which is the whole per-SM file.  A prepass variant no longer
+ * walks levels, so it fits in far fewer registers and can afford more resident blocks.
+ *
+ * Measured with `cuobjdump -res-usage` on sm_70: at 12 blocks (a 40-register budget) the
+ * masks that carry no dictionary, boolean or byte-stream-split decode path compile clean,
+ * while those that do spill 16-104 bytes at both 12 and 10 blocks.  String masks are
+ * excluded for a different reason -- their shared footprint alone caps residency well below
+ * 12, so squeezing their registers would buy nothing.
+ */
+template <decode_kernel_mask kernel_mask_t, bool uses_prepass_t, int decode_block_size>
+CUDF_HOST_DEVICE constexpr int generic_decode_min_blocks()
+{
+#if defined(__CUDA_ARCH__)
+  // Maximum resident threads per SM for the architecture being compiled.
+  constexpr int max_threads_per_sm = (__CUDA_ARCH__ == 750) ? 1024
+                                     : (__CUDA_ARCH__ >= 1200 || __CUDA_ARCH__ == 860 ||
+                                        __CUDA_ARCH__ == 870 || __CUDA_ARCH__ == 890)
+                                       ? 1536
+                                       : 2048;
+#else
+  constexpr int max_threads_per_sm = 1024;  // host pass: pick the conservative branch
+#endif
+
+  if constexpr (!uses_prepass_t) { return 8; }
+  constexpr bool needs_budget =
+    has_dict<kernel_mask_t>() || has_bools<kernel_mask_t>() || is_split_decode<kernel_mask_t>() ||
+    ((static_cast<uint32_t>(kernel_mask_t) & STRINGS_MASK_NON_DELTA) != 0);
+  if constexpr (needs_budget) { return 8; }
+  // 12 blocks of 128 is 1536 threads, which ptxas rejects outright on architectures
+  // whose SM caps below that -- sm_75 allows only 1024. Ask for it only where it is
+  // expressible; everywhere else the historical 8 still applies.
+  return (max_threads_per_sm >= 12 * decode_block_size) ? 12 : 8;
+}
+
 template <typename level_t,
           int decode_block_size_t,
           decode_kernel_mask kernel_mask_t,
           bool use_flat_prepass_t,
           bool use_nested_prepass_t,
           bool use_list_prepass_t>
-CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
+CUDF_KERNEL void __launch_bounds__(
+  decode_block_size_t,
+  generic_decode_min_blocks<kernel_mask_t,
+                            use_flat_prepass_t || use_nested_prepass_t || use_list_prepass_t,
+                            decode_block_size_t>())
   decode_page_data_generic_legacy(PageInfo* pages,
                                   device_span<ColumnChunkDesc const> chunks,
                                   size_t min_row,

@@ -416,18 +416,10 @@ struct rolling_nz_idx_sink {
 struct page_local_nz_idx_sink {
   uint32_t* indices;
   int rank_base;
-  int width{4};
 
   __device__ void store(int valid_rank, uint32_t dst_pos) const
   {
-    int const local = valid_rank - rank_base;
-    if (width == 2) {
-      // Store the nulls preceding this rank; bounded by num_input_values, matching the
-      // flat producer's encoding so `flat_prepass_map_view` decodes either form.
-      reinterpret_cast<uint16_t*>(indices)[local] = static_cast<uint16_t>(dst_pos - local);
-    } else {
-      indices[local] = dst_pos;
-    }
+    indices[valid_rank - rank_base] = dst_pos;
   }
 };
 
@@ -554,7 +546,6 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
                                            auto* s,
                                            nz_idx_sink sink,
                                            level_t const* const def,
-                                           int* const prefix_valid_count,
                                            int const map_rank_base,
                                            int t,
                                            uint32_t* const bitmask_bits  = nullptr,
@@ -663,12 +654,6 @@ __device__ int update_nested_level_prepass(int32_t target_value_count,
       }
 
       if (d_idx == max_depth) {
-        int const prefix_thread = first_row - value_count - 1;
-        if (prefix_valid_count != nullptr && prefix_thread >= 0 && prefix_thread < batch_size &&
-            t == prefix_thread) {
-          *prefix_valid_count =
-            max_depth_valid_count + thread_valid_count + is_valid - map_rank_base;
-        }
         if (bitmask_bits != nullptr) {
           // Leaf-depth validity as one word per 32 values, with a page-local rank so the
           // consumer's rank(position) matches the page-local ranks the dense sink emits.
@@ -1383,9 +1368,7 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
                                   cudf::device_span<bool const> page_mask,
                                   cudf::device_span<size_t> initial_str_offsets,
                                   cudf::device_span<size_t const> page_string_offset_indices,
-                                  kernel_error::pointer error_code,
-                                  bool direct_map,
-                                  bool scan_rank)
+                                  kernel_error::pointer error_code)
 {
   constexpr bool has_dict_t     = has_dict<kernel_mask_t>();
   constexpr bool has_bools_t    = has_bools<kernel_mask_t>();
@@ -1546,10 +1529,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
       : (pp->flat_prepass_word_rank != nullptr)
         ? flat_prepass_bitmask_view{pp->nested_prepass_nz_idx, pp->flat_prepass_word_rank}.rank(
             first_row)
-        : flat_prepass_valid_count_before(
-            flat_prepass_map_view{pp->nested_prepass_nz_idx, pp->flat_prepass_map_width},
-            pp->nested_prepass_nz_count,
-            first_row);
+        : flat_prepass_valid_count_before(flat_prepass_map_view{pp->nested_prepass_nz_idx},
+                                          pp->nested_prepass_nz_count,
+                                          first_row);
     if constexpr (has_dict_t) {
       skip_decode<rolling_buf_size>(dict_stream, valid_count, t);
     } else if constexpr (has_bools_t) {
@@ -1620,10 +1602,9 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
     } else if constexpr (use_flat_prepass_t || use_nested_prepass_t) {
       // Only the generic-flat producer emits the narrow map, so the nested view is
       // always the 4-byte form.
-      auto const prepass_map =
-        use_flat_prepass_t
-          ? flat_prepass_map(pp)
-          : flat_prepass_map_view{pp->nested_prepass_nz_idx, pp->flat_prepass_map_width};
+      auto const prepass_map = use_flat_prepass_t
+                                 ? flat_prepass_map(pp)
+                                 : flat_prepass_map_view{pp->nested_prepass_nz_idx};
       int const prepass_nz_count =
         use_flat_prepass_t ? pp->flat_prepass_nz_count : pp->nested_prepass_nz_count;
       int const capped_target_value_count = min(processed_count, last_row);
@@ -1648,40 +1629,13 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t, 8)
         }
       } else if (!process_nulls) {
         next_valid_count = capped_target_value_count;
-      } else if (scan_rank &&
-                 (!has_strings_t || 4 * prepass_nz_count >= s->setup.page.num_input_values)) {
-        // The value cursor advances by at most rolling_buf_size per iteration, so at
-        // most that many new valid ranks appear. Counting them block-wide replaces a
-        // ~log2(nz_count)-deep chain of dependent global loads, which every thread
-        // walks redundantly, with a pair of coalesced ones.
-        //
-        // The scan costs two block barriers per batch regardless of how many valid
-        // ranks it finds. For sparse string pages that fixed cost measured worse than
-        // the search it replaces, so those fall back to the search.
-        int delta = 0;
-        for (int base = 0; base < rolling_buf_size; base += decode_block_size_t) {
-          int const rank = valid_count + base + t;
-          int const pred = (rank < prepass_nz_count) &&
-                           (static_cast<int>(prepass_map[rank]) < capped_target_value_count);
-          delta += __syncthreads_count(pred);
-        }
-        next_valid_count = valid_count + delta;
       } else {
         next_valid_count =
           flat_prepass_valid_count_before(prepass_map, prepass_nz_count, capped_target_value_count);
       }
-      // The map is already dense, sequential and page-global; restaging it into a
-      // 256-entry shared ring buys nothing, so the probe reads it in place.
-      // Only decode_fixed_width_values can consume the map directly; the string,
-      // split and dict-int32 helpers still index the shared ring, so the refill
-      // must stay for them or they read uninitialised indices. The direct path also
-      // requires absolute positions, so it is unavailable for the narrow map.
-      constexpr bool map_capable_helper_t = !is_dict_int32_t && !has_strings_t && !split_decode_t;
-      if (use_bitmask) {
-        // The bitmask branch above already filled the ring.
-      } else if (direct_map && process_nulls && map_capable_helper_t && prepass_map.width == 4) {
-        value_nz_idx = static_cast<uint32_t const*>(prepass_map.data);
-      } else {
+      // The bitmask branch above already filled the ring; this is the dense fallback
+      // for families whose consumers still index a select array.
+      if (!use_bitmask) {
         for (int map_pos = valid_count + t; map_pos < next_valid_count;
              map_pos += decode_block_size_t) {
           sb->nz_idx[rolling_index<state_buf_t::nz_buf_size>(map_pos)] =
@@ -1902,8 +1856,6 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_flat_prepass,
                       bool use_nested_prepass,
                       bool use_list_prepass,
-                      bool direct_map,
-                      bool scan_rank,
                       bool needs_legacy)
 {
   // No template parameters on lambdas until C++20, so use type tags instead
@@ -1924,9 +1876,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, true, false, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1936,9 +1886,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1952,9 +1900,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, true, false>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1964,9 +1910,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1980,9 +1924,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       } else {
         decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, true>
           <<<dim_grid, dim_block, 0, stream.get()>>>(pages.device_ptr(),
@@ -1992,9 +1934,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                      page_mask,
                                                      initial_str_offsets,
                                                      page_string_offset_indices,
-                                                     error_code,
-                                                     direct_map,
-                                                     scan_rank);
+                                                     error_code);
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -2011,9 +1951,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    page_mask,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
-                                                   error_code,
-                                                   direct_map,
-                                                   scan_rank);
+                                                   error_code);
       CUDF_CUDA_TRY(cudaGetLastError());
     } else {
       decode_page_data_generic_legacy<uint16_t, decode_block_size, mask, false, false, false>
@@ -2024,9 +1962,7 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                                                    page_mask,
                                                    initial_str_offsets,
                                                    page_string_offset_indices,
-                                                   error_code,
-                                                   direct_map,
-                                                   scan_rank);
+                                                   error_code);
       CUDF_CUDA_TRY(cudaGetLastError());
     }
   };
@@ -2168,7 +2104,6 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
     process_nulls ? reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION])
                   : nullptr;
   int const map_rank_base = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1].valid_count;
-  if (t == 0) { pp->nested_prepass_prefix_valid_count = 0; }
   block.sync();
   int const decoded_value_limit =
     pp->num_decoded_level_values > 0
@@ -2181,30 +2116,22 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size_t)
   uint32_t* const bitmask_ranks = use_bitmask ? pp->flat_prepass_word_rank : nullptr;
   int const bitmask_total_words =
     use_bitmask ? static_cast<int>(flat_prepass_bitmask_words(pp->num_input_values)) : 0;
-  auto const sink =
-    (pp->nested_prepass_nz_idx != nullptr && !use_bitmask)
-      ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base, pp->flat_prepass_map_width}
-      : page_local_nz_idx_sink{nullptr, map_rank_base};
-  int const final_valid_count = pp->nested_prepass_nz_idx != nullptr
-                                  ? update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
-                                      decoded_value_limit,
-                                      s,
-                                      sink,
-                                      def,
-                                      &pp->nested_prepass_prefix_valid_count,
-                                      map_rank_base,
-                                      t,
-                                      bitmask_bits,
-                                      bitmask_ranks,
-                                      bitmask_total_words)
-                                  : update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
-                                      decoded_value_limit,
-                                      s,
-                                      discard_nz_idx_sink{},
-                                      def,
-                                      &pp->nested_prepass_prefix_valid_count,
-                                      map_rank_base,
-                                      t);
+  auto const sink = (pp->nested_prepass_nz_idx != nullptr && !use_bitmask)
+                      ? page_local_nz_idx_sink{pp->nested_prepass_nz_idx, map_rank_base}
+                      : page_local_nz_idx_sink{nullptr, map_rank_base};
+  int const final_valid_count =
+    pp->nested_prepass_nz_idx != nullptr
+      ? update_nested_level_prepass<decode_block_size_t, warp_scan_t>(decoded_value_limit,
+                                                                      s,
+                                                                      sink,
+                                                                      def,
+                                                                      map_rank_base,
+                                                                      t,
+                                                                      bitmask_bits,
+                                                                      bitmask_ranks,
+                                                                      bitmask_total_words)
+      : update_nested_level_prepass<decode_block_size_t, warp_scan_t>(
+          decoded_value_limit, s, discard_nz_idx_sink{}, def, map_rank_base, t);
   if (t == 0) {
     for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
       auto const& source                = s->nesting.nesting_info[depth];

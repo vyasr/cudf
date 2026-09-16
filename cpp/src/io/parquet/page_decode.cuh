@@ -152,22 +152,12 @@ __device__ inline bool maybe_has_nulls(auto* s)
  * @brief Read-only view over the flat prepass valid-rank -> page-input position map.
  *
  * The map is stored either as absolute positions (4 bytes per valid value) or, for
- * pages small enough to bound the difference, as `position - rank` (2 bytes). That
- * delta is the number of nulls preceding the rank, so it is bounded by the page's
- * value count and is monotonically non-decreasing -- which keeps the binary search
- * over the map valid in either representation.
+ * Dense select array: map[rank] is the input position of the rank-th valid value.
  */
 struct flat_prepass_map_view {
-  void const* data{};
-  int width{4};
+  uint32_t const* data{};
 
-  __device__ uint32_t operator[](int rank) const
-  {
-    if (width == 2) {
-      return static_cast<uint32_t>(rank) + static_cast<uint16_t const*>(data)[rank];
-    }
-    return static_cast<uint32_t const*>(data)[rank];
-  }
+  __device__ uint32_t operator[](int rank) const { return data[rank]; }
 
   [[nodiscard]] __device__ bool empty() const { return data == nullptr; }
 };
@@ -210,7 +200,7 @@ __device__ inline flat_prepass_bitmask_view flat_prepass_bitmask(PageInfo const*
 /** @brief Build a map view for a page's flat prepass state. */
 __device__ inline flat_prepass_map_view flat_prepass_map(PageInfo const* pp)
 {
-  return flat_prepass_map_view{pp->flat_prepass_nz_idx, pp->flat_prepass_map_width};
+  return flat_prepass_map_view{pp->flat_prepass_nz_idx};
 }
 
 /**

@@ -548,9 +548,7 @@ struct PageInfo {
   // Element width in bytes of the flat prepass map: 4 stores absolute page-input
   // positions, 2 stores `position - rank` (the null count preceding that rank).
   // The narrow form is only selected for pages whose value count bounds the delta.
-  uint8_t flat_prepass_map_width{4};
   int32_t flat_prepass_nz_count{-1};
-  int32_t flat_prepass_prefix_valid_count{-1};
   int32_t flat_prepass_null_count{};
   bool flat_prepass_enabled{};
   // True when the GENERAL/BYTE_STREAM_SPLIT flat consumer is selected by the
@@ -564,7 +562,6 @@ struct PageInfo {
   // prepass. A null nesting pointer denotes legacy nested dispatch.
   uint32_t* nested_prepass_nz_idx{};
   PageNestingPrepassState* nested_prepass_nesting{};
-  int32_t nested_prepass_prefix_valid_count{-1};
   int32_t nested_prepass_nz_count{-1};
   int32_t nested_prepass_input_value_count{};
   int32_t nested_prepass_input_row_count{};
@@ -1407,8 +1404,6 @@ void decode_page_data(cudf::detail::hostdevice_span<PageInfo> pages,
                       bool use_flat_prepass   = false,
                       bool use_nested_prepass = false,
                       bool use_list_prepass   = false,
-                      bool direct_map         = false,
-                      bool scan_rank          = false,
                       bool needs_legacy       = true);
 
 /**

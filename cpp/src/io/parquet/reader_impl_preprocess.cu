@@ -409,22 +409,12 @@ void reader_impl::allocate_level_decode_space()
       delta_enabled && page.prepass_family == level_prepass_family::DELTA_FLAT;
     bool const selected_flat = selected_generic_flat || selected_legacy_flat || selected_delta_flat;
     page.flat_prepass_nz_idx = nullptr;
-    page.flat_prepass_word_rank          = nullptr;
-    page.flat_prepass_nz_count           = selected_flat ? -2 : -1;
-    page.flat_prepass_prefix_valid_count = -1;
-    page.flat_prepass_null_count         = 0;
-    page.flat_prepass_enabled            = selected_generic_flat;
-    page.legacy_flat_prepass_enabled     = selected_legacy_flat;
-    page.delta_flat_prepass_enabled      = selected_delta_flat;
-    // The narrow map stores `position - rank`, which is bounded by the page's value
-    // count, so a page below the 16-bit limit can halve the map's footprint without
-    // knowing anything about its null count. Only the generic-flat consumer decodes
-    // the narrow form; legacy and delta flat pages keep absolute positions.
-    page.flat_prepass_map_width =
-      ((_level_prepass_mode & level_prepass_narrow_map) != 0 && selected_generic_flat &&
-       page.num_input_values <= std::numeric_limits<uint16_t>::max())
-        ? uint8_t{2}
-        : uint8_t{4};
+    page.flat_prepass_word_rank      = nullptr;
+    page.flat_prepass_nz_count       = selected_flat ? -2 : -1;
+    page.flat_prepass_null_count     = 0;
+    page.flat_prepass_enabled        = selected_generic_flat;
+    page.legacy_flat_prepass_enabled = selected_legacy_flat;
+    page.delta_flat_prepass_enabled  = selected_delta_flat;
     if (selected_flat && optional) {
       if (use_bitmask_map && selected_generic_flat) {
         flat_prepass_size += flat_prepass_bitmask_bytes(page.num_input_values);
@@ -432,7 +422,7 @@ void reader_impl::allocate_level_decode_space()
         // Round each page's slice up to 4 bytes so a narrow page never leaves the next
         // page's uint32_t view misaligned.
         flat_prepass_size += cudf::util::round_up_unsafe(
-          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+          static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
       }
     }
   }
@@ -457,7 +447,7 @@ void reader_impl::allocate_level_decode_space()
         flat_prepass_ptr += bytes;
       } else {
         flat_prepass_ptr += cudf::util::round_up_unsafe(
-          static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+          static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
       }
     }
   }
@@ -481,25 +471,14 @@ void reader_impl::allocate_level_decode_space()
                                        page.prepass_family == level_prepass_family::DELTA_NESTED;
     bool const selected_nested =
       selected_generic_nested || selected_legacy_nested || selected_delta_nested;
-    page.nested_prepass_nz_idx             = nullptr;
-    page.nested_prepass_nesting            = nullptr;
-    page.nested_prepass_prefix_valid_count = -1;
-    page.nested_prepass_nz_count           = -1;
-    page.nested_prepass_input_value_count  = 0;
-    page.nested_prepass_input_row_count    = 0;
-    page.nested_prepass_enabled            = selected_generic_nested;
-    page.legacy_nested_prepass_enabled     = selected_legacy_nested;
-    page.delta_nested_prepass_enabled      = selected_delta_nested;
-    // The map width field is shared with the flat path: a page belongs to exactly one
-    // prepass family, so the two never contend for it. Only the generic-nested consumer
-    // decodes the narrow form; legacy and delta nested pages keep absolute positions.
-    if (selected_nested) {
-      page.flat_prepass_map_width =
-        ((_level_prepass_mode & level_prepass_narrow_map) != 0 && selected_generic_nested &&
-         page.num_input_values <= std::numeric_limits<uint16_t>::max())
-          ? uint8_t{2}
-          : uint8_t{4};
-    }
+    page.nested_prepass_nz_idx            = nullptr;
+    page.nested_prepass_nesting           = nullptr;
+    page.nested_prepass_nz_count          = -1;
+    page.nested_prepass_input_value_count = 0;
+    page.nested_prepass_input_row_count   = 0;
+    page.nested_prepass_enabled           = selected_generic_nested;
+    page.legacy_nested_prepass_enabled    = selected_legacy_nested;
+    page.delta_nested_prepass_enabled     = selected_delta_nested;
     if (selected_nested) {
       // Required nested leaves have an identity valid-rank mapping. They
       // still publish per-depth state, but do not retain a redundant map.
@@ -508,8 +487,7 @@ void reader_impl::allocate_level_decode_space()
           (use_bitmask_map && selected_generic_nested)
             ? flat_prepass_bitmask_bytes(page.num_input_values)
             : cudf::util::round_up_unsafe(
-                static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width,
-                size_t{4});
+                static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
       }
       nested_prepass_nesting_size +=
         static_cast<size_t>(page.nesting_info_size) * sizeof(PageNestingPrepassState);
@@ -532,12 +510,12 @@ void reader_impl::allocate_level_decode_space()
         if (use_bitmask_map && page.nested_prepass_enabled) {
           auto const bytes = flat_prepass_bitmask_bytes(page.num_input_values);
           // Shares the flat field: a page belongs to exactly one prepass family, so the
-          // two never contend for it (same rationale as flat_prepass_map_width).
+          // two never contend for it.
           page.flat_prepass_word_rank = reinterpret_cast<uint32_t*>(nested_map_ptr + bytes / 2);
           nested_map_ptr += bytes;
         } else {
           nested_map_ptr += cudf::util::round_up_unsafe(
-            static_cast<size_t>(page.num_input_values) * page.flat_prepass_map_width, size_t{4});
+            static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
         }
       }
       page.nested_prepass_nesting = nested_nesting_ptr;

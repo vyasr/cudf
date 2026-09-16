@@ -72,10 +72,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const value_limit = min(decoded_value_limit, first_row + s->setup.num_rows);
   if (!should_process_nulls(s)) {
     if (t == 0) {
-      pp->flat_prepass_prefix_valid_count = first_row;
-      pp->flat_prepass_nz_count           = value_limit;
-      pp->flat_prepass_null_count         = 0;
-      ni.null_count                       = 0;
+      pp->flat_prepass_nz_count   = value_limit;
+      pp->flat_prepass_null_count = 0;
+      ni.null_count               = 0;
     }
     block.sync();
     return;
@@ -150,16 +149,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
       cub::BlockScan<int, level_decode_block_size>(scan_storage)
         .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
       write_validity(value_base, valid_mask, value_pos);
-      if (is_valid) {
-        auto const rank = valid_count + thread_valid_count;
-        if (pp->flat_prepass_map_width == 2) {
-          // Store the null count preceding this rank; bounded by num_input_values.
-          reinterpret_cast<uint16_t*>(pp->flat_prepass_nz_idx)[rank] =
-            static_cast<uint16_t>(value_pos - rank);
-        } else {
-          pp->flat_prepass_nz_idx[rank] = value_pos;
-        }
-      }
+      if (is_valid) { pp->flat_prepass_nz_idx[valid_count + thread_valid_count] = value_pos; }
       if (t == 0) { block_valid_count_shared = block_valid_count; }
       block.sync();
       valid_count += block_valid_count_shared;
@@ -176,12 +166,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
         ++prefix;
       }
     }
-    int const selected_value_count      = max(value_limit - first_row, 0);
-    int const selected_valid_count      = valid_count - prefix;
-    pp->flat_prepass_prefix_valid_count = prefix;
-    pp->flat_prepass_nz_count           = valid_count;
-    pp->flat_prepass_null_count         = selected_value_count - selected_valid_count;
-    ni.null_count                       = pp->flat_prepass_null_count;
+    int const selected_value_count = max(value_limit - first_row, 0);
+    int const selected_valid_count = valid_count - prefix;
+    pp->flat_prepass_nz_count      = valid_count;
+    pp->flat_prepass_null_count    = selected_value_count - selected_valid_count;
+    ni.null_count                  = pp->flat_prepass_null_count;
   }
   block.sync();
 }

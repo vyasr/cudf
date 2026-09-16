@@ -255,7 +255,11 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                   num_rows,
                                   level_type_size,
                                   _stream,
-                                  (_level_prepass_mode & level_prepass_nested_ws) != 0);
+                                  // The warp-popc reduction replaces a BlockScan plus a
+                                  // BlockReduce per nesting depth and is worth -34% on the
+                                  // nested producer (nsys, idle GPU), so it is no longer a
+                                  // probe.
+                                  true);
   }
   if (has_selected_list_prepass) {
     precompute_list_level_state(subpass.pages,

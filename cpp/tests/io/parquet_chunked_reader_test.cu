@@ -1276,7 +1276,7 @@ void input_limit_test_read(
   std::size_t output_limit,
   std::size_t input_limit,
   [[maybe_unused]] int const expected_chunk_counts[input_limit_expected_file_count],
-  bool require_multiple_chunks = false)
+  bool require_multiple_chunks = true)
 {
   CUDF_EXPECTS(test_filenames.size() == input_limit_expected_file_count,
                "Unexpected count of test filenames");

@@ -30,6 +30,7 @@ class EnginePool:
         self._construct_count = {"dask": 0, "ray": 0}
         self._reuse_count = {"dask": 0, "ray": 0}
         self._discard_count = {"dask": 0, "ray": 0}
+        self._construct_seconds = {"dask": 0.0, "ray": 0.0}
         self._reset_seconds = {"dask": 0.0, "ray": 0.0}
         self._health_seconds = {"dask": 0.0, "ray": 0.0}
         self._discard_reasons: list[str] = []
@@ -40,7 +41,9 @@ class EnginePool:
         try:
             engine = self._engines[key]
         except KeyError:
+            start = time.perf_counter()
             engine = self._construct(engine_name)
+            self._construct_seconds[engine_name] += time.perf_counter() - start
             self._engines[key] = engine
             self._construct_count[engine_name] += 1
         else:
@@ -86,6 +89,7 @@ class EnginePool:
                 f"  {engine_name}: constructed={self._construct_count[engine_name]}, "
                 f"reused={self._reuse_count[engine_name]}, "
                 f"discarded={self._discard_count[engine_name]}, "
+                f"construct={self._construct_seconds[engine_name]:.2f}s, "
                 f"reset={self._reset_seconds[engine_name]:.2f}s, "
                 f"health={self._health_seconds[engine_name]:.2f}s"
             )

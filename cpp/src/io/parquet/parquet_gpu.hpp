@@ -1334,8 +1334,7 @@ void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
-                                 cuda::stream_ref stream,
-                                 bool warp_scan = false);
+                                 cuda::stream_ref stream);
 
 /** @brief Publish opt-in generic non-list nested level state. */
 void precompute_nested_level_state(cudf::detail::hostdevice_span<PageInfo> pages,

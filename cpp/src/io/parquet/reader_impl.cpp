@@ -245,8 +245,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                 skip_rows,
                                 num_rows,
                                 level_type_size,
-                                _stream,
-                                (_level_prepass_mode & level_prepass_warp_scan) != 0);
+                                _stream);
   }
   if (has_selected_nested_prepass) {
     precompute_nested_level_state(subpass.pages,

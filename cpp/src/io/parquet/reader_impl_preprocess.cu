@@ -388,8 +388,12 @@ void reader_impl::allocate_level_decode_space()
 
   // Required pages publish an identity contract and therefore need no map
   // allocation.
-  size_t flat_prepass_size   = 0;
-  bool const use_bitmask_map = (_level_prepass_mode & level_prepass_bitmask_map) != 0;
+  size_t flat_prepass_size = 0;
+  // The bitmask is the generic prepass's map representation, not a probe: it costs
+  // 0.25 B per value against 4 B per valid value, and is smaller than the definition
+  // levels it replaces at every null rate. Legacy and delta families still consume the
+  // dense select array and are unaffected.
+  bool constexpr use_bitmask_map = true;
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page                 = pages[idx];
     auto const& chunk          = pass.chunks[page.chunk_idx];

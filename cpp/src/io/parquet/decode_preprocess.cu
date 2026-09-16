@@ -29,12 +29,7 @@ namespace {
 constexpr int preprocess_block_size   = 512;
 constexpr int level_decode_block_size = 128;
 
-/**
- * @brief Number of warps cooperating on one page in the flat level prepass.
- */
-constexpr int level_decode_num_warps = level_decode_block_size / cudf::detail::warp_size;
-
-template <typename level_t, bool warp_scan_t>
+template <typename level_t>
 CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   precompute_flat_level_state_kernel(PageInfo* pages,
                                      device_span<ColumnChunkDesc const> chunks,
@@ -46,7 +41,6 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   // Only one of these is ever instantiated; the unused branch is compiled out so the
   // block-scan variant does not pay for the warp-scan scratch or vice versa.
   __shared__ typename cub::BlockScan<int, level_decode_block_size>::TempStorage scan_storage;
-  __shared__ int warp_valid_counts[level_decode_num_warps];
   __shared__ int block_valid_count_shared;
   auto const block   = cg::this_thread_block();
   int const page_idx = blockIdx.x;
@@ -89,31 +83,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
   auto const* def = reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   int valid_count = 0;
-  for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
-    int const value_pos   = value_base + t;
-    int const is_valid    = value_pos < value_limit && def[value_pos] > 0;
-    auto const valid_mask = ballot(is_valid);
-    int thread_valid_count, block_valid_count;
-    int const lane    = t % cudf::detail::warp_size;
-    int const warp_id = t / cudf::detail::warp_size;
-    if constexpr (warp_scan_t) {
-      // The ballot above already encodes every thread's predicate, so a block-wide scan
-      // is redundant work: a lane's rank within its warp is a popc of the mask below it,
-      // and only the small cross-warp prefix needs to be shared.
-      if (lane == 0) { warp_valid_counts[warp_id] = __popc(valid_mask); }
-      block.sync();
-      int warp_prefix   = 0;
-      block_valid_count = 0;
-      for (int w = 0; w < level_decode_num_warps; ++w) {
-        auto const count = warp_valid_counts[w];
-        if (w < warp_id) { warp_prefix += count; }
-        block_valid_count += count;
-      }
-      thread_valid_count = warp_prefix + __popc(valid_mask & ((1u << lane) - 1));
-    } else {
-      cub::BlockScan<int, level_decode_block_size>(scan_storage)
-        .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
-    }
+  int const total_words = static_cast<int>(flat_prepass_bitmask_words(pp->num_input_values));
+
+  // Writing the output column's null mask needs no cross-warp state: each warp owns a
+  // contiguous 32 values and its ballot is the mask. Shared by both representations.
+  auto write_validity = [&](int value_base, uint32_t valid_mask, int value_pos) {
     bool const in_output   = value_pos >= first_row && value_pos < value_limit;
     auto const output_mask = ballot(in_output);
     int const write_start  = __ffs(output_mask) - 1;
@@ -125,51 +99,72 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
                      valid_mask >> write_start,
                      write_end - write_start);
     }
-    if (pp->flat_prepass_word_rank != nullptr) {
-      // One store per 32 values instead of one per valid value. thread_valid_count at
-      // lane 0 is already the block-exclusive prefix at this word's first value, so
-      // the rank table costs nothing beyond the store itself.
+  };
+
+  if (pp->flat_prepass_word_rank != nullptr) {
+    // Two passes, because the rank table is the only thing that needs a running total and
+    // it is 1/32 the size of the value stream. Pass one is sync-free and writes bits plus
+    // a per-word popcount; pass two scans those popcounts in place into exclusive ranks.
+    // The previous single pass paid a cross-warp prefix and two block syncs per 128
+    // values; this pays one block scan per 128 *words*, i.e. per 4096 values.
+    int const lane    = t % cudf::detail::warp_size;
+    int const warp_id = t / cudf::detail::warp_size;
+    for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
+      int const value_pos   = value_base + t;
+      int const is_valid    = value_pos < value_limit && def[value_pos] > 0;
+      auto const valid_mask = ballot(is_valid);
+      write_validity(value_base, valid_mask, value_pos);
       if (lane == 0) {
         int const word                   = (value_base >> 5) + warp_id;
         pp->flat_prepass_nz_idx[word]    = valid_mask;
-        pp->flat_prepass_word_rank[word] = valid_count + thread_valid_count;
-      }
-    } else if (is_valid) {
-      auto const rank = valid_count + thread_valid_count;
-      if (pp->flat_prepass_map_width == 2) {
-        // Store the null count preceding this rank; bounded by num_input_values.
-        reinterpret_cast<uint16_t*>(pp->flat_prepass_nz_idx)[rank] =
-          static_cast<uint16_t>(value_pos - rank);
-      } else {
-        pp->flat_prepass_nz_idx[rank] = value_pos;
+        pp->flat_prepass_word_rank[word] = __popc(valid_mask);
       }
     }
-    if constexpr (warp_scan_t) {
-      valid_count += block_valid_count;
-      // Guard warp_valid_counts against the next iteration's writes.
-      block.sync();
-    } else {
+    // Words past the scanned range must still be defined: the consumer asks rank() at
+    // positions up to the page value count, including exactly at a block boundary where
+    // the word it needs belongs to the next, unvisited block.
+    int const covered_words =
+      ((value_limit + level_decode_block_size - 1) / level_decode_block_size) *
+      (level_decode_block_size / 32);
+    for (int w = covered_words + t; w < total_words; w += level_decode_block_size) {
+      pp->flat_prepass_nz_idx[w]    = 0;
+      pp->flat_prepass_word_rank[w] = 0;
+    }
+    block.sync();
+    for (int word_base = 0; word_base < total_words; word_base += level_decode_block_size) {
+      int const w     = word_base + t;
+      int const count = (w < total_words) ? static_cast<int>(pp->flat_prepass_word_rank[w]) : 0;
+      int exclusive, block_total;
+      cub::BlockScan<int, level_decode_block_size>(scan_storage)
+        .ExclusiveSum(count, exclusive, block_total);
+      if (w < total_words) { pp->flat_prepass_word_rank[w] = valid_count + exclusive; }
+      valid_count += block_total;
+      block.sync();  // scan_storage is reused by the next iteration
+    }
+  } else {
+    for (int value_base = 0; value_base < value_limit; value_base += level_decode_block_size) {
+      int const value_pos   = value_base + t;
+      int const is_valid    = value_pos < value_limit && def[value_pos] > 0;
+      auto const valid_mask = ballot(is_valid);
+      int thread_valid_count, block_valid_count;
+      cub::BlockScan<int, level_decode_block_size>(scan_storage)
+        .ExclusiveSum(is_valid, thread_valid_count, block_valid_count);
+      write_validity(value_base, valid_mask, value_pos);
+      if (is_valid) {
+        auto const rank = valid_count + thread_valid_count;
+        if (pp->flat_prepass_map_width == 2) {
+          // Store the null count preceding this rank; bounded by num_input_values.
+          reinterpret_cast<uint16_t*>(pp->flat_prepass_nz_idx)[rank] =
+            static_cast<uint16_t>(value_pos - rank);
+        } else {
+          pp->flat_prepass_nz_idx[rank] = value_pos;
+        }
+      }
       if (t == 0) { block_valid_count_shared = block_valid_count; }
       block.sync();
       valid_count += block_valid_count_shared;
       block.sync();
     }
-  }
-  if (pp->flat_prepass_word_rank != nullptr) {
-    // The loop above only covers blocks below value_limit, but the consumer asks for
-    // rank() at positions up to the page's value count -- including exactly at a block
-    // boundary, where the word it needs belongs to the next, unvisited block. Fill the
-    // remainder so every word the consumer can address is defined. Unwritten words
-    // would otherwise be read as whatever the uninitialised buffer held.
-    int const covered_words =
-      ((value_limit + level_decode_block_size - 1) / level_decode_block_size) *
-      (level_decode_block_size / 32);
-    int const total_words = static_cast<int>(flat_prepass_bitmask_words(pp->num_input_values));
-    for (int w = covered_words + t; w < total_words; w += level_decode_block_size) {
-      pp->flat_prepass_nz_idx[w]    = 0;
-      pp->flat_prepass_word_rank[w] = valid_count;
-    }
-    block.sync();
   }
   if (t == 0) {
     int prefix = 0;
@@ -694,24 +689,20 @@ void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
                                  size_t min_row,
                                  size_t num_rows,
                                  int level_type_size,
-                                 cuda::stream_ref stream,
-                                 bool warp_scan)
+                                 cuda::stream_ref stream)
 {
   if (pages.size() == 0) { return; }
   dim3 const grid(pages.size(), 1);
   dim3 const block(level_decode_block_size, 1);
-  auto launch = [&](auto level_tag, auto warp_scan_tag) {
-    using level_t              = decltype(level_tag);
-    constexpr bool warp_scan_t = decltype(warp_scan_tag)::value;
-    precompute_flat_level_state_kernel<level_t, warp_scan_t>
+  auto launch = [&](auto level_tag) {
+    using level_t = decltype(level_tag);
+    precompute_flat_level_state_kernel<level_t>
       <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
   };
   if (level_type_size == 1) {
-    warp_scan ? launch(uint8_t{}, cuda::std::true_type{})
-              : launch(uint8_t{}, cuda::std::false_type{});
+    launch(uint8_t{});
   } else {
-    warp_scan ? launch(uint16_t{}, cuda::std::true_type{})
-              : launch(uint16_t{}, cuda::std::false_type{});
+    launch(uint16_t{});
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

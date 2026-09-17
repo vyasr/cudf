@@ -27,6 +27,7 @@ class EnginePool:
     ) -> None:
         self._ray_num_ranks = ray_num_ranks
         self._ray_init_options = ray_init_options
+        self._skip_reset = os.environ.get("CUDF_POLARS_ENGINE_POOL_SKIP_RESET") == "1"
         self._engines: dict[tuple[Any, ...], StreamingEngine] = {}
         self._construct_count = {"dask": 0, "ray": 0}
         self._reuse_count = {"dask": 0, "ray": 0}
@@ -64,6 +65,10 @@ class EnginePool:
         if test_failed:
             self._discard_reasons.append(f"{engine_name} {nodeid}: test failed")
             self._discard(engine_name, engine)
+            return
+        if self._skip_reset:
+            # CI-only control: quantify reset/health-check overhead while retaining
+            # the same per-worker engine construction and test selection.
             return
         try:
             start = time.perf_counter()
@@ -109,7 +114,10 @@ class EnginePool:
                 "health_seconds": self._health_seconds[engine_name],
             }
             for engine_name in ("dask", "ray")
-        } | {"discard_reasons": self._discard_reasons}
+        } | {
+            "discard_reasons": self._discard_reasons,
+            "reset_mode": "skipped" if self._skip_reset else "enabled",
+        }
 
     def _construct(self, engine_name: str) -> StreamingEngine:
         if engine_name == "dask":

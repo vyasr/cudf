@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-# Temporary CI trigger for the cuDF-Polars baseline comparison.
 import concurrent.futures
 from typing import TYPE_CHECKING, Any
 

@@ -22,7 +22,6 @@ from cudf_polars.testing.engine_utils import (
 )
 from cudf_polars.utils.versions import POLARS_VERSION_LT_140, POLARS_VERSION_LT_141
 
-
 _TEST_CALL_FAILED = pytest.StashKey[bool]()
 _ENGINE_POOL_TIMINGS = pytest.StashKey[list[str]]()
 _ENGINE_POOL_WORKER_TIMINGS = pytest.StashKey[dict[str, list[str]]]()

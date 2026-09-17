@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from coverage import CoverageData
+
 if TYPE_CHECKING:
     from types import ModuleType
 
@@ -96,3 +98,32 @@ def test_classification_precedence() -> None:
         )
         == "deletion_review_candidate"
     )
+
+
+def test_missing_strict_coverage_is_conservative(tmp_path: Path) -> None:
+    classifier = _load_classifier()
+    local_data = CoverageData(basename=str(tmp_path / "local.coverage"))
+    local_data.set_context("tests/test_query.py::test_query|run")
+    local_data.add_lines({"/tmp/cudf_polars/dsl/translate.py": {1}})
+    local_data.write()
+    upstream_data = CoverageData(basename=str(tmp_path / "upstream.coverage"))
+    upstream_data.set_context("tests/unit/test_query.py::test_query|run")
+    upstream_data.add_lines({"/tmp/cudf_polars/dsl/translate.py": {1}})
+    upstream_data.write()
+    report = classifier.classify(
+        tmp_path / "local.coverage",
+        tmp_path / "upstream.coverage",
+        None,
+        tmp_path,
+    )
+    assert report["tests"] == [
+        {
+            "classification": "retain_not_strictly_covered",
+            "covered_line_count": 1,
+            "local_only_line_count": 0,
+            "next_action": "seek_strict_upstream_coverage_before_pruning",
+            "nodeid": "tests/test_query.py::test_query",
+            "source_files": ["/tmp/cudf_polars/dsl/translate.py"],
+            "strict_line_count": 0,
+        }
+    ]

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Classify local cudf-polars tests using broad and strict upstream coverage."""
+"""Classify local cudf-polars tests using broad and optional strict coverage."""
 
 from __future__ import annotations
 
@@ -177,13 +177,17 @@ def _classification(
 def classify(
     local_data: Path,
     broad_data: Path,
-    strict_data: Path,
+    strict_data: Path | None,
     tests_root: Path,
     collected_nodeids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Classify every local pytest context that executes cudf-polars source."""
     broad_lines = _source_lines(_read_data(broad_data))
-    strict_lines = _source_lines(_read_data(strict_data))
+    strict_lines = (
+        _source_lines(_read_data(strict_data))
+        if strict_data is not None
+        else {}
+    )
     test_coverage: dict[str, TestCoverage] = {}
     connection = sqlite3.connect(local_data)
     rows = connection.execute(
@@ -270,7 +274,9 @@ def _write_html(report: dict[str, Any], output: Path) -> None:
         f"<p>{summary}</p>"
         "<p>Deletion-review candidates have no local-only covered lines and "
         "all their covered lines are exercised by the strict no-fallback "
-        "upstream suite. They still require semantic review.</p>"
+        "upstream suite. If strict coverage was not supplied, no test is "
+        "classified as a deletion-review candidate. They still require "
+        "semantic review.</p>"
         "<table><thead><tr><th>Classification</th><th>Next action</th><th>Local node</th>"
         "<th>Covered lines</th><th>Local-only</th><th>Strict</th>"
         "<th>Source files</th></tr></thead><tbody>"
@@ -283,7 +289,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--local-data", type=Path, required=True)
     parser.add_argument("--broad-data", type=Path, required=True)
-    parser.add_argument("--strict-data", type=Path, required=True)
+    parser.add_argument(
+        "--strict-data",
+        type=Path,
+        help=(
+            "coverage data from a no-fallback upstream run; omitted until the "
+            "strict GPU policy is available"
+        ),
+    )
     parser.add_argument("--tests-root", type=Path, required=True)
     parser.add_argument(
         "--collected-nodeids",

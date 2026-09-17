@@ -15,7 +15,6 @@ import polars as pl
 
 from rapidsmpf.bootstrap import get_nranks, is_running_with_rrun
 
-from cudf_polars.testing._engine_pool import EnginePool
 from cudf_polars.testing.engine_utils import (
     ALL_ENGINE_FIXTURE_PARAMS,
     STREAMING_ENGINE_FIXTURE_PARAMS,
@@ -124,30 +123,10 @@ def _engine_param(request: pytest.FixtureRequest) -> EngineFixtureParam:
 
 
 @pytest.fixture(scope="session")
-def _engine_pool(
-    request: pytest.FixtureRequest,
+def _unconfigured_engine(
+    _engine_param: EngineFixtureParam,
     ray_num_ranks: int,
     ray_init_options: dict[str, Any],
-) -> Generator[EnginePool, None, None]:
-    """Own the standard distributed engines for this pytest worker."""
-    pool = EnginePool(
-        ray_num_ranks=ray_num_ranks,
-        ray_init_options=ray_init_options,
-    )
-    try:
-        yield pool
-    finally:
-        pool.close()
-        if _profiling_enabled(request.config):
-            request.config.stash[_ENGINE_POOL_TIMINGS] = pool.timing_lines()
-            request.config.stash[_ENGINE_POOL_TIMING_DATA] = pool.timing_data()
-
-
-@pytest.fixture
-def _unconfigured_engine(
-    request: pytest.FixtureRequest,
-    _engine_param: EngineFixtureParam,
-    _engine_pool: EnginePool,
 ) -> Generator[tuple[pl.GPUEngine, StreamingOptions | None], None, None]:
     """
     Fixture generating an engine resource and options to apply before use.
@@ -165,9 +144,9 @@ def _unconfigured_engine(
 
     Notes
     -----
-    Ray and Dask engines are leased from a pool local to this pytest worker.
-    A successful test resets and health-checks its engine before returning it
-    to the pool; any failed or unhealthy engine is shut down instead.
+    This session-scoped fixture owns one engine for each parametrized
+    backend/configuration on a pytest worker, matching the pre-pooling
+    lifecycle while retaining the surrounding test-suite reductions.
     """
     if _engine_param.engine_name == "in-memory":
         yield pl.GPUEngine(executor="in-memory", raise_on_fail=True), None
@@ -178,31 +157,29 @@ def _unconfigured_engine(
                 f"{_engine_param.engine_name} engine cannot be constructed "
                 "inside an rrun cluster"
             )
-        options = create_streaming_options(_engine_param.blocksize_mode)
-        if _engine_param.engine_name in ("dask", "ray"):
-            engine = _engine_pool.acquire(_engine_param.engine_name)
-            try:
-                yield engine, options
-            finally:
-                _engine_pool.release(
-                    _engine_param.engine_name,
-                    engine,
-                    options,
-                    test_failed=request.node.stash.get(_TEST_CALL_FAILED, False),
-                    nodeid=request.node.nodeid,
-                )
-            return
         match _engine_param.engine_name:
             case "spmd":
                 from cudf_polars.engine.spmd import SPMDEngine
 
                 engine = SPMDEngine()
+            case "dask":
+                from cudf_polars.engine.dask import DaskEngine
+
+                engine = DaskEngine(engine_options={"allow_gpu_sharing": True})
+            case "ray":
+                from cudf_polars.engine.ray import RayEngine
+
+                engine = RayEngine(
+                    num_ranks=ray_num_ranks,
+                    engine_options={"allow_gpu_sharing": True},
+                    ray_init_options=ray_init_options,
+                )
             case _:  # pragma: no cover
                 raise ValueError(
                     f"Unknown streaming engine: {_engine_param.engine_name!r}"
                 )
         with engine:
-            yield engine, options
+            yield engine, create_streaming_options(_engine_param.blocksize_mode)
 
 
 @pytest.fixture

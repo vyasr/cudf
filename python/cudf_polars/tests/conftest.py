@@ -25,6 +25,8 @@ from cudf_polars.utils.versions import POLARS_VERSION_LT_140, POLARS_VERSION_LT_
 _TEST_CALL_FAILED = pytest.StashKey[bool]()
 _ENGINE_POOL_TIMINGS = pytest.StashKey[list[str]]()
 _ENGINE_POOL_WORKER_TIMINGS = pytest.StashKey[dict[str, list[str]]]()
+_PHASE_TIMINGS = pytest.StashKey[dict[str, dict[str, float | int]]]()
+_WORKER_PHASE_TIMINGS = pytest.StashKey[dict[str, dict[str, dict[str, float | int]]]]()
 
 
 @pytest.fixture
@@ -373,6 +375,8 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
     """
     outcome = yield
     report = outcome.get_result()
+    if item.config.getoption("--engine-pool-timings"):
+        _record_phase_timing(item, report)
     if report.when in ("setup", "call") and report.failed:
         item.stash[_TEST_CALL_FAILED] = True
 
@@ -390,6 +394,15 @@ def pytest_terminal_summary(terminalreporter: Any, config: pytest.Config) -> Non
         terminalreporter.write_line(f"cudf-polars engine pool ({worker}):")
         for line in worker_timings:
             terminalreporter.write_line(line)
+    for worker, phase_timings in config.stash.get(_WORKER_PHASE_TIMINGS, {}).items():
+        terminalreporter.write_line(f"cudf-polars pytest phase timings ({worker}):")
+        for engine_name, phases in phase_timings.items():
+            terminalreporter.write_line(
+                f"  {engine_name}: "
+                f"setup={phases['setup']:.2f}s ({phases['setup_count']}), "
+                f"call={phases['call']:.2f}s ({phases['call_count']}), "
+                f"teardown={phases['teardown']:.2f}s ({phases['teardown_count']})"
+            )
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -398,6 +411,9 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     timings = session.config.stash.get(_ENGINE_POOL_TIMINGS, [])
     if worker_output is not None and timings:
         worker_output["cudf_polars_engine_pool_timings"] = timings
+    phase_timings = session.config.stash.get(_PHASE_TIMINGS, {})
+    if worker_output is not None and phase_timings:
+        worker_output["cudf_polars_phase_timings"] = phase_timings
 
 
 def pytest_testnodedown(node: Any, error: Exception | None) -> None:
@@ -411,6 +427,38 @@ def pytest_testnodedown(node: Any, error: Exception | None) -> None:
         all_timings = node.config.stash.get(_ENGINE_POOL_WORKER_TIMINGS, {})
         all_timings[node.gateway.id] = timings
         node.config.stash[_ENGINE_POOL_WORKER_TIMINGS] = all_timings
+    phase_timings = worker_output.get("cudf_polars_phase_timings")
+    if phase_timings:
+        all_phase_timings = node.config.stash.get(_WORKER_PHASE_TIMINGS, {})
+        all_phase_timings[node.gateway.id] = phase_timings
+        node.config.stash[_WORKER_PHASE_TIMINGS] = all_phase_timings
+
+
+def _record_phase_timing(item: pytest.Item, report: pytest.TestReport) -> None:
+    """Accumulate xdist-worker test-phase time by parametrized engine."""
+    callspec = getattr(item, "callspec", None)
+    engine_param = (
+        callspec.params.get("_engine_param", "other")
+        if callspec is not None
+        else "other"
+    )
+    engine_name = getattr(engine_param, "engine_name", str(engine_param))
+    timings = item.config.stash.get(_PHASE_TIMINGS, {})
+    for name in ("all", engine_name):
+        phases = timings.setdefault(
+            name,
+            {
+                "setup": 0.0,
+                "setup_count": 0,
+                "call": 0.0,
+                "call_count": 0,
+                "teardown": 0.0,
+                "teardown_count": 0,
+            },
+        )
+        phases[report.when] += report.duration
+        phases[f"{report.when}_count"] += 1
+    item.config.stash[_PHASE_TIMINGS] = timings
 
 
 def pytest_configure(config: pytest.Config):

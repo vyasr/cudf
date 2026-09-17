@@ -45,15 +45,23 @@ cudf::io::column_encoding retrieve_column_encoding_enum(std::string_view encodin
 // physical type matches, and for a LIST the encoded values live on the element
 // node, not the top-level column, so this function pushes the request down to
 // the leaves.
+//
+// "Leaf" has to be decided from the column, not from the metadata node's child count. A cudf
+// STRING column carries an offsets child, so a `num_children() == 0` test walks straight past
+// the string node and leaves the request on the offsets column -- which is not a Parquet schema
+// node, so the writer never reads it and never warns. That silently pinned every string
+// encoding to the writer's default; see the byte-identical file sizes for DELTA_BYTE_ARRAY and
+// DELTA_LENGTH_BYTE_ARRAY before this was fixed.
 void set_encoding_recursive(cudf::io::column_in_metadata& col_meta,
+                            cudf::column_view const& col,
                             cudf::io::column_encoding encoding)
 {
-  if (col_meta.num_children() == 0) {
+  if (col.num_children() == 0 or col.type().id() == cudf::type_id::STRING) {
     col_meta.set_encoding(encoding);
     return;
   }
-  for (cudf::size_type i = 0; i < col_meta.num_children(); i++) {
-    set_encoding_recursive(col_meta.child(i), encoding);
+  for (cudf::size_type i = 0; i < col.num_children(); i++) {
+    set_encoding_recursive(col_meta.child(i), col.child(i), encoding);
   }
 }
 
@@ -69,8 +77,7 @@ std::optional<double> null_probability_from_validity(std::string_view validity)
 {
   if (validity == "no_validity") { return std::nullopt; }
   constexpr std::string_view prefix{"nullable_"};
-  CUDF_EXPECTS(validity.starts_with(prefix),
-               "Unsupported validity: " + std::string{validity});
+  CUDF_EXPECTS(validity.starts_with(prefix), "Unsupported validity: " + std::string{validity});
   return std::stod(std::string{validity.substr(prefix.size())}) / 100.0;
 }
 
@@ -136,11 +143,11 @@ void bench_read_encoding(nvbench::state& state,
   auto const nesting     = use_nullable_page_size_matrix
                              ? cudf::size_type{0}
                              : static_cast<cudf::size_type>(state.get_int64("nesting"));
-  auto const validity   = state.get_string("validity");
-  auto const null_prob  = null_probability_from_validity(validity);
-  auto const page_rows = use_nullable_page_size_matrix
-                           ? static_cast<cudf::size_type>(state.get_int64("page_rows"))
-                           : cudf::size_type{0};
+  auto const validity    = state.get_string("validity");
+  auto const null_prob   = null_probability_from_validity(validity);
+  auto const page_rows   = use_nullable_page_size_matrix
+                             ? static_cast<cudf::size_type>(state.get_int64("page_rows"))
+                             : cudf::size_type{0};
   cuio_source_sink_pair source_sink(source_type);
 
   auto const num_rows_written = [&]() {
@@ -151,12 +158,12 @@ void bench_read_encoding(nvbench::state& state,
     auto const tbl =
       nesting > 0
         ? create_nested_table(leaf_types, data_size, cardinality, run_length, nesting, null_prob)
-                  : create_random_table(leaf_types, table_size_bytes{data_size}, profile_builder);
+        : create_random_table(leaf_types, table_size_bytes{data_size}, profile_builder);
     auto const view = tbl->view();
 
     cudf::io::table_input_metadata metadata(view);
-    for (auto& col_meta : metadata.column_metadata) {
-      set_encoding_recursive(col_meta, encoding);
+    for (cudf::size_type i = 0; i < view.num_columns(); i++) {
+      set_encoding_recursive(metadata.column_metadata[i], view.column(i), encoding);
     }
 
     cudf::io::parquet_writer_options write_opts =
@@ -204,7 +211,8 @@ NVBENCH_BENCH(BM_parquet_read_delta_binary)
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("nesting", {0, 1})
   .add_int64_axis("data_size", {512 << 20})
-  .add_string_axis("validity", {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
+  .add_string_axis("validity",
+                   {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
   .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_delta_string)
@@ -216,7 +224,8 @@ NVBENCH_BENCH(BM_parquet_read_delta_string)
   .add_int64_axis("run_length", {1, 32})
   .add_int64_axis("nesting", {0, 1})
   .add_int64_axis("data_size", {512 << 20})
-  .add_string_axis("validity", {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
+  .add_string_axis("validity",
+                   {"no_validity", "nullable_0", "nullable_1", "nullable_50", "nullable_90"})
   .add_string_axis("prepass_mode", {"default"});
 
 NVBENCH_BENCH(BM_parquet_read_delta_binary_nullable_page_sizes)

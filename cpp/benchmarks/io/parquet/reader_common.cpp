@@ -71,14 +71,16 @@ std::optional<std::string> prepass_selector_for_mode(std::string_view mode)
   if (mode == "default") { return std::nullopt; }
   if (mode == "legacy") { return std::string{"0"}; }
   if (mode == "all") { return std::string{"0x1ff"}; }
-  // Families plus one experimental probe, matching the bits in parquet_gpu.hpp.
-  if (mode == "direct_map") { return std::string{"0x3ff"}; }
-  if (mode == "narrow_map") { return std::string{"0x9ff"}; }
-  if (mode == "scan_rank") { return std::string{"0x1dff"}; }
-  if (mode == "warp_scan") { return std::string{"0x3dff"}; }
-  if (mode == "nested_ws") { return std::string{"0x7dff"}; }
-  if (mode == "list_bar") { return std::string{"0xfdff"}; }
-  if (mode == "probes") { return std::string{"0xffff"}; }
+  // Families plus one experimental probe, matching the bits in parquet_gpu.hpp. Names for
+  // retired probes are removed rather than left pointing at a value the reader now rejects,
+  // so a stale benchmark invocation fails where it is written instead of silently measuring
+  // the default.
+  if (mode == "list_bar") { return std::string{"0x81ff"}; }
+  if (mode == "skip_shadow") { return std::string{"0x101ff"}; }
+  if (mode == "warp_fused") { return std::string{"0x401ff"}; }
+  if (mode == "warp_narrow") { return std::string{"0xc01ff"}; }
+  if (mode == "warp_wide") { return std::string{"0x1001ff"}; }
+  if (mode == "probes") { return std::string{"0x1d81ff"}; }
   if (mode.starts_with("0x")) { return std::string{mode}; }
   CUDF_FAIL("Unsupported prepass_mode: " + std::string{mode});
 }

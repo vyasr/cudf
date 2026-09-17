@@ -292,23 +292,20 @@ constexpr uint32_t level_prepass_all         = level_prepass_family_mask;
 // Experimental kernel-reshaping probes. These live outside `level_prepass_family_mask`
 // so that widening the probe set can never change the default returned by
 // `level_prepass_mode_from_environment()` for an unset environment variable.
-constexpr uint32_t level_prepass_direct_map = 0x200;
-// 0x400 is unallocated: a previously declared `use_prefix` probe was never implemented,
-// so the selector accepted it and silently did nothing. Left as a hole rather than
-// reused, to keep already-recorded measurement selectors meaningful.
-constexpr uint32_t level_prepass_narrow_map = 0x800;
-constexpr uint32_t level_prepass_scan_rank  = 0x1000;
-constexpr uint32_t level_prepass_warp_scan  = 0x2000;
-constexpr uint32_t level_prepass_nested_ws  = 0x4000;
-constexpr uint32_t level_prepass_list_bar   = 0x8000;
+//
+// Bit values are never reused once allocated, so a selector recorded in an old measurement
+// still means what it meant when it was written. Probes that graduated to unconditional
+// behaviour, or that lost to a later probe, are deleted rather than left declared: a probe
+// the selector accepts but no code reads is indistinguishable from one that works.
+// `level_prepass_selector_mask` rejects the vacated values, so an old selector now fails
+// loudly instead of silently doing nothing.
+//
+// Retired: 0x200 direct_map, 0x400 use_prefix (never implemented), 0x800 narrow_map,
+// 0x1000 scan_rank, 0x2000 warp_scan, 0x4000 nested_ws (promoted), 0x20000 bitmask_map
+// (promoted).
+constexpr uint32_t level_prepass_list_bar = 0x8000;
 // Skip the legacy decode launch for masks whose every page a prepass consumer claims.
-// Allocated above the original probe range rather than in the 0x400 hole because
-// selectors already on record (0x7dff, 0xffff) set that bit.
 constexpr uint32_t level_prepass_skip_shadow = 0x10000;
-// Replace the dense rank->position map with a validity bitmask plus a per-word rank
-// prefix. The map costs 4 B per *valid* value; the bitmask costs 0.25 B per value and
-// is therefore smaller than the definition levels it replaces at every null rate.
-constexpr uint32_t level_prepass_bitmask_map = 0x20000;
 // Run the DELTA_LENGTH_BYTE_ARRAY prepass consumer warp-synchronously: the warp that
 // decodes a delta pass also writes that pass's offsets, so the value loop carries no
 // block barrier at all. Only reachable because the prepass already materialized the
@@ -321,7 +318,7 @@ constexpr uint32_t level_prepass_warp_fused = 0x40000;
 constexpr uint32_t level_prepass_warp_narrow = 0x80000;
 // Give each warp of the consumer's block one pass of the current DELTA block, so the value loop
 // decodes num_warps * warp_size values per iteration instead of warp_size. Unlike the narrow
-// block this keeps the epilogue at full block width. Mutually exclusive with
+// block this keeps the epilogue at full block width. Takes precedence over
 // level_prepass_warp_fused and level_prepass_warp_narrow.
 constexpr uint32_t level_prepass_warp_wide = 0x100000;
 
@@ -348,7 +345,12 @@ CUDF_HOST_DEVICE constexpr size_t flat_prepass_bitmask_bytes(int num_input_value
 {
   return 2 * flat_prepass_bitmask_words(num_input_values) * sizeof(uint32_t);
 }
-constexpr uint32_t level_prepass_probe_mask = 0x1ffe00;
+// Exactly the probes above, so the selector rejects a retired bit rather than accepting it as
+// a no-op. Spelled as an OR of the constants -- a range check cannot express a sparse set, and
+// a range check is what let retired bits through before.
+constexpr uint32_t level_prepass_probe_mask = level_prepass_list_bar | level_prepass_skip_shadow |
+                                              level_prepass_warp_fused | level_prepass_warp_narrow |
+                                              level_prepass_warp_wide;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -556,13 +558,10 @@ struct PageInfo {
   // Temporary page-global state for the opt-in generic flat level prepass.
   // A null map denotes either legacy dispatch or the required-column identity path.
   uint32_t* flat_prepass_nz_idx{};
-  // Bitmask representation (level_prepass_bitmask_map): flat_prepass_nz_idx holds one
-  // bit per input value and this holds the number of valid values preceding each
-  // 32-value word, making rank(position) two loads and a popc.
+  // Bitmask representation: flat_prepass_nz_idx holds one bit per input value and this holds
+  // the number of valid values preceding each 32-value word, making rank(position) two loads
+  // and a popc. Unconditional since the probe that introduced it graduated.
   uint32_t* flat_prepass_word_rank{};
-  // Element width in bytes of the flat prepass map: 4 stores absolute page-input
-  // positions, 2 stores `position - rank` (the null count preceding that rank).
-  // The narrow form is only selected for pages whose value count bounds the delta.
   int32_t flat_prepass_nz_count{-1};
   int32_t flat_prepass_null_count{};
   bool flat_prepass_enabled{};

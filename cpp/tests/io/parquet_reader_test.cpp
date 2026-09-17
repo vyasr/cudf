@@ -107,16 +107,16 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
   }
   {
     // Probe bits live above the family mask and are accepted alongside families.
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0xffff"};
-    EXPECT_EQ(level_prepass_mode_from_environment(), 0xffff);
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x181ff"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x181ff);
   }
   {
-    // Allocated probes above the original 0xfe00 range are accepted.
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x30000"};
-    EXPECT_EQ(level_prepass_mode_from_environment(), 0x30000);
+    // Every live probe at once, families included.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x1d81ff"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x1d81ff);
   }
   {
-    // The warp-fused consumer probes, which sit above the bitmask bit.
+    // The warp-fused consumer probes.
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0xc0000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0xc0000);
   }
@@ -126,8 +126,14 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
     EXPECT_EQ(level_prepass_mode_from_environment(), 0x100000);
   }
   {
-    // The first value above the selector mask is rejected. Spelled as a literal rather
-    // than derived from the mask so that widening the probe range has to be deliberate.
+    // A retired probe value is rejected outright rather than accepted as a no-op. 0x20000 was
+    // the bitmask map, which is now unconditional; a selector still asking for it is stale and
+    // should say so. Spelled as a literal so reviving a bit has to be deliberate.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x20000"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0);
+  }
+  {
+    // Likewise for a value that was never allocated at all.
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x200000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
@@ -448,7 +454,7 @@ TEST_F(ParquetReaderTest, NullableNestedWithoutNullsPublishesPrepassState)
       .max_page_fragment_size(128));
 
   // Legacy and every prepass configuration must agree, and must report no nulls.
-  for (auto const* mode : {"0", "0x1ff", "0xffff"}) {
+  for (auto const* mode : {"0", "0x1ff", "0x1d81ff"}) {
     tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", mode};
     auto const result = cudf::io::read_parquet(
       cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath}));

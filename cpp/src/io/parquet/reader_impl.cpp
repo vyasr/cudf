@@ -50,7 +50,10 @@ uint32_t level_prepass_mode_from_environment()
   char* end       = nullptr;
   auto const base = value[0] == '0' && (value[1] == 'x' || value[1] == 'X') ? 16 : 10;
   auto parsed     = std::strtoul(value, &end, base);
-  if (errno != 0 || end == value || *end != '\0' || parsed > level_prepass_selector_mask) {
+  // Bitwise, not a magnitude comparison: the probe set is sparse once retired bits are removed,
+  // and a range check would go on accepting those values as silent no-ops.
+  if (errno != 0 || end == value || *end != '\0' ||
+      (parsed & ~static_cast<unsigned long>(level_prepass_selector_mask)) != 0) {
     CUDF_LOG_WARN("Ignoring invalid %s=%s; using legacy Parquet level decode", name, value);
     return 0;
   }

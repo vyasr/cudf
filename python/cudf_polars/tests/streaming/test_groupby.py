@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 import polars as pl
+from polars.testing import assert_frame_equal
 
 import pylibcudf as plc
 from cudf_streaming.channel_metadata import OrderScheme
@@ -174,7 +175,7 @@ def test_groupby_adjusts_truncated_ordering_with_maintain_order(
     result, metadata_collector = evaluate_logical_plan(
         ir, ConfigOptions.from_polars_engine(engine), collect_metadata=True
     )
-    pl.testing.assert_frame_equal(result, expected, check_row_order=False)
+    assert_frame_equal(result, expected, check_row_order=False)
 
     assert metadata_collector is not None
     assert len(metadata_collector) == 1

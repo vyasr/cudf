@@ -143,9 +143,13 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
   }
 }
 
-TEST_F(ParquetReaderTest, LevelPrepassSelectorDefaultsToFamiliesOnly)
+TEST_F(ParquetReaderTest, LevelPrepassSelectorDefaultsToMeasuredFamiliesOnly)
 {
+  using cudf::io::parquet::detail::level_prepass_default;
+  using cudf::io::parquet::detail::level_prepass_delta_flat;
+  using cudf::io::parquet::detail::level_prepass_delta_list;
   using cudf::io::parquet::detail::level_prepass_family_mask;
+  using cudf::io::parquet::detail::level_prepass_generic_flat;
   using cudf::io::parquet::detail::level_prepass_mode_from_environment;
   using cudf::io::parquet::detail::level_prepass_probe_mask;
 
@@ -172,12 +176,19 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorDefaultsToFamiliesOnly)
     std::optional<std::string> previous_value_;
   };
 
-  // An unset selector must enable every consumer family and no experimental probe,
-  // so that adding a probe bit can never change default reader behaviour.
+  // An unset selector enables only the families measured faster than the legacy decoder, and no
+  // experimental probe, so that adding a probe bit can never change default reader behaviour.
+  // Spelled out rather than compared only against level_prepass_default, so that widening the
+  // default has to be a deliberate edit here and not just a constant change elsewhere.
   unset_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS"};
   auto const mode = level_prepass_mode_from_environment();
-  EXPECT_EQ(mode, level_prepass_family_mask);
+  EXPECT_EQ(mode, level_prepass_default);
+  EXPECT_EQ(mode, level_prepass_delta_flat | level_prepass_delta_list);
   EXPECT_EQ(mode & level_prepass_probe_mask, 0u);
+  // The generic families regress against legacy today and must stay off by default.
+  EXPECT_EQ(mode & level_prepass_generic_flat, 0u);
+  EXPECT_NE(level_prepass_family_mask & level_prepass_generic_flat, 0u)
+    << "generic_flat should still be selectable explicitly";
 }
 
 TEST_F(ParquetReaderTest, UserBounds)

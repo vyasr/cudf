@@ -41,10 +41,10 @@ uint32_t level_prepass_mode_from_environment()
 {
   constexpr char const* name = "LIBCUDF_PARQUET_LEVEL_PREPASS";
   auto const* value          = std::getenv(name);
-  // Keep an explicit zero as the temporary rollback mode, but use the
-  // validated page-global prepass for normal reads. Probe bits are deliberately
-  // excluded from the default so an experiment never ships on by accident.
-  if (value == nullptr || *value == '\0') { return level_prepass_family_mask; }
+  // Keep an explicit zero as the temporary rollback mode, but use the validated page-global
+  // prepass for normal reads. The default is the measured-positive families only, not every
+  // implemented one; probe bits are excluded so an experiment never ships on by accident.
+  if (value == nullptr || *value == '\0') { return level_prepass_default; }
 
   errno           = 0;
   char* end       = nullptr;

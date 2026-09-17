@@ -1600,10 +1600,17 @@ __device__ void zero_fill_null_positions_shared(
     }
   };
 
-  // Phase 1: Assign specific blocks to warps for warp-parallel processing
+  // Phase 1: Assign specific blocks to warps for warp-parallel processing.
+  // Only the first and last blocks can hold bits outside [start_bit_idx, end_bit_idx), and
+  // only `process_block_parallel` range-checks, so those two must be handled here.
   if (warp_id == 0) {
     // Warp 0: Process first block
     process_block_parallel(start_block);
+    // A single-warp block has no warp 1 to take the last block, so warp 0 takes it too
+    // rather than letting the unchecked sequential path write past end_bit_idx.
+    if constexpr (num_warps == 1) {
+      if (num_blocks > 1) { process_block_parallel(end_block - 1); }
+    }
   } else if (warp_id == 1 && num_blocks > 1) {
     // Warp 1: Process last block (if different from first)
     process_block_parallel(end_block - 1);
@@ -1613,9 +1620,12 @@ __device__ void zero_fill_null_positions_shared(
     if (block_idx < (end_block - 1)) { process_block_parallel(block_idx); }
   }
 
-  // Phase 2: All warps cooperatively process remaining middle blocks
+  // Phase 2: All warps cooperatively process the remaining interior blocks. Phase 1 covered
+  // [start_block, start_block + num_warps - 1) plus the last block, so this picks up from
+  // whichever of those two reaches further; the `max` is what keeps a single-warp block,
+  // whose phase 1 head is just start_block, from re-walking start_block here.
   auto const last_block_processed = static_cast<int>(num_blocks > 1);
-  int const remaining_start       = start_block + num_warps - last_block_processed;
+  int const remaining_start       = max(start_block + 1, start_block + num_warps - 1);
   int const remaining_end         = end_block - last_block_processed;
   for (int block_idx = remaining_start + t; block_idx < remaining_end; block_idx += block_size) {
     process_block_sequential(block_idx);

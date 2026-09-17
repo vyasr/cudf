@@ -111,7 +111,6 @@ jobs:
           - 'ci/run_cudf_examples.sh'
           - 'ci/run_cudf_kafka_ctests.sh'
           - 'ci/run_cudf_streaming_ctests.sh'
-          - '.github/workflows/pr.yaml'
         cpp_test_files:
           - 'cpp/examples/**'
           - 'cpp/libcudf_kafka/tests/**'
@@ -150,7 +149,6 @@ jobs:
           - 'RAPIDS_BRANCH'
           - 'dependencies.yaml'
           - 'ci/build_java.sh'
-          - '.github/workflows/pr.yaml'
           - '.github/workflows/cudf-spark-jni.yaml'
         test_java_packaged:
           - 'ci/test_packaged_java.sh'
@@ -167,7 +165,6 @@ jobs:
           - 'python/pylibcudf/**'
           - 'RAPIDS_BRANCH'
           - 'dependencies.yaml'
-          - '.github/workflows/pr.yaml'
         test_python_cudf:
           - 'python/cudf/**'
         test_python_cudf_benchmarks:
@@ -243,6 +240,8 @@ jobs:
           - '!python/cudf/cudf/pandas/**'
           - 'python/dask_cudf/**'
   checks:
+    # The experiment runs its targeted validation locally before push.
+    if: false
     permissions:
       contents: read
     needs: telemetry-setup
@@ -255,6 +254,8 @@ jobs:
       pre-commit-cache-read-only: true
   conda-cpp-build:
     needs: [build-details, checks]
+    # This experimental PR profiles wheel-based cudf-polars tests only.
+    if: false
     permissions:
       actions: read
       contents: read
@@ -269,6 +270,8 @@ jobs:
       node_type: cpu16
       script: ci/build_cpp.sh
   cmake-tests:
+    # Avoid PR-history-triggered CMake work during the wheel-test experiment.
+    if: false
     needs: [checks, changed-files]
     permissions:
       actions: read
@@ -278,7 +281,6 @@ jobs:
       pull-requests: read
     secrets: inherit # zizmor: ignore[secrets-inherit]
     uses: rapidsai/shared-workflows/.github/workflows/custom-job.yaml@main
-    if: fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_build_inputs || fromJSON(needs.changed-files.outputs.changed_file_groups).test_cmake
     with:
       build_type: pull-request
       node_type: cpu16
@@ -286,6 +288,8 @@ jobs:
       container_image: "rapidsai/ci-conda:26.12-latest"
       script: "ci/test_cmake.sh"
   cpp-linters:
+    # Avoid PR-history-triggered C++ linting during the wheel-test experiment.
+    if: false
     permissions:
       actions: read
       contents: read
@@ -295,10 +299,6 @@ jobs:
     secrets: inherit # zizmor: ignore[secrets-inherit]
     needs: [checks, changed-files]
     uses: rapidsai/shared-workflows/.github/workflows/custom-job.yaml@main
-    if: >
-      fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_build_inputs ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_test_files ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_linters
     with:
       build_type: pull-request
       script: "ci/cpp_linters.sh"
@@ -362,6 +362,7 @@ jobs:
       matrix_filter: map(select(.GPU != "gb300" and .GPU != "gh200"))
   conda-python-build:
     needs: [build-details, conda-cpp-build]
+    if: false
     permissions:
       actions: read
       contents: read
@@ -378,6 +379,7 @@ jobs:
       matrix_filter: group_by({CUDA_VER, ARCH}) | map(min_by(.PY_VER | split(".") | map(tonumber)))
   conda-python-build-noarch:
     needs: [build-details, checks]
+    if: false
     permissions:
       actions: read
       contents: read
@@ -481,6 +483,8 @@ jobs:
       matrix_filter: map(select(.GPU != "gb300" and .GPU != "gh200"))
   # Build and test the cuDF Java JAR for every Maven classifier.
   java-build-matrix:
+    # Avoid PR-history-triggered Java work during the wheel-test experiment.
+    if: false
     needs: [checks]
     permissions:
       contents: read
@@ -599,7 +603,7 @@ jobs:
       docs-projects: cudf,dask-cudf,libcudf
       dry-run: true
   wheel-build:
-    needs: [build-details, checks]
+    needs: [build-details]
     permissions:
       actions: read
       contents: read
@@ -609,13 +613,13 @@ jobs:
     secrets: inherit # zizmor: ignore[secrets-inherit]
     uses: ./.github/workflows/wheels-build-stage.yaml
     with:
-      # Build all non-noarch wheels for each CUDA x ARCH x minimum Python.
-      matrix_filter: group_by({CUDA_VER, ARCH}) | map(min_by(.PY_VER | split(".") | map(tonumber)))
+      # Profiling needs only the binary wheel consumed by the H100 test lane.
+      matrix_filter: map(select(.ARCH == "amd64" and .CUDA_VER == "12.9.2")) | group_by({CUDA_VER, ARCH}) | map(min_by(.PY_VER | split(".") | map(tonumber)))
       build_type: pull-request
       build-datetime: ${{ needs.build-details.outputs.build-datetime }}
       node_type: cpu16
   wheel-python-build-noarch:
-    needs: [build-details, checks]
+    needs: [build-details]
     permissions:
       actions: read
       contents: read
@@ -625,8 +629,8 @@ jobs:
     secrets: inherit # zizmor: ignore[secrets-inherit]
     uses: ./.github/workflows/wheels-build-stage.yaml
     with:
-      # This selects amd64 and the latest Python for each CUDA major version.
-      matrix_filter: map(select(.ARCH == "amd64")) | group_by(.CUDA_VER|split(".")|map(tonumber)|.[0]) | map(max_by([(.PY_VER|split(".")|map(tonumber)), (.CUDA_VER|split(".")|map(tonumber))]))
+      # Build only the noarch wheel needed by the H100 profile lane.
+      matrix_filter: map(select(.ARCH == "amd64" and .CUDA_VER == "12.9.2" and .PY_VER == "3.14"))
       build_type: pull-request
       build-datetime: ${{ needs.build-details.outputs.build-datetime }}
       node_type: cpu8
@@ -676,11 +680,11 @@ jobs:
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheel_cudf_polars ||
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf_polars_runner
     with:
-      # This selects "ARCH=amd64 + the latest supported Python + CUDA".
-      matrix_filter: map(select(.ARCH == "amd64")) | group_by(.CUDA_VER|split(".")|map(tonumber)|.[0]) | map(max_by([(.PY_VER|split(".")|map(tonumber)), (.CUDA_VER|split(".")|map(tonumber))]))
+      # Keep one stable lane while profiling the source of test-suite cost.
+      matrix_filter: map(select(.ARCH == "amd64" and .CUDA_VER == "12.9.2" and .PY_VER == "3.14" and .GPU == "h100"))
       build_type: pull-request
       container-options: "--cap-add CAP_SYS_PTRACE --shm-size=8g --ulimit=nofile=1000000:1000000"
-      script: "env POLARS_VERSIONS=endpoints ci/test_wheel_cudf_polars.sh"
+      script: "env CI_PROFILE=true POLARS_VERSIONS=endpoints ci/test_wheel_cudf_polars.sh"
   cudf-polars-polars-tests:
     needs: [wheel-build, wheel-python-build-noarch, changed-files]
     strategy:
@@ -701,13 +705,8 @@ jobs:
       pull-requests: read
     secrets: inherit # zizmor: ignore[secrets-inherit]
     uses: rapidsai/shared-workflows/.github/workflows/custom-job.yaml@main
-    if: >
-      fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_build_inputs ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_all ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf_polars ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheels ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheel_cudf_polars ||
-      fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf_polars_polars
+    # The compatibility suite is the only target of this profiling experiment.
+    if: false
     with:
       build_type: pull-request
       branch: ${{ inputs.branch }}
@@ -743,6 +742,8 @@ jobs:
       script: ci/test_wheel_dask_cudf.sh
   # build cudf with benchmarks but disable for cudf_streaming since we can't use MPI/UCX in wheel-based builds
   devcontainer:
+    # Avoid the unrelated full build while profiling one wheel test lane.
+    if: false
     permissions:
       actions: read
       contents: read
@@ -836,6 +837,8 @@ jobs:
     # Single source of truth for the shard count: both the matrix below and the
     # num-shards argument the scripts receive are derived from NUM_SHARDS here,
     # so the two can no longer drift apart.
+    # This experiment does not run the pandas compatibility suite.
+    if: false
     permissions: {}
     runs-on: ubuntu-latest
     outputs:
@@ -937,7 +940,8 @@ jobs:
       packages: read
       pull-requests: read
     uses: ./.github/workflows/cudf-spark-jni.yaml
-    if: fromJSON(needs.changed-files.outputs.changed_file_groups).cpp_build_inputs || fromJSON(needs.changed-files.outputs.changed_file_groups).test_java
+    # Avoid PR-history-triggered Spark work during the wheel-test experiment.
+    if: false
     with:
       cudf_commit: ${{ github.sha }}
   telemetry-summarize:

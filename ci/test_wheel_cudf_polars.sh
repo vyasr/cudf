@@ -28,6 +28,32 @@ fi
 
 LATEST_VERSION="${VERSIONS[-1]}"
 
+PROFILE_ARGS=()
+PROFILE_MONITOR_PID=""
+if [[ "${CI_PROFILE:-false}" == "true" ]]; then
+    # The shared workflow uploads RAPIDS_ARTIFACTS_DIR, unlike JUnit reports
+    # which are consumed from RAPIDS_TESTS_DIR.
+    profile_dir="${RAPIDS_ARTIFACTS_DIR:-${RAPIDS_TESTS_DIR}}"
+    mkdir -p "${profile_dir}"
+    PROFILE_ARGS=(
+        "--ci-profile-json=${profile_dir}/cudf-polars-profile-${RAPIDS_CUDA_VERSION}.json"
+        --ci-profile-top-n=100
+    )
+    profile_gpu_metrics="${profile_dir}/cudf-polars-gpu-metrics-${RAPIDS_CUDA_VERSION}.csv"
+    (
+        echo "timestamp,gpu,utilization.gpu [%],utilization.memory [%],memory.used [MiB],clocks.sm [MHz],clocks.mem [MHz],power.draw [W],temperature.gpu"
+        while true; do
+            nvidia-smi \
+                --query-gpu=timestamp,index,utilization.gpu,utilization.memory,memory.used,clocks.sm,clocks.mem,power.draw,temperature.gpu \
+                --format=csv,noheader,nounits || true
+            sleep 5
+        done
+    ) > "${profile_gpu_metrics}" &
+    PROFILE_MONITOR_PID=$!
+    trap 'kill "${PROFILE_MONITOR_PID}" 2>/dev/null || true' EXIT
+    rapids-logger "CI profiling enabled: ${profile_gpu_metrics}"
+fi
+
 if [[ "${POLARS_VERSIONS:-all}" == "endpoints" ]] && [[ ${#VERSIONS[@]} -eq 2 ]]; then
     # Split the two endpoint versions across the two CUDA-major matrix entries so each
     # entry tests one version in parallel, instead of both serially in a single job.
@@ -109,6 +135,7 @@ for version in "${VERSIONS[@]}"; do
         --numprocesses=4 \
         --dist=worksteal \
         --engine-pool-timings \
+        "${PROFILE_ARGS[@]}" \
         --durations=50 --durations-min=1 \
         -x \
         --junitxml="${RAPIDS_TESTS_DIR}/junit-cudf-polars-${version}.xml"

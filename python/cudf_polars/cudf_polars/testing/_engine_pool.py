@@ -97,6 +97,20 @@ class EnginePool:
             for engine_name in ("dask", "ray")
         ] + [f"  discard: {reason}" for reason in self._discard_reasons]
 
+    def timing_data(self) -> dict[str, Any]:
+        """Return JSON-serializable lifecycle measurements for CI profiling."""
+        return {
+            engine_name: {
+                "constructed": self._construct_count[engine_name],
+                "reused": self._reuse_count[engine_name],
+                "discarded": self._discard_count[engine_name],
+                "construct_seconds": self._construct_seconds[engine_name],
+                "reset_seconds": self._reset_seconds[engine_name],
+                "health_seconds": self._health_seconds[engine_name],
+            }
+            for engine_name in ("dask", "ray")
+        } | {"discard_reasons": self._discard_reasons}
+
     def _construct(self, engine_name: str) -> StreamingEngine:
         if engine_name == "dask":
             from cudf_polars.engine.dask import DaskEngine

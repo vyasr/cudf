@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import concurrent.futures
+import heapq
+import json
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -25,8 +29,16 @@ from cudf_polars.utils.versions import POLARS_VERSION_LT_140, POLARS_VERSION_LT_
 _TEST_CALL_FAILED = pytest.StashKey[bool]()
 _ENGINE_POOL_TIMINGS = pytest.StashKey[list[str]]()
 _ENGINE_POOL_WORKER_TIMINGS = pytest.StashKey[dict[str, list[str]]]()
+_ENGINE_POOL_TIMING_DATA = pytest.StashKey[dict[str, Any]]()
+_ENGINE_POOL_WORKER_TIMING_DATA = pytest.StashKey[dict[str, dict[str, Any]]]()
 _PHASE_TIMINGS = pytest.StashKey[dict[str, dict[str, float | int]]]()
 _WORKER_PHASE_TIMINGS = pytest.StashKey[dict[str, dict[str, dict[str, float | int]]]]()
+_PROFILE_TOP_PHASES = pytest.StashKey[
+    dict[str, list[tuple[float, int, dict[str, Any]]]]
+]()
+_PROFILE_SEQUENCE = pytest.StashKey[int]()
+_PROFILE_START = pytest.StashKey[float]()
+_WORKER_PROFILES = pytest.StashKey[dict[str, dict[str, Any]]]()
 
 
 @pytest.fixture
@@ -126,8 +138,9 @@ def _engine_pool(
         yield pool
     finally:
         pool.close()
-        if request.config.getoption("--engine-pool-timings"):
+        if _profiling_enabled(request.config):
             request.config.stash[_ENGINE_POOL_TIMINGS] = pool.timing_lines()
+            request.config.stash[_ENGINE_POOL_TIMING_DATA] = pool.timing_data()
 
 
 @pytest.fixture
@@ -363,6 +376,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="report cudf-polars Ray/Dask test-engine pool lifecycle timings",
     )
+    parser.addoption(
+        "--ci-profile-json",
+        default=None,
+        help="write structured per-worker cudf-polars timing data to this path",
+    )
+    parser.addoption(
+        "--ci-profile-top-n",
+        default=100,
+        type=int,
+        help="retain this many longest setup/call/teardown reports per engine",
+    )
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Start a worker-local wall-clock measurement for optional CI profiling."""
+    if _profiling_enabled(session.config):
+        session.config.stash[_PROFILE_START] = time.monotonic()
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -375,7 +405,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
     """
     outcome = yield
     report = outcome.get_result()
-    if item.config.getoption("--engine-pool-timings"):
+    if _profiling_enabled(item.config):
         _record_phase_timing(item, report)
     if report.when in ("setup", "call") and report.failed:
         item.stash[_TEST_CALL_FAILED] = True
@@ -403,6 +433,7 @@ def pytest_terminal_summary(terminalreporter: Any, config: pytest.Config) -> Non
                 f"call={phases['call']:.2f}s ({phases['call_count']}), "
                 f"teardown={phases['teardown']:.2f}s ({phases['teardown_count']})"
             )
+    _write_ci_profile(config)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -411,9 +442,18 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     timings = session.config.stash.get(_ENGINE_POOL_TIMINGS, [])
     if worker_output is not None and timings:
         worker_output["cudf_polars_engine_pool_timings"] = timings
+    timing_data = session.config.stash.get(_ENGINE_POOL_TIMING_DATA, None)
+    if worker_output is not None and timing_data:
+        worker_output["cudf_polars_engine_pool_timing_data"] = timing_data
     phase_timings = session.config.stash.get(_PHASE_TIMINGS, {})
     if worker_output is not None and phase_timings:
         worker_output["cudf_polars_phase_timings"] = phase_timings
+    if worker_output is not None and _profiling_enabled(session.config):
+        worker_output["cudf_polars_ci_profile"] = {
+            "wall_seconds": time.monotonic()
+            - session.config.stash.get(_PROFILE_START, time.monotonic()),
+            "top_phases": _top_phase_records(session.config),
+        }
 
 
 def pytest_testnodedown(node: Any, error: Exception | None) -> None:
@@ -427,11 +467,21 @@ def pytest_testnodedown(node: Any, error: Exception | None) -> None:
         all_timings = node.config.stash.get(_ENGINE_POOL_WORKER_TIMINGS, {})
         all_timings[node.gateway.id] = timings
         node.config.stash[_ENGINE_POOL_WORKER_TIMINGS] = all_timings
+    timing_data = worker_output.get("cudf_polars_engine_pool_timing_data")
+    if timing_data:
+        all_timing_data = node.config.stash.get(_ENGINE_POOL_WORKER_TIMING_DATA, {})
+        all_timing_data[node.gateway.id] = timing_data
+        node.config.stash[_ENGINE_POOL_WORKER_TIMING_DATA] = all_timing_data
     phase_timings = worker_output.get("cudf_polars_phase_timings")
     if phase_timings:
         all_phase_timings = node.config.stash.get(_WORKER_PHASE_TIMINGS, {})
         all_phase_timings[node.gateway.id] = phase_timings
         node.config.stash[_WORKER_PHASE_TIMINGS] = all_phase_timings
+    profile = worker_output.get("cudf_polars_ci_profile")
+    if profile:
+        all_profiles = node.config.stash.get(_WORKER_PROFILES, {})
+        all_profiles[node.gateway.id] = profile
+        node.config.stash[_WORKER_PROFILES] = all_profiles
 
 
 def _record_phase_timing(item: pytest.Item, report: pytest.TestReport) -> None:
@@ -459,6 +509,77 @@ def _record_phase_timing(item: pytest.Item, report: pytest.TestReport) -> None:
         phases[report.when] += report.duration
         phases[f"{report.when}_count"] += 1
     item.config.stash[_PHASE_TIMINGS] = timings
+    _record_top_phase(item, report, engine_name)
+
+
+def _profiling_enabled(config: pytest.Config) -> bool:
+    """Return whether the optional CI profiler should collect measurements."""
+    return bool(
+        config.getoption("--engine-pool-timings")
+        or config.getoption("--ci-profile-json")
+    )
+
+
+def _record_top_phase(
+    item: pytest.Item, report: pytest.TestReport, engine_name: str
+) -> None:
+    """Retain a bounded, worker-local top-N report list for CI attribution."""
+    if not item.config.getoption("--ci-profile-json"):
+        return
+    key = f"{engine_name}/{report.when}"
+    heaps = item.config.stash.get(_PROFILE_TOP_PHASES, {})
+    heap = heaps.setdefault(key, [])
+    sequence = item.config.stash.get(_PROFILE_SEQUENCE, 0)
+    item.config.stash[_PROFILE_SEQUENCE] = sequence + 1
+    record = {
+        "nodeid": item.nodeid,
+        "engine": engine_name,
+        "phase": report.when,
+        "duration_seconds": report.duration,
+        "started_at": report.start,
+        "stopped_at": report.stop,
+        "outcome": report.outcome,
+    }
+    entry = (report.duration, sequence, record)
+    limit = item.config.getoption("--ci-profile-top-n")
+    if len(heap) < limit:
+        heapq.heappush(heap, entry)
+    elif entry > heap[0]:
+        heapq.heapreplace(heap, entry)
+    item.config.stash[_PROFILE_TOP_PHASES] = heaps
+
+
+def _top_phase_records(config: pytest.Config) -> dict[str, list[dict[str, Any]]]:
+    """Return longest reports in descending order, without heap metadata."""
+    return {
+        key: [record for _, _, record in sorted(heap, reverse=True)]
+        for key, heap in config.stash.get(_PROFILE_TOP_PHASES, {}).items()
+    }
+
+
+def _write_ci_profile(config: pytest.Config) -> None:
+    """Write controller-collected worker measurements as one CI artifact."""
+    profile_path = config.getoption("--ci-profile-json")
+    if profile_path is None:
+        return
+    workers = config.stash.get(_WORKER_PROFILES, {})
+    if not workers:
+        workers = {
+            "local": {
+                "wall_seconds": time.monotonic()
+                - config.stash.get(_PROFILE_START, time.monotonic()),
+                "top_phases": _top_phase_records(config),
+            }
+        }
+    profile = {
+        "schema_version": 1,
+        "workers": workers,
+        "phase_totals": config.stash.get(_WORKER_PHASE_TIMINGS, {}),
+        "engine_pool": config.stash.get(_ENGINE_POOL_WORKER_TIMING_DATA, {}),
+    }
+    destination = Path(profile_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(profile, indent=2, sort_keys=True))
 
 
 def pytest_configure(config: pytest.Config):

@@ -309,6 +309,16 @@ constexpr uint32_t level_prepass_skip_shadow = 0x10000;
 // prefix. The map costs 4 B per *valid* value; the bitmask costs 0.25 B per value and
 // is therefore smaller than the definition levels it replaces at every null rate.
 constexpr uint32_t level_prepass_bitmask_map = 0x20000;
+// Run the DELTA_LENGTH_BYTE_ARRAY prepass consumer warp-synchronously: the warp that
+// decodes a delta pass also writes that pass's offsets, so the value loop carries no
+// block barrier at all. Only reachable because the prepass already materialized the
+// rank->position map; the legacy kernel's writer must wait on an in-kernel level walk.
+constexpr uint32_t level_prepass_warp_fused = 0x40000;
+// Shrink the warp-fused consumer's block so a page occupies (almost) exactly the warp that
+// decodes it, rather than reserving four warps of which three never run the value loop.
+// Page-level parallelism per SM then rises to the thread/shared limit instead of being
+// capped by the idle warps. Requires level_prepass_warp_fused.
+constexpr uint32_t level_prepass_warp_narrow = 0x80000;
 
 /**
  * @brief Bytes needed for one page's flat prepass bitmask slice.
@@ -333,7 +343,7 @@ CUDF_HOST_DEVICE constexpr size_t flat_prepass_bitmask_bytes(int num_input_value
 {
   return 2 * flat_prepass_bitmask_words(num_input_values) * sizeof(uint32_t);
 }
-constexpr uint32_t level_prepass_probe_mask = 0x3fe00;
+constexpr uint32_t level_prepass_probe_mask = 0xffe00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -1263,6 +1273,11 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
  * @param[out] initial_str_offsets Vector to store the initial offsets for large nested string cols
  * @param[out] error_code Error code for kernel failures
  * @param[in] stream CUDA stream to use
+ * @param[in] use_flat_prepass Route flat pages through the prepass consumer
+ * @param[in] use_nested_prepass Route nested pages through the prepass consumer
+ * @param[in] use_list_prepass Route list pages through the prepass consumer
+ * @param[in] use_warp_fused Run the prepass consumer's value loop warp-synchronously
+ * @param[in] use_warp_narrow Give the warp-fused consumer a single-warp block
  */
 void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                                     cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
@@ -1275,7 +1290,9 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     cuda::stream_ref stream,
                                     bool use_flat_prepass   = false,
                                     bool use_nested_prepass = false,
-                                    bool use_list_prepass   = false);
+                                    bool use_list_prepass   = false,
+                                    bool use_warp_fused     = false,
+                                    bool use_warp_narrow    = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

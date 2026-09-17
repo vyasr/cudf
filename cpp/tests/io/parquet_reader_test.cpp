@@ -116,8 +116,14 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
     EXPECT_EQ(level_prepass_mode_from_environment(), 0x30000);
   }
   {
-    // The first value above the selector mask is rejected.
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x40000"};
+    // The warp-fused consumer probes, which sit above the bitmask bit.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0xc0000"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0xc0000);
+  }
+  {
+    // The first value above the selector mask is rejected. Spelled as a literal rather
+    // than derived from the mask so that widening the probe range has to be deliberate.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x100000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
   {

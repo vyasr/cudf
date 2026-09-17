@@ -290,21 +290,28 @@ constexpr uint32_t level_prepass_family_mask = 0x1ff;
 
 // Families enabled when the environment does not override, chosen from the measured sign of each
 // family against the legacy decoder rather than from which families happen to be implemented.
-// On sm_70, 512 MiB, median of 3 order-balanced repetitions, as prepass/legacy at 1 / 50 / 90
-// percent nulls:
+// On sm_70, 512 MiB, as the median of per-repetition prepass/legacy ratios over 3 order-balanced
+// repetitions, at 1 / 50 / 90 percent nulls:
 //
-//   DELTA_FLAT    1.01-1.09 / 0.21-0.29 / 0.30-0.33   on
-//   DELTA_LIST    0.70-0.93 / 0.03-0.11 / 0.15        on
-//   GENERIC_FLAT  1.01-1.02 / 1.03-1.12 / 0.98-1.05   off, regresses
-//   GENERIC_NESTED     1.02 /      1.01 /      1.04   off, regresses
-//   GENERIC_LIST       1.11 /      0.91 /      1.01   off, regresses at low null rates
+//   DELTA_FLAT    1.01-1.09 / 0.21-0.29 / 0.30-0.33   on,  decisive win once nulls are common
+//   DELTA_LIST    0.70-0.93 / 0.03-0.11 / 0.15        on,  win everywhere measured
+//   GENERIC_FLAT  0.99-1.02 / 1.05-1.07 / 0.98-1.05   off, no win, probable loss
+//   GENERIC_NESTED     1.05 /      1.01 /      1.06   off, no win, probable loss
+//   GENERIC_LIST       1.11 /      0.91 /      1.01   off, clear loss at low null rates
 //   DELTA_NESTED          - /         - /         -   off, no benchmark reaches it
 //   LEGACY_*              - /         - /         -   off, no benchmark reaches it
+//
+// Only GENERIC_LIST at a low null rate is comfortably outside the noise; the other generic cells
+// sit within a few points of parity, which is the resolution of three repetitions on that host.
+// They are off because nothing measures a win, not because a large loss is established.
 //
 // The two families held off for lack of evidence are not known to be slow; nothing measures them.
 // DELTA_NESTED needs a struct-of-delta column (the delta benchmarks' `nesting` axis builds LISTs,
 // so it exercises DELTA_LIST), and LEGACY_* needs a BYTE_STREAM_SPLIT benchmark, which does not
 // exist anywhere in cpp/benchmarks.
+//
+// A page whose family is off is parity with the legacy decoder by construction, and measures that
+// way: 1.00 +/- 0.005 across all three null rates on a generic-only file.
 //
 // This gate does not make the aggregate non-negative on its own: both enabled families still cost
 // up to 9% on pages with very few nulls, where the prepass builds a map that saves almost nothing.

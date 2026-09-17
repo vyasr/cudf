@@ -1387,7 +1387,8 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 template <bool use_nested_prepass_t,
           bool use_list_prepass_t = false,
           bool use_warp_fused_t   = false,
-          int block_size_t        = decode_block_size>
+          int block_size_t        = decode_block_size,
+          bool use_warp_wide_t    = false>
 CUDF_KERNEL void __launch_bounds__(block_size_t)
   decode_delta_length_byte_array_kernel_flat_prepass(PageInfo* pages,
                                                      device_span<ColumnChunkDesc const> chunks,
@@ -1399,8 +1400,17 @@ CUDF_KERNEL void __launch_bounds__(block_size_t)
 {
   // The split producer/consumer loop below places the delta decode on warp 1 and the
   // offset writes on warp 2, so it cannot run in a block that has fewer warps than that.
-  static_assert(use_warp_fused_t || block_size_t >= 3 * cudf::detail::warp_size,
+  static_assert(use_warp_fused_t || use_warp_wide_t || block_size_t >= 3 * cudf::detail::warp_size,
                 "the non-fused value loop needs warps 0 through 2");
+  static_assert(!(use_warp_fused_t && use_warp_wide_t),
+                "warp-fused and block-wide are alternative consumer strategies, not a combination");
+  // The block-wide loop gives one warp to each pass of a DELTA block, so a single-warp block has
+  // nothing to parallelise and its fallback (the fused loop) is what would run anyway.
+  static_assert(!use_warp_wide_t || block_size_t >= 2 * cudf::detail::warp_size,
+                "the block-wide value loop needs at least two warps");
+  static_assert(
+    !use_warp_wide_t || block_size_t / cudf::detail::warp_size <= delta_max_decode_warps,
+    "delta_max_decode_warps bounds the block-wide loop's warp count");
 
   __shared__ __align__(16) delta_binary_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
@@ -1510,13 +1520,46 @@ CUDF_KERNEL void __launch_bounds__(block_size_t)
   }
 
   [[maybe_unused]] int string_pos = has_repetition ? s->setup.page.start_val : 0;
-  if constexpr (use_warp_fused_t) {
-    // Warp-synchronous consumer. Because the prepass already materialized the
-    // rank->position map in global memory, the writer's position input no longer depends
-    // on any warp in this block, leaving only the delta decode's own serial chain. Folding
-    // the write into the decoding warp therefore removes every block barrier from the value
-    // loop; the other warps drop straight to the epilogue barrier instead of round-tripping
-    // through barriers they cannot help with.
+  // The block-wide value loop needs every pass of a DELTA block addressable without a serial
+  // header walk, and needs the consumer's stream index to equal the decoder's. The latter holds
+  // only when `skipped_leaf_values` is zero, which is guaranteed for pages without repetition
+  // levels. Anything else falls through to the warp-fused loop below.
+  bool const use_wide_loop =
+    use_warp_wide_t && !has_repetition && db->block_size >= static_cast<uleb128_t>(block_size_t);
+  if constexpr (use_warp_wide_t) {
+    if (use_wide_loop) {
+      constexpr int num_warps = block_size_t / cudf::detail::warp_size;
+      auto* const offptr =
+        reinterpret_cast<size_type*>(nesting_info_base[leaf_level_index].data_out);
+      auto const idx_end     = static_cast<uint32_t>(s->progress.nz_count);
+      auto const write_value = [&](uint32_t idx, zigzag128_t val) {
+        int dst_pos = process_nulls ? static_cast<int>(prepass_nz_idx[idx]) : static_cast<int>(idx);
+        dst_pos -= s->setup.first_row;
+        if (dst_pos >= 0) { offptr[dst_pos] = val; }
+      };
+
+      // Stream index 0 is the block header's first value and belongs to no pass.
+      if (block.thread_rank() == 0 && idx_end > 0) { write_value(0, db->value_at(0)); }
+
+      // Values are consumed in the iteration that produces them, so they never touch the
+      // rolling buffer and the loop does no shared-memory traffic at all.
+      zigzag128_t val{};
+      uint32_t idx{}, produced{};
+      while (!s->setup.error && db->next_pass_start_idx() < idx_end) {
+        if (!db->decode_next_passes_wide<num_warps>(block, warp, val, idx, produced)) { break; }
+        if (idx < idx_end) { write_value(idx, val); }
+      }
+      if (block.thread_rank() == 0) { s->progress.src_pos = idx_end; }
+      block.sync();
+    }
+  }
+  // Warp-synchronous consumer. Because the prepass already materialized the rank->position map in
+  // global memory, the writer's position input no longer depends on any warp in this block,
+  // leaving only the delta decode's own serial chain. Folding the write into the decoding warp
+  // therefore removes every block barrier from the value loop; the other warps drop straight to
+  // the epilogue barrier instead of round-tripping through barriers they cannot help with.
+  // Also serves as the fallback for pages the block-wide loop above cannot take.
+  [[maybe_unused]] auto const run_fused_loop = [&] {
     if (warp.meta_group_rank() == 0) {
       while (!s->setup.error && s->progress.src_pos < s->progress.nz_count) {
         uint32_t const src_pos    = s->progress.src_pos;
@@ -1546,6 +1589,12 @@ CUDF_KERNEL void __launch_bounds__(block_size_t)
       }
     }
     block.sync();
+  };
+
+  if constexpr (use_warp_wide_t) {
+    if (!use_wide_loop) { run_fused_loop(); }
+  } else if constexpr (use_warp_fused_t) {
+    run_fused_loop();
   } else {
     while (!s->setup.error && s->progress.src_pos < s->progress.nz_count) {
       uint32_t const src_pos    = s->progress.src_pos;
@@ -1788,7 +1837,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     bool use_nested_prepass,
                                     bool use_list_prepass,
                                     bool use_warp_fused,
-                                    bool use_warp_narrow)
+                                    bool use_warp_narrow,
+                                    bool use_warp_wide)
 {
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
@@ -1808,7 +1858,16 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
     // a 64-thread block is register-limited to 18 blocks/SM at this kernel's occupancy,
     // whereas 32 threads reaches the 32-block hardware cap.
     constexpr int narrow_block_size = cudf::detail::warp_size;
-    if (use_warp_fused && use_warp_narrow) {
+    // The block-wide loop needs every warp of a full-width block, so it wins over `warp_narrow`,
+    // whose single-warp block has nothing for it to parallelise.
+    if (use_warp_wide) {
+      args(decode_delta_length_byte_array_kernel_flat_prepass<nested_t,
+                                                              list_t,
+                                                              false,
+                                                              decode_block_size,
+                                                              true>,
+           decode_block_size);
+    } else if (use_warp_fused && use_warp_narrow) {
       args(decode_delta_length_byte_array_kernel_flat_prepass<nested_t,
                                                               list_t,
                                                               true,

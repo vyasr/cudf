@@ -417,7 +417,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                    (_level_prepass_mode & level_prepass_delta_nested) != 0,
                                    (_level_prepass_mode & level_prepass_delta_list) != 0,
                                    (_level_prepass_mode & level_prepass_warp_fused) != 0,
-                                   (_level_prepass_mode & level_prepass_warp_narrow) != 0);
+                                   (_level_prepass_mode & level_prepass_warp_narrow) != 0,
+                                   (_level_prepass_mode & level_prepass_warp_wide) != 0);
   }
 
   // launch delta binary decoder

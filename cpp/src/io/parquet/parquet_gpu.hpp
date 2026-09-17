@@ -319,6 +319,11 @@ constexpr uint32_t level_prepass_warp_fused = 0x40000;
 // Page-level parallelism per SM then rises to the thread/shared limit instead of being
 // capped by the idle warps. Requires level_prepass_warp_fused.
 constexpr uint32_t level_prepass_warp_narrow = 0x80000;
+// Give each warp of the consumer's block one pass of the current DELTA block, so the value loop
+// decodes num_warps * warp_size values per iteration instead of warp_size. Unlike the narrow
+// block this keeps the epilogue at full block width. Mutually exclusive with
+// level_prepass_warp_fused and level_prepass_warp_narrow.
+constexpr uint32_t level_prepass_warp_wide = 0x100000;
 
 /**
  * @brief Bytes needed for one page's flat prepass bitmask slice.
@@ -343,7 +348,7 @@ CUDF_HOST_DEVICE constexpr size_t flat_prepass_bitmask_bytes(int num_input_value
 {
   return 2 * flat_prepass_bitmask_words(num_input_values) * sizeof(uint32_t);
 }
-constexpr uint32_t level_prepass_probe_mask = 0xffe00;
+constexpr uint32_t level_prepass_probe_mask = 0x1ffe00;
 
 constexpr uint32_t level_prepass_selector_mask =
   level_prepass_family_mask | level_prepass_probe_mask;
@@ -1278,6 +1283,7 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
  * @param[in] use_list_prepass Route list pages through the prepass consumer
  * @param[in] use_warp_fused Run the prepass consumer's value loop warp-synchronously
  * @param[in] use_warp_narrow Give the warp-fused consumer a single-warp block
+ * @param[in] use_warp_wide Decode one DELTA pass per warp in the consumer's value loop
  */
 void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                                     cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
@@ -1292,7 +1298,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     bool use_nested_prepass = false,
                                     bool use_list_prepass   = false,
                                     bool use_warp_fused     = false,
-                                    bool use_warp_narrow    = false);
+                                    bool use_warp_narrow    = false,
+                                    bool use_warp_wide      = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

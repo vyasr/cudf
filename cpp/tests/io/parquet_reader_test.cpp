@@ -121,9 +121,14 @@ TEST_F(ParquetReaderTest, LevelPrepassSelectorParsesInternalBitmask)
     EXPECT_EQ(level_prepass_mode_from_environment(), 0xc0000);
   }
   {
+    // The block-wide value loop probe.
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x100000"};
+    EXPECT_EQ(level_prepass_mode_from_environment(), 0x100000);
+  }
+  {
     // The first value above the selector mask is rejected. Spelled as a literal rather
     // than derived from the mask so that widening the probe range has to be deliberate.
-    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x100000"};
+    tmp_env_var const selector{"LIBCUDF_PARQUET_LEVEL_PREPASS", "0x200000"};
     EXPECT_EQ(level_prepass_mode_from_environment(), 0);
   }
   {
@@ -1812,6 +1817,62 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeMiniBlockSkipRows)
   auto const s96 = delta_test_strings(141, false);
   delta_large_mini_block_string_read_test(
     build_delta_length_byte_array_parquet(s96, 384, 4), s96, 40, 60);
+}
+
+// The block shapes below target the block-wide value loop (level_prepass_warp_wide), which hands
+// one DELTA pass to each warp and so must get the per-pass byte address, the mini-block roll and
+// the block-boundary cap right for geometries the in-repo writer never emits (it writes 128/4).
+// They pass on every selector; run them under 0x1001ff to exercise the loop they are aimed at.
+
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideBlockBoundary)
+{
+  // block_size=128, mini_block_count=4 -> exactly one 4-warp call per block. n = 129 puts the
+  // last value alone in a new block, n = 130 one past that, and n = 257 lands the block boundary
+  // exactly on the call boundary.
+  for (auto const n : {129, 130, 257}) {
+    auto const strings = delta_test_strings(n, false);
+    delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 128, 4),
+                                            strings);
+  }
+}
+
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideTwoMiniBlocks)
+{
+  // block_size=256, mini_block_count=2 -> 128 values/mini-block, 4 passes each. Nothing else
+  // covers mini_block_count == 2, where a 4-warp call sits wholly inside one mini-block and the
+  // next call starts at a nonzero bitwidth-prefix offset.
+  auto const strings = delta_test_strings(333, false);
+  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 256, 2),
+                                          strings);
+}
+
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideManyPassesPerBlock)
+{
+  // block_size=512, mini_block_count=4 -> 16 passes per block, so four 4-warp calls per block and
+  // three mini-block rolls between them. Catches cur_pass not carrying across calls.
+  auto const strings = delta_test_strings(600, false);
+  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 512, 4),
+                                          strings);
+}
+
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideUnalignedPassCount)
+{
+  // block_size=384 -> 12 passes per block, which is not a multiple of four, so the third call of
+  // every block is capped to fewer than num_warps active warps. n = 385 additionally ends the
+  // page one value into a fresh block.
+  auto const strings = delta_test_strings(385, false);
+  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 384, 4),
+                                          strings);
+}
+
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideSkipMidBlock)
+{
+  // A leading skip re-inits the flat decoder and re-decodes from index 0, so the wide loop still
+  // starts block-aligned; this pins that behaviour for a single-mini-block geometry.
+  auto const strings = delta_test_strings(301, false);
+  auto const file    = build_delta_length_byte_array_parquet(strings, 256, 1);
+  delta_large_mini_block_string_read_test(file, strings, 70);
+  delta_large_mini_block_string_read_test(file, strings, 70, 90);
 }
 
 TEST_F(ParquetReaderTest, DeltaBinaryListMiniBlock64)

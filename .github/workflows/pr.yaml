@@ -684,7 +684,7 @@ jobs:
       matrix_filter: map(select(.ARCH == "amd64" and .CUDA_VER == "12.9.2" and .PY_VER == "3.14" and .GPU == "h100"))
       build_type: pull-request
       container-options: "--cap-add CAP_SYS_PTRACE --shm-size=8g --ulimit=nofile=1000000:1000000"
-      script: "env CI_PROFILE=true CUDF_POLARS_ENGINE_POOL_SKIP_RESET=1 POLARS_VERSIONS=endpoints ci/test_wheel_cudf_polars.sh"
+      script: "env CI_PROFILE=true POLARS_VERSIONS=endpoints ci/test_wheel_cudf_polars.sh"
   cudf-polars-polars-tests:
     needs: [wheel-build, wheel-python-build-noarch, changed-files]
     strategy:

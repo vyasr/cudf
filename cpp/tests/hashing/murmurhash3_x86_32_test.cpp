@@ -11,6 +11,11 @@
 
 #include <cudf/hashing.hpp>
 
+#include <cstdlib>
+#include <memory>
+#include <optional>
+#include <string>
+
 constexpr cudf::test::debug_output_level verbosity{cudf::test::debug_output_level::ALL_ERRORS};
 
 class MurmurHashTest : public cudf::test::BaseFixture {};
@@ -469,6 +474,81 @@ TEST_F(MurmurHashTest, ZeroColumns)
   auto const output = cudf::hashing::murmurhash3_x86_32(input, 42);
   cudf::test::fixed_width_column_wrapper<uint32_t> const expected({42, 42, 42, 42, 42});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(output->view(), expected);
+}
+
+namespace {
+
+class scoped_rtcx_murmurhash_opt_in {
+ public:
+  explicit scoped_rtcx_murmurhash_opt_in(bool enabled)
+  {
+    auto const* previous = std::getenv("LIBCUDF_MURMURHASH3_RTCX_ENABLED");
+    if (previous != nullptr) { previous_ = previous; }
+    setenv("LIBCUDF_MURMURHASH3_RTCX_ENABLED", enabled ? "ON" : "OFF", 1);
+  }
+
+  ~scoped_rtcx_murmurhash_opt_in()
+  {
+    if (previous_.has_value()) {
+      setenv("LIBCUDF_MURMURHASH3_RTCX_ENABLED", previous_->c_str(), 1);
+    } else {
+      unsetenv("LIBCUDF_MURMURHASH3_RTCX_ENABLED");
+    }
+  }
+
+ private:
+  std::optional<std::string> previous_;
+};
+
+}  // namespace
+
+TEST_F(MurmurHashTest, RTCXInt32MatchesCUBAndReusesPlan)
+{
+  cudf::test::fixed_width_column_wrapper<int32_t> const first{{0, -1, 11, 42},
+                                                              {true, false, true, true}};
+  cudf::test::fixed_width_column_wrapper<int32_t> const second{{9, 8, 7, 6},
+                                                               {true, true, false, true}};
+  auto const input = cudf::table_view{{first, second}};
+
+  std::unique_ptr<cudf::column> cub_result;
+  {
+    scoped_rtcx_murmurhash_opt_in opt_in{false};
+    cub_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  }
+  scoped_rtcx_murmurhash_opt_in opt_in{true};
+  auto const rtcx_result      = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  auto const rtcx_warm_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), rtcx_result->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(rtcx_result->view(), rtcx_warm_result->view());
+}
+
+TEST_F(MurmurHashTest, RTCXOptInFallsBackForUnsupportedSchemas)
+{
+  cudf::test::fixed_width_column_wrapper<float> const floats{1.0F, 2.0F, 3.0F};
+  cudf::test::strings_column_wrapper const strings{"one", "two", "three"};
+  using lists = cudf::test::lists_column_wrapper<int32_t>;
+  lists const nested{{1}, {2, 3}, {4}};
+  cudf::test::fixed_width_column_wrapper<int32_t> struct_child{4, 5, 6};
+  cudf::test::structs_column_wrapper const structs({struct_child}, {});
+  cudf::test::dictionary_column_wrapper<int32_t> const dictionary{7, 8, 7};
+  auto const empty = cudf::table_view{std::vector<cudf::column_view>{}, 3};
+
+  auto const verify_fallback = [](cudf::table_view const& input) {
+    scoped_rtcx_murmurhash_opt_in disabled{false};
+    auto const cub_result = cudf::hashing::murmurhash3_x86_32(input, 91);
+    scoped_rtcx_murmurhash_opt_in enabled{true};
+    auto const selected_result = cudf::hashing::murmurhash3_x86_32(input, 91);
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), selected_result->view());
+  };
+
+  verify_fallback(cudf::table_view{{floats}});
+  verify_fallback(cudf::table_view{{strings}});
+  verify_fallback(cudf::table_view{{nested}});
+  verify_fallback(cudf::table_view{{structs}});
+  verify_fallback(cudf::table_view{{dictionary}});
+  verify_fallback(cudf::table_view{{floats, strings}});
+  verify_fallback(empty);
 }
 
 CUDF_TEST_PROGRAM_MAIN()

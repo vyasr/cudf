@@ -201,6 +201,10 @@ if(NOT CUDF_LTO_ARCHITECTURE MATCHES "^[0-9]+$")
 endif()
 message(VERBOSE "CUDF: Using ${CUDF_LTO_ARCHITECTURE} as the common LTO architecture")
 
+option(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+       "Build the internal RTCX MurmurHash3 INT32 prototype" OFF
+)
+
 # For now, disable CMake's automatic module scanning for C++ files. There is an sccache bug in the
 # version RAPIDS uses in CI that causes it to handle the resulting -M* flags incorrectly with
 # gcc>=14. We can remove this once we upgrade to a newer sccache version.
@@ -646,6 +650,65 @@ precompile_string_kernel_fragments()
 
 rtcx_embed(cudf_fragments COMPRESSION none OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/embed")
 
+set(cudf_murmurhash3_rtcx_sources)
+if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+  include("${rtcx_SOURCE_DIR}/cmake/modules/generate_jit_lto_kernels.cmake")
+
+  add_library(cudf_murmurhash3_rtcx_kernel_requirements INTERFACE)
+  target_include_directories(
+    cudf_murmurhash3_rtcx_kernel_requirements INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+                                                        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+  )
+  target_compile_options(
+    cudf_murmurhash3_rtcx_kernel_requirements
+    INTERFACE "$<$<COMPILE_LANGUAGE:CXX>:${CUDF_CXX_FLAGS}>"
+              "$<$<COMPILE_LANGUAGE:CUDA>:${CUDF_CUDA_FLAGS}>"
+  )
+  target_compile_features(cudf_murmurhash3_rtcx_kernel_requirements INTERFACE cuda_std_20)
+  target_link_libraries(
+    cudf_murmurhash3_rtcx_kernel_requirements INTERFACE CCCL::CCCL rmm::rmm rtcx::rtcx
+                                                        $<BUILD_LOCAL_INTERFACE:cuco::cuco>
+  )
+
+  block(PROPAGATE cudf_murmurhash3_rtcx_sources)
+  set(CMAKE_CUDA_ARCHITECTURES "${CUDF_LTO_ARCHITECTURE}-real")
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
+    "murmurhash3_rtcx_entry_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"int32\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_entry.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_entry_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/entry"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
+    "murmurhash3_rtcx_hasher_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"int32\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_int32.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_hasher_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/hasher"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  endblock()
+endif()
+
 # ##################################################################################################
 # * library targets -------------------------------------------------------------------------------
 add_library(
@@ -792,6 +855,8 @@ add_library(
   src/groupby/streaming_groupby/merge.cu
   src/hash/md5_hash.cu
   src/hash/murmurhash3_x86_32.cu
+  $<$<BOOL:${CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT}>:src/hash/murmurhash3_x86_32_rtcx.cpp>
+  ${cudf_murmurhash3_rtcx_sources}
   src/hash/murmurhash3_x64_128.cu
   src/hash/spark_murmurhash3_x86_32.cu
   src/hash/sha1_hash.cu
@@ -1233,6 +1298,9 @@ add_library(
 )
 
 add_dependencies(cudf cudf_cuda_embed cudf_fragments)
+if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+  target_compile_definitions(cudf PRIVATE CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+endif()
 
 set_property(
   SOURCE src/io/parquet/writer_impl.cu

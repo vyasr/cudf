@@ -4,6 +4,10 @@
  */
 #include "murmurhash3_x86_32.cuh"
 
+#ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+#include "murmurhash3_x86_32_rtcx.hpp"
+#endif
+
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -67,6 +71,11 @@ std::unique_ptr<column> murmurhash3_x86_32(table_view const& input,
                                            cuda::stream_ref stream,
                                            rmm::device_async_resource_ref mr)
 {
+#ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+  if (murmurhash3_x86_32_rtcx_enabled(input)) {
+    return murmurhash3_x86_32_rtcx(input, seed, stream, mr);
+  }
+#endif
   auto const preprocessed_input = cudf::detail::row::hash::preprocessed_table::create(
     input, stream, cudf::get_current_device_resource_ref());
   return murmurhash3_x86_32_impl(

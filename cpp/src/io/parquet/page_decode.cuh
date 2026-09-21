@@ -1495,6 +1495,15 @@ __device__ void zero_fill_null_positions_shared(
   using cudf::detail::warp_size;
   constexpr int num_warps = block_size / warp_size;
 
+  // The sparse path's work split assumes at least two warps. Phase 1 hands the last validity word
+  // to warp 1, and phase 2 stops one word short on the strength of that; with a single warp there
+  // is no warp 1, so the last word is claimed by neither phase and its nulls are silently left
+  // un-zeroed. Every caller is 128 threads today, so this only guards the future -- but it is the
+  // kind of gap that surfaces as wrong data rather than a crash, so fail at compile time instead.
+  static_assert(num_warps >= 2,
+                "zero_fill_null_positions_shared leaves the last validity word unprocessed with a "
+                "single warp; see the phase 1/2 split below");
+
   // Calculate the range of validity blocks we need to process
   int const start_bit_idx = valid_map_offset;
   int const end_bit_idx   = valid_map_offset + num_values;

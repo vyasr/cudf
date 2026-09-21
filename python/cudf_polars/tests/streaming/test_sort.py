@@ -65,9 +65,7 @@ def large_frames():
     nrows = 4_201
     x = [1.0] * nrows
     x[-1] = float("nan")
-    y = (
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * ((nrows + 9) // 10)
-    )[:nrows]
+    y = ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] * ((nrows + 9) // 10))[:nrows]
 
     yield pytest.param(
         pl.LazyFrame(

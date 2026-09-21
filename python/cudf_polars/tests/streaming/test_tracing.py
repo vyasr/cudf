@@ -279,12 +279,42 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
     pytest.importorskip("structlog")
     cases = [
         ("bloom", False, 1, 32 * 1024 * 1024, "shuffle", "bloom", "bloom_fits", 1, 10),
-        ("exact", False, 64, 0, "shuffle", "broadcast_semi_join", "exact_domain_fits", 1, 10),
-        ("broadcast-skip", False, 1_000_000, 32 * 1024 * 1024, "broadcast_left", "skip", "target_not_redistributed", 1, None),
+        (
+            "exact",
+            False,
+            64,
+            0,
+            "shuffle",
+            "broadcast_semi_join",
+            "exact_domain_fits",
+            1,
+            10,
+        ),
+        (
+            "broadcast-skip",
+            False,
+            1_000_000,
+            32 * 1024 * 1024,
+            "broadcast_left",
+            "skip",
+            "target_not_redistributed",
+            1,
+            None,
+        ),
     ]
     if not POLARS_VERSION_LT_138:
         cases.append(
-            ("ordered-skip", True, 1, 32 * 1024 * 1024, "ordered_aligned", "skip", "target_not_redistributed", None, None)
+            (
+                "ordered-skip",
+                True,
+                1,
+                32 * 1024 * 1024,
+                "ordered_aligned",
+                "skip",
+                "target_not_redistributed",
+                None,
+                None,
+            )
         )
 
     domain_path = tmp_path / "domain.parquet"
@@ -353,12 +383,25 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
         if line.startswith(b"PREFILTER_TRACE=")
     )
     records = json.loads(payload)
-    for case_id, _, _, _, join_strategy, method, reason, domain_rows, output_rows in cases:
+    for (
+        case_id,
+        _,
+        _,
+        _,
+        join_strategy,
+        method,
+        reason,
+        domain_rows,
+        output_rows,
+    ) in cases:
         record = records[case_id]
         assert record["result_rows"] == 10
         assert record["join_strategy"] == join_strategy
         expected_prefilter: dict[str, str | int] = {
-            "target_side": "right", "domain_side": "left", "method": method, "reason": reason
+            "target_side": "right",
+            "domain_side": "left",
+            "method": method,
+            "reason": reason,
         }
         if domain_rows is not None:
             expected_prefilter["domain_rows"] = domain_rows
@@ -424,9 +467,15 @@ def test_standalone_prefilter_trace_records_decision_and_effect(
         record = records[case_id]
         assert record["result_rows"] == 20
         assert record["decision"] == method
-        assert record["prefilter"].items() >= {
-            "placement": "standalone", "method": method, "reason": reason, "domain_rows": 2,
-        }.items()
+        assert (
+            record["prefilter"].items()
+            >= {
+                "placement": "standalone",
+                "method": method,
+                "reason": reason,
+                "domain_rows": 2,
+            }.items()
+        )
         if output_rows is None:
             assert "input_rows" not in record["prefilter"]
             assert "output_rows" not in record["prefilter"]
@@ -444,7 +493,14 @@ def test_indirect_prefilter_trace_records_decision_and_effect(
     cases = [
         ("bloom", 1, 32 * 1024 * 1024, "bloom", "bloom_fits", 15),
         ("exact", 512, 0, "broadcast_semi_join", "exact_domain_fits", 15),
-        ("bloom_despite_intervening_broadcast", 1_000_000, 32 * 1024 * 1024, "bloom", "bloom_fits", 15),
+        (
+            "bloom_despite_intervening_broadcast",
+            1_000_000,
+            32 * 1024 * 1024,
+            "bloom",
+            "bloom_fits",
+            15,
+        ),
     ]
     code = textwrap.dedent(f"""\
     import json
@@ -491,9 +547,15 @@ def test_indirect_prefilter_trace_records_decision_and_effect(
         record = records[case_id]
         assert record["result_rows"] == 45
         assert record["prefilter"]["target_on"] == ["l_suppkey"]
-        assert record["prefilter"].items() >= {
-            "placement": "standalone", "method": method, "reason": reason, "domain_rows": domain_rows,
-        }.items()
+        assert (
+            record["prefilter"].items()
+            >= {
+                "placement": "standalone",
+                "method": method,
+                "reason": reason,
+                "domain_rows": domain_rows,
+            }.items()
+        )
         assert record["prefilter"]["estimated_cardinality"] == domain_rows
         assert record["prefilter"]["input_rows"] == 180
         if method == "broadcast_semi_join":

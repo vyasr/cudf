@@ -1517,7 +1517,7 @@ __device__ void zero_fill_null_positions_shared(
   // For comparison, a sweep of possible hardcode crossover values on an H100 produced at most a 2%
   // improvement over this heuristic.
 
-  // This is the dense path.
+  // This is the dense path: one value per thread and one loop iteration per block of values.
   // Cast to int64 because a large page can push num_values * dtype_len past INT32_MAX.
   if (static_cast<int64_t>(ni.null_count) * dtype_len * 2 > static_cast<int64_t>(num_values)) {
     for (int i = t; i < num_values; i += block_size) {
@@ -1529,8 +1529,9 @@ __device__ void zero_fill_null_positions_shared(
     return;
   }
 
-  // Everything below is the sparse path: one whole validity word per thread and one loop iteration
-  // per null. A word with no nulls costs a load and nothing else.
+  // This is the sparse path: one whole validity word per thread with two nested loops, the outer
+  // being per block of validity words, and the inner loop being one iteration per null value within
+  // the validity word. A word with no nulls costs a load and nothing else in the inner loop.
   for (int block_idx = start_block + t; block_idx < end_block; block_idx += block_size) {
     cudf::bitmask_type null_positions = ~ni.valid_map[block_idx];
     int const block_start_bit         = block_idx * bits_per_mask;

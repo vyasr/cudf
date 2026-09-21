@@ -1531,7 +1531,7 @@ __device__ void zero_fill_null_positions_shared(
 
   // Everything below is the sparse path: one whole validity word per thread and one loop iteration
   // per null. A word with no nulls costs a load and nothing else.
-  auto process_block = [&](int block_idx) {
+  for (int block_idx = start_block + t; block_idx < end_block; block_idx += block_size) {
     cudf::bitmask_type null_positions = ~ni.valid_map[block_idx];
     int const block_start_bit         = block_idx * bits_per_mask;
 
@@ -1562,10 +1562,6 @@ __device__ void zero_fill_null_positions_shared(
 
       null_positions &= (null_positions - 1);
     }
-  };
-
-  for (int block_idx = start_block + t; block_idx < end_block; block_idx += block_size) {
-    process_block(block_idx);
   }
 
   __syncthreads();

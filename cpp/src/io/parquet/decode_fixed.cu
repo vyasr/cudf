@@ -379,6 +379,12 @@ __device__ int skip_validity_and_row_indices_nonlist(
 
     value_count += batch_size;
     max_depth_valid_count += block_valid_count;
+
+    // `scan_storage` is a single shared allocation that is reused by the next iteration of this
+    // loop. CUB requires a barrier between the last read of a collective's TempStorage and its
+    // reuse, otherwise a thread racing ahead into the next iteration can clobber the scan that
+    // slower threads are still reading. Do not remove.
+    __syncthreads();
   }  // end loop
 
   return max_depth_valid_count;
@@ -488,6 +494,14 @@ __device__ int update_validity_and_row_indices_nested(
         max_depth_valid_count += block_valid_count;
       }
 
+      // `scan_storage` is a single shared allocation that is reused by the next iteration of the
+      // depth loop (and by the next iteration of the enclosing value loop). CUB requires a barrier
+      // between the last read of a collective's TempStorage and its reuse, otherwise a thread
+      // racing ahead into the next iteration can clobber the scan that slower threads are still
+      // reading, silently corrupting the validity bits and valid counts of nested columns.
+      // Placing the barrier at the end of the depth loop body also covers the value-loop back
+      // edge, since the depth loop always executes at least once. Do not remove.
+      __syncthreads();
     }  // end depth loop
 
     value_count += block_value_count;
@@ -601,6 +615,12 @@ __device__ int update_validity_and_row_indices_flat(
     // update stuff
     value_count += block_value_count;
     valid_count += block_valid_count;
+
+    // `scan_storage` is a single shared allocation that is reused by the next iteration of this
+    // loop. CUB requires a barrier between the last read of a collective's TempStorage and its
+    // reuse, otherwise a thread racing ahead into the next iteration can clobber the scan that
+    // slower threads are still reading. Do not remove.
+    __syncthreads();
   }
 
   if (t == 0) {

@@ -1492,33 +1492,19 @@ __device__ void zero_fill_null_positions_shared(
   auto const data_out = ni.data_out;
 
   constexpr int bits_per_mask = cudf::detail::size_in_bits<bitmask_type>();
-  using cudf::detail::warp_size;
-  constexpr int num_warps = block_size / warp_size;
-
-  // The sparse path's work split assumes at least two warps. Phase 1 hands the last validity word
-  // to warp 1, and phase 2 stops one word short on the strength of that; with a single warp there
-  // is no warp 1, so the last word is claimed by neither phase and its nulls are silently left
-  // un-zeroed. Every caller is 128 threads today, so this only guards the future -- but it is the
-  // kind of gap that surfaces as wrong data rather than a crash, so fail at compile time instead.
-  static_assert(num_warps >= 2,
-                "zero_fill_null_positions_shared leaves the last validity word unprocessed with a "
-                "single warp; see the phase 1/2 split below");
 
   // Calculate the range of validity blocks we need to process
   auto const start_bit_idx = valid_map_offset;
   auto const end_bit_idx   = valid_map_offset + num_values;
   auto const start_block   = start_bit_idx / bits_per_mask;
   auto const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
-  auto const num_blocks    = end_block - start_block;
 
   // The optimal distribution of work across threads depends on the sparsity of nulls:
   // - When nulls are sparse, each thread is assigned a single validity word because there are few
   //   write instructions to issue and so optimizing instruction throughput is the key. That work is
-  //   almost all done in `process_block_sequential`. Since the first and last validity words can
-  //   hold bits outside the range `[start_bit_idx, end_bit_idx)`, processing those validity words
-  //   needs additional range checking, which is encapsulated by `process_block_parallel`. In case
-  //   the kernel's block size encompasses more than two warps, additional warps process additional
-  //   validity words from the middle of the validity bitmask as well to avoid idle cycles.
+  //   all done in `process_block`. Since the first and last validity words can hold bits outside
+  //   the range `[start_bit_idx, end_bit_idx)`, those bits are masked out of the word before it is
+  //   walked, which keeps every word self-contained and the whole range a single flat loop.
   // - When nulls are dense, assigning a single thread to each validity word is problematic because
   //   most threads are writing and the writes are all in different memory sectors because each
   //   validity word corresponds to 32 values and so the writes are `32 values * dtype_len
@@ -1535,7 +1521,7 @@ __device__ void zero_fill_null_positions_shared(
   // before paying per value wins. The heuristic chosen is that the null fraction must be greater
   // than 0.5/dtype_len. This gives the desired inverse scaling with dtype_len while keeping the
   // constants simple and easy to reason about: for a single byte dtype, we need more than 50% nulls
-  // to justify the flip to the dense code path, but that drops to only 4% nulls for 8 byte dtypes.
+  // to justify the flip to the dense code path, but that drops to 6.25% nulls for 8 byte dtypes.
   // For comparison, a sweep of possible hardcode crossover values on an H100 produced at most a 2%
   // improvement over this heuristic.
 
@@ -1551,37 +1537,8 @@ __device__ void zero_fill_null_positions_shared(
     return;
   }
 
-  // Everything below is the sparse path.
-  int const warp_id = t / warp_size;
-  int const lane_id = warp.thread_rank();
-
-  // One lane per *bit* of a single validity word, so a warp covers 32 consecutive values and its
-  // stores coalesce exactly as the dense path's do. This is also the only variant that
-  // range-checks, which is what makes it mandatory -- not merely preferable -- for the first and
-  // last words; see the phase 1 comment below.
-  auto process_block_parallel = [&](int block_idx) {
-    static_assert(bits_per_mask == warp_size, "if 64bit mask, use 2 warps per mask");
-
-    cudf::bitmask_type validity_word = ni.valid_map[block_idx];
-    int const block_start_bit        = block_idx * bits_per_mask;
-
-    // Each thread in the warp processes one bit
-    int const bit_idx = block_start_bit + lane_id;
-    int const dst_pos = bit_idx - valid_map_offset;
-
-    // Check if this bit is within our range
-    bool in_range = (bit_idx >= start_bit_idx && bit_idx < end_bit_idx);
-
-    // Check if this bit is null (0 in validity mask)
-    bool const is_null = not cudf::bit_is_set(&validity_word, lane_id);
-
-    if (in_range && is_null) {
-      void* const dst = data_out + (static_cast<size_t>(dst_pos) * dtype_len);
-      cuda::std::memset(dst, 0, dtype_len);
-    }
-  };
-
-  // One whole validity word per *thread*, walked one null at a time.
+  // Everything below is the sparse path: one whole validity word per *thread*, walked one null at
+  // a time.
   //
   // The loop body is the standard iterate-over-set-bits idiom. `~validity_word` flips the sense of
   // the mask, where a set bit means valid, so that a set bit means null. `__ffs` returns the
@@ -1590,18 +1547,28 @@ __device__ void zero_fill_null_positions_shared(
   // therefore runs once per *null*, not once per value -- a word with no nulls costs a load and
   // nothing else, which is the whole reason this path exists for sparse data.
   //
-  // Only efficient there, though. Adjacent threads own adjacent words, so their stores are
-  // `bits_per_mask * dtype_len` bytes apart -- 128 B for 4-byte values -- putting every lane of a
-  // store in its own sector. That is what the dense branch above exists to avoid.
-  //
-  // Has no bounds check, and cannot easily be given one: `~` sets every bit outside the word's
-  // meaningful range, so a trailing partial word would report its unused high bits as nulls and
-  // write past `end_bit_idx`, and the first word can produce a negative `dst_pos`.
-  auto process_block_sequential = [&](int block_idx) {
-    cudf::bitmask_type validity_word  = ni.valid_map[block_idx];
-    cudf::bitmask_type null_positions = ~validity_word;
-    int const dst_pos_first_bit       = block_idx * bits_per_mask - valid_map_offset;
+  // The `~` is also why the first and last words need masking. Only those two can hold bits
+  // outside `[start_bit_idx, end_bit_idx)`, and inverting turns every such bit into a phantom null:
+  // a trailing partial word would write past `end_bit_idx`, and a leading one would compute a
+  // negative `dst_pos`. Clearing them here makes every word safe to process identically, which is
+  // what lets the whole range go through one loop.
+  auto process_block = [&](int block_idx) {
+    cudf::bitmask_type null_positions = ~ni.valid_map[block_idx];
+    int const block_start_bit         = block_idx * bits_per_mask;
 
+    // `1 << bits_per_mask` is undefined, so build the masks from an all-ones word shifted instead
+    // of from `(1 << n) - 1`. A shift of `bits_per_mask` is likewise undefined, hence the guards:
+    // an interior word needs neither mask, and the two conditions can both hold for a single word.
+    constexpr auto all_ones = ~cudf::bitmask_type{0};
+    if (block_idx == start_block) {
+      null_positions &= all_ones << (start_bit_idx - block_start_bit);
+    }
+    if (block_idx == end_block - 1) {
+      auto const bits_in_range = end_bit_idx - block_start_bit;
+      if (bits_in_range < bits_per_mask) { null_positions &= ~(all_ones << bits_in_range); }
+    }
+
+    int const dst_pos_first_bit = block_start_bit - valid_map_offset;
     while (null_positions != 0) {
       int const bit_pos = __ffs(null_positions) - 1;
       int const dst_pos = dst_pos_first_bit + bit_pos;
@@ -1613,27 +1580,10 @@ __device__ void zero_fill_null_positions_shared(
     }
   };
 
-  // Phase 1: the first and last words must go through the range-checking variant, because only
-  // they can hold bits outside [start_bit_idx, end_bit_idx). Warps 2+ would otherwise idle here,
-  // so they take interior words using the same coalesced scheme -- opportunism, not a requirement.
-  if (warp_id == 0) {
-    // Warp 0: Process first block
-    process_block_parallel(start_block);
-  } else if (warp_id == 1 && num_blocks > 1) {
-    // Warp 1: Process last block (if different from first)
-    process_block_parallel(end_block - 1);
-  } else if (warp_id >= 2) {
-    // Warps 2+: Process additional blocks from the beginning
-    int const block_idx = start_block + (warp_id - 1);
-    if (block_idx < (end_block - 1)) { process_block_parallel(block_idx); }
-  }
-
-  // Phase 2: All warps cooperatively process remaining middle blocks
-  auto const last_block_processed = static_cast<int>(num_blocks > 1);
-  int const remaining_start       = start_block + num_warps - last_block_processed;
-  int const remaining_end         = end_block - last_block_processed;
-  for (int block_idx = remaining_start + t; block_idx < remaining_end; block_idx += block_size) {
-    process_block_sequential(block_idx);
+  // Every word is now self-contained, so the whole range is one flat loop with no boundary cases
+  // and no dependence on how many warps the block has.
+  for (int block_idx = start_block + t; block_idx < end_block; block_idx += block_size) {
+    process_block(block_idx);
   }
 
   __syncthreads();

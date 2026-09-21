@@ -108,7 +108,6 @@ for version in "${VERSIONS[@]}"; do
         "${COVERAGE_ARGS[@]}" \
         --numprocesses=4 \
         --dist=worksteal \
-        --engine-pool-timings \
         --durations=50 --durations-min=1 \
         -x \
         --junitxml="${RAPIDS_TESTS_DIR}/junit-cudf-polars-${version}.xml"

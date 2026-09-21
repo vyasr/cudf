@@ -1505,44 +1505,42 @@ __device__ void zero_fill_null_positions_shared(
                 "single warp; see the phase 1/2 split below");
 
   // Calculate the range of validity blocks we need to process
-  int const start_bit_idx = valid_map_offset;
-  int const end_bit_idx   = valid_map_offset + num_values;
-  int const start_block   = start_bit_idx / bits_per_mask;
-  int const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
-  int const num_blocks    = end_block - start_block;
+  auto const start_bit_idx = valid_map_offset;
+  auto const end_bit_idx   = valid_map_offset + num_values;
+  auto const start_block   = start_bit_idx / bits_per_mask;
+  auto const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
+  auto const num_blocks    = end_block - start_block;
 
-  // Dense and sparse nulls want opposite work assignments, and neither is tolerable in the
-  // other's regime. This is the dense one, and it needs none of the machinery below: one thread
-  // per *value*, so consecutive threads write consecutive addresses and a run of nulls coalesces
-  // into whole 32-byte sectors.
+  // The optimal distribution of work across threads depends on the sparsity of nulls:
+  // - When nulls are sparse, each thread is assigned a single validity word because there are few
+  //   write instructions to issue and so optimizing instruction throughput is the key. That work is
+  //   almost all done in `process_block_sequential`. Since the first and last validity words can
+  //   hold bits outside the range `[start_bit_idx, end_bit_idx)`, processing those validity words
+  //   needs additional range checking, which is encapsulated by `process_block_parallel`. In case
+  //   the kernel's block size encompasses more than two warps, additional warps process additional
+  //   validity words from the middle of the validity bitmask as well to avoid idle cycles.
+  // - When nulls are dense, assigning a single thread to each validity word is problematic because
+  //   most threads are writing and the writes are all in different memory sectors because each
+  //   validity word corresponds to 32 values and so the writes are `32 values * dtype_len
+  //   bytes/value = dtype_len sectors` apart. Since dtype_len is integral, this calculation
+  //   effectively prohibits any coalesced writes and the kernel degenerates into single-element
+  //   transactions. To avoid this, when nulls are dense threads are assigned per value instead of
+  //   per validity word, ensuring coalesced writes across all threads within a warp that are
+  //   inspecting the same validity word and therefore writing within the same sector.
   //
-  // The sparse alternative (`process_block_sequential`, below) gives each thread a whole validity
-  // word instead. That issues exactly one store per null and covers warp_size times as many values
-  // per step, which is ideal when nulls are rare -- but consecutive threads then write addresses
-  // `bits_per_mask * dtype_len` apart, so every lane of a store lands in a different sector and
-  // nothing coalesces. At high null rates it degenerates into a serialized stream of
-  // single-element transactions: measured on a DELTA_LENGTH_BYTE_ARRAY page at 90% nulls it was
-  // 42.45 ms of a 45.19 ms kernel, against 2.43 ms for the offset scan and 1.22 ms for the value
-  // decode.
-  //
-  // Going per-value costs more loop iterations when nulls are rare, which is why this is a branch
-  // and not a replacement. `null_count` is uniform across the block, so the branch never diverges.
-  //
-  // The crossover is not a fixed null fraction: it scales with `dtype_len`, and by more than an
-  // order of magnitude across the widths this function sees. The dense path walks *every* value
-  // while the sparse path's work scales with the *null* count, and a page of a given byte size
-  // holds ~1/dtype_len as many values -- so a narrow type must be far more null-dense before
-  // paying per value wins. Measured crossovers on H100 (LIST leaves, 512 MiB): ~4% at 8 bytes,
-  // ~6% at 4, ~30% at 2, ~75% at 1. A flat STRING column, whose null rate is unambiguous, puts
-  // the 4-byte crossover at ~4% independently.
-  //
-  // `null_count * dtype_len * 2 > num_values` is the fraction 0.5 / dtype_len, which halves as the
-  // width doubles. Chosen over the alternatives by sweeping it against the best-achievable
-  // envelope (each cell's better path, measured by forcing each): mean regret 0.25% and worst cell
-  // 1.88%, against 1.09% and 12.41% for the fixed 1/8 this replaces. It is also exactly 1/8 at
-  // dtype_len == 4, so string columns -- which always pass sizeof(size_type) -- are unaffected.
-  //
-  // int64 because a large page can push num_values * dtype_len past INT32_MAX.
+  // The sparse/dense crossover is not a fixed null fraction: it scales with `dtype_len`, and by
+  // more than an order of magnitude across the widths this function sees. The dense path walks
+  // *every* value while the sparse path's work scales with the *null* count, and a page of a given
+  // byte size holds ~1/dtype_len as many values - so a narrow type must be far more null-dense
+  // before paying per value wins. The heuristic chosen is that the null fraction must be greater
+  // than 0.5/dtype_len. This gives the desired inverse scaling with dtype_len while keeping the
+  // constants simple and easy to reason about: for a single byte dtype, we need more than 50% nulls
+  // to justify the flip to the dense code path, but that drops to only 4% nulls for 8 byte dtypes.
+  // For comparison, a sweep of possible hardcode crossover values on an H100 produced at most a 2%
+  // improvement over this heuristic.
+
+  // This is the dense path.
+  // Cast to int64 because a large page can push num_values * dtype_len past INT32_MAX.
   if (static_cast<int64_t>(ni.null_count) * dtype_len * 2 > static_cast<int64_t>(num_values)) {
     for (int i = t; i < num_values; i += block_size) {
       if (not cudf::bit_is_set(ni.valid_map, start_bit_idx + i)) {

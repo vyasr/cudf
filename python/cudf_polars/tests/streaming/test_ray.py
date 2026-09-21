@@ -186,14 +186,15 @@ def test_reset_collects_after_options_change(reset_engine: RayEngine) -> None:
 
 
 def test_reset_after_shutdown_raises(
-    ray_num_ranks: int,
     ray_init_options: dict[str, Any],
 ) -> None:
     """``shutdown`` is idempotent; ``_reset`` after shutdown raises every time."""
     engine = RayEngine(
         executor_options={"max_rows_per_partition": 10},
         engine_options={"allow_gpu_sharing": True},
-        num_ranks=ray_num_ranks,
+        # This test covers a closed engine's client-side state only; it does
+        # not exercise collective shutdown, so one actor is sufficient.
+        num_ranks=1,
         ray_init_options=ray_init_options,
     )
     engine.shutdown()
@@ -237,14 +238,14 @@ def test_reset_rejects_construction_time_engine_options(
 
 
 def test_shutdown_skips_when_ray_not_initialized(
-    ray_num_ranks: int,
     ray_init_options: dict[str, Any],
 ) -> None:
     """``shutdown`` short-circuits if ``ray.is_initialized()`` is ``False``."""
     engine = RayEngine(
         executor_options={"max_rows_per_partition": 10},
         engine_options={"allow_gpu_sharing": True},
-        num_ranks=ray_num_ranks,
+        # The no-auto-init guard is independent of rank count.
+        num_ranks=1,
         ray_init_options=ray_init_options,
     )
     try:

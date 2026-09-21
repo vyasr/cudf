@@ -169,13 +169,12 @@ def test_groupby_adjusts_truncated_ordering_with_maintain_order(
         .group_by("ts_bucket", "RIC", maintain_order=True)
         .agg(pl.col("value").sum())
     )
-    assert_gpu_result_equal(q, engine=engine, check_row_order=False)
-
+    expected = q.collect()
     ir = Translator(q._ldf.visit(), engine).translate_ir()
-
-    metadata_collector = evaluate_logical_plan(
+    result, metadata_collector = evaluate_logical_plan(
         ir, ConfigOptions.from_polars_engine(engine), collect_metadata=True
-    )[1]
+    )
+    pl.testing.assert_frame_equal(result, expected, check_row_order=False)
 
     assert metadata_collector is not None
     assert len(metadata_collector) == 1

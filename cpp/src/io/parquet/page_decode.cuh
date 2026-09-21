@@ -1526,10 +1526,24 @@ __device__ void zero_fill_null_positions_shared(
   // decode.
   //
   // Going per-value costs more loop iterations when nulls are rare, which is why this is a branch
-  // and not a replacement. The threshold is well above the crossover (the two paths issue the same
-  // number of stores at any density; only loop overhead versus coalescing separates them), and
-  // `null_count` is uniform across the block so the branch never diverges.
-  if (ni.null_count > (num_values / 8)) {
+  // and not a replacement. `null_count` is uniform across the block, so the branch never diverges.
+  //
+  // The crossover is not a fixed null fraction: it scales with `dtype_len`, and by more than an
+  // order of magnitude across the widths this function sees. The dense path walks *every* value
+  // while the sparse path's work scales with the *null* count, and a page of a given byte size
+  // holds ~1/dtype_len as many values -- so a narrow type must be far more null-dense before
+  // paying per value wins. Measured crossovers on H100 (LIST leaves, 512 MiB): ~4% at 8 bytes,
+  // ~6% at 4, ~30% at 2, ~75% at 1. A flat STRING column, whose null rate is unambiguous, puts
+  // the 4-byte crossover at ~4% independently.
+  //
+  // `null_count * dtype_len * 2 > num_values` is the fraction 0.5 / dtype_len, which halves as the
+  // width doubles. Chosen over the alternatives by sweeping it against the best-achievable
+  // envelope (each cell's better path, measured by forcing each): mean regret 0.25% and worst cell
+  // 1.88%, against 1.09% and 12.41% for the fixed 1/8 this replaces. It is also exactly 1/8 at
+  // dtype_len == 4, so string columns -- which always pass sizeof(size_type) -- are unaffected.
+  //
+  // int64 because a large page can push num_values * dtype_len past INT32_MAX.
+  if (static_cast<int64_t>(ni.null_count) * dtype_len * 2 > static_cast<int64_t>(num_values)) {
     for (int i = t; i < num_values; i += block_size) {
       if (not cudf::bit_is_set(ni.valid_map, start_bit_idx + i)) {
         cuda::std::memset(data_out + (static_cast<size_t>(i) * dtype_len), 0, dtype_len);

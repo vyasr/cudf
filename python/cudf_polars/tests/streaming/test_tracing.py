@@ -277,7 +277,7 @@ def test_local_join_prefilter_trace_records_decision_and_effect(
 ) -> None:
     """Trace a direct-input join prefilter selected through the public engine."""
     pytest.importorskip("structlog")
-    cases = [
+    cases: list[tuple[str, bool, int, int, str, str, str, int | None, int | None]] = [
         ("bloom", False, 1, 32 * 1024 * 1024, "shuffle", "bloom", "bloom_fits", 1, 10),
         (
             "exact",

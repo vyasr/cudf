@@ -1502,10 +1502,42 @@ __device__ void zero_fill_null_positions_shared(
   int const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
   int const num_blocks    = end_block - start_block;
 
+  // Dense and sparse nulls want opposite work assignments, and neither is tolerable in the
+  // other's regime. This is the dense one, and it needs none of the machinery below: one thread
+  // per *value*, so consecutive threads write consecutive addresses and a run of nulls coalesces
+  // into whole 32-byte sectors.
+  //
+  // The sparse alternative (`process_block_sequential`, below) gives each thread a whole validity
+  // word instead. That issues exactly one store per null and covers warp_size times as many values
+  // per step, which is ideal when nulls are rare -- but consecutive threads then write addresses
+  // `bits_per_mask * dtype_len` apart, so every lane of a store lands in a different sector and
+  // nothing coalesces. At high null rates it degenerates into a serialized stream of
+  // single-element transactions: measured on a DELTA_LENGTH_BYTE_ARRAY page at 90% nulls it was
+  // 42.45 ms of a 45.19 ms kernel, against 2.43 ms for the offset scan and 1.22 ms for the value
+  // decode.
+  //
+  // Going per-value costs more loop iterations when nulls are rare, which is why this is a branch
+  // and not a replacement. The threshold is well above the crossover (the two paths issue the same
+  // number of stores at any density; only loop overhead versus coalescing separates them), and
+  // `null_count` is uniform across the block so the branch never diverges.
+  if (ni.null_count > (num_values / 8)) {
+    for (int i = t; i < num_values; i += block_size) {
+      if (not cudf::bit_is_set(ni.valid_map, start_bit_idx + i)) {
+        cuda::std::memset(data_out + (static_cast<size_t>(i) * dtype_len), 0, dtype_len);
+      }
+    }
+    __syncthreads();
+    return;
+  }
+
+  // Everything below is the sparse path.
   int const warp_id = t / warp_size;
   int const lane_id = warp.thread_rank();
 
-  // Helper lambda for warp-parallel bit processing
+  // One lane per *bit* of a single validity word, so a warp covers 32 consecutive values and its
+  // stores coalesce exactly as the dense path's do. This is also the only variant that
+  // range-checks, which is what makes it mandatory -- not merely preferable -- for the first and
+  // last words; see the phase 1 comment below.
   auto process_block_parallel = [&](int block_idx) {
     static_assert(bits_per_mask == warp_size, "if 64bit mask, use 2 warps per mask");
 
@@ -1528,7 +1560,22 @@ __device__ void zero_fill_null_positions_shared(
     }
   };
 
-  // Helper lambda for sequential bit processing (fallback for remaining blocks)
+  // One whole validity word per *thread*, walked one null at a time.
+  //
+  // The loop body is the standard iterate-over-set-bits idiom. `~validity_word` flips the sense of
+  // the mask, where a set bit means valid, so that a set bit means null. `__ffs` returns the
+  // 1-based index of the lowest set bit (hence the -1), and `x &= x - 1` clears it: subtracting 1
+  // flips that bit to 0 and every bit below it to 1, so the AND clears exactly it. The loop
+  // therefore runs once per *null*, not once per value -- a word with no nulls costs a load and
+  // nothing else, which is the whole reason this path exists for sparse data.
+  //
+  // Only efficient there, though. Adjacent threads own adjacent words, so their stores are
+  // `bits_per_mask * dtype_len` bytes apart -- 128 B for 4-byte values -- putting every lane of a
+  // store in its own sector. That is what the dense branch above exists to avoid.
+  //
+  // Has no bounds check, and cannot easily be given one: `~` sets every bit outside the word's
+  // meaningful range, so a trailing partial word would report its unused high bits as nulls and
+  // write past `end_bit_idx`, and the first word can produce a negative `dst_pos`.
   auto process_block_sequential = [&](int block_idx) {
     cudf::bitmask_type validity_word  = ni.valid_map[block_idx];
     cudf::bitmask_type null_positions = ~validity_word;
@@ -1545,33 +1592,9 @@ __device__ void zero_fill_null_positions_shared(
     }
   };
 
-  // Dense and sparse nulls want opposite work assignments, and neither is tolerable in the
-  // other's regime.
-  //
-  // One thread per validity word (the `process_block_sequential` path above) issues exactly one
-  // store per null, and covers warp_size times as many values per step as any per-value scheme --
-  // ideal when nulls are rare. But consecutive threads then write addresses
-  // `bits_per_mask * dtype_len` apart, so nothing coalesces: at high null rates it degenerates
-  // into a serialized stream of single-element transactions. Measured on a
-  // DELTA_LENGTH_BYTE_ARRAY page at 90% nulls it was 42.45 ms of a 45.19 ms kernel, against
-  // 2.43 ms for the offset scan and 1.22 ms for the value decode.
-  //
-  // One thread per *value* writes consecutive addresses instead, so a run of nulls coalesces. It
-  // costs more loop iterations when nulls are rare, which is why this is a branch and not a
-  // replacement. The threshold is well above the crossover (the two paths issue the same number
-  // of stores at any density; only loop overhead versus coalescing separates them), and
-  // `null_count` is uniform across the block so the branch never diverges.
-  if (ni.null_count > (num_values / 8)) {
-    for (int i = t; i < num_values; i += block_size) {
-      if (not cudf::bit_is_set(ni.valid_map, start_bit_idx + i)) {
-        cuda::std::memset(data_out + (static_cast<size_t>(i) * dtype_len), 0, dtype_len);
-      }
-    }
-    __syncthreads();
-    return;
-  }
-
-  // Phase 1: Assign specific blocks to warps for warp-parallel processing
+  // Phase 1: the first and last words must go through the range-checking variant, because only
+  // they can hold bits outside [start_bit_idx, end_bit_idx). Warps 2+ would otherwise idle here,
+  // so they take interior words using the same coalesced scheme -- opportunism, not a requirement.
   if (warp_id == 0) {
     // Warp 0: Process first block
     process_block_parallel(start_block);

@@ -1499,29 +1499,21 @@ __device__ void zero_fill_null_positions_shared(
   auto const start_block   = start_bit_idx / bits_per_mask;
   auto const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
 
-  // The optimal distribution of work across threads depends on the sparsity of nulls:
-  // - When nulls are sparse, each thread is assigned a single validity word because there are few
-  //   write instructions to issue and so optimizing instruction throughput is the key. That work is
-  //   all done in `process_block`. Since the first and last validity words can hold bits outside
-  //   the range `[start_bit_idx, end_bit_idx)`, those bits are masked out of the word before it is
-  //   walked, which keeps every word self-contained and the whole range a single flat loop.
-  // - When nulls are dense, assigning a single thread to each validity word is problematic because
-  //   most threads are writing and the writes are all in different memory sectors because each
-  //   validity word corresponds to 32 values and so the writes are `32 values * dtype_len
-  //   bytes/value = dtype_len sectors` apart. Since dtype_len is integral, this calculation
-  //   effectively prohibits any coalesced writes and the kernel degenerates into single-element
-  //   transactions. To avoid this, when nulls are dense threads are assigned per value instead of
-  //   per validity word, ensuring coalesced writes across all threads within a warp that are
-  //   inspecting the same validity word and therefore writing within the same sector.
+  // The optimal distribution of work across threads depends on the sparsity of nulls. When nulls
+  // are dense, the optimal choice is to assign each thread a value so that neighboring writes can
+  // be coalesced within a sector. When nulls are sparse, it's more efficient to assign each thread
+  // a single validity word because most threads will do no writing and we can optimize instruction
+  // throughput by reducing how many loop iterations are required since each validity word
+  // encompasses 32 values.
   //
   // The sparse/dense crossover is not a fixed null fraction: it scales with `dtype_len`, and by
   // more than an order of magnitude across the widths this function sees. The dense path walks
-  // *every* value while the sparse path's work scales with the *null* count, and a page of a given
-  // byte size holds ~1/dtype_len as many values - so a narrow type must be far more null-dense
+  // every value while the sparse path's work scales with the null count, and a page of a given
+  // byte size holds ~1/dtype_len as many values, so a narrow type must be far more null-dense
   // before paying per value wins. The heuristic chosen is that the null fraction must be greater
   // than 0.5/dtype_len. This gives the desired inverse scaling with dtype_len while keeping the
   // constants simple and easy to reason about: for a single byte dtype, we need more than 50% nulls
-  // to justify the flip to the dense code path, but that drops to 6.25% nulls for 8 byte dtypes.
+  // to justify the flip to the dense code path, and that drops to 6.25% nulls for 8 byte dtypes.
   // For comparison, a sweep of possible hardcode crossover values on an H100 produced at most a 2%
   // improvement over this heuristic.
 
@@ -1537,28 +1529,20 @@ __device__ void zero_fill_null_positions_shared(
     return;
   }
 
-  // Everything below is the sparse path: one whole validity word per *thread*, walked one null at
-  // a time.
-  //
-  // The loop body is the standard iterate-over-set-bits idiom. `~validity_word` flips the sense of
-  // the mask, where a set bit means valid, so that a set bit means null. `__ffs` returns the
-  // 1-based index of the lowest set bit (hence the -1), and `x &= x - 1` clears it: subtracting 1
-  // flips that bit to 0 and every bit below it to 1, so the AND clears exactly it. The loop
-  // therefore runs once per *null*, not once per value -- a word with no nulls costs a load and
-  // nothing else, which is the whole reason this path exists for sparse data.
-  //
-  // The `~` is also why the first and last words need masking. Only those two can hold bits
-  // outside `[start_bit_idx, end_bit_idx)`, and inverting turns every such bit into a phantom null:
-  // a trailing partial word would write past `end_bit_idx`, and a leading one would compute a
-  // negative `dst_pos`. Clearing them here makes every word safe to process identically, which is
-  // what lets the whole range go through one loop.
+  // Everything below is the sparse path: one whole validity word per thread and one loop iteration
+  // per null. A word with no nulls costs a load and nothing else.
   auto process_block = [&](int block_idx) {
     cudf::bitmask_type null_positions = ~ni.valid_map[block_idx];
     int const block_start_bit         = block_idx * bits_per_mask;
 
-    // `1 << bits_per_mask` is undefined, so build the masks from an all-ones word shifted instead
-    // of from `(1 << n) - 1`. A shift of `bits_per_mask` is likewise undefined, hence the guards:
-    // an interior word needs neither mask, and the two conditions can both hold for a single word.
+    // The first and last words need masking because those can hold bits outside `[start_bit_idx,
+    // end_bit_idx)`, and inverting turns every such bit into a phantom null: a trailing partial
+    // word would write past `end_bit_idx`, and a leading one would compute a negative `dst_pos`.
+    // Clearing them here makes every word safe to process identically, which lets the whole range
+    // go through one loop. `1 << bits_per_mask` is undefined, so build the masks from an all-ones
+    // word shifted instead of from `(1 << n) - 1`. A shift of `bits_per_mask` is likewise
+    // undefined, hence the guards: an interior word needs neither mask, and the two conditions can
+    // both hold for a single word.
     constexpr auto all_ones = ~cudf::bitmask_type{0};
     if (block_idx == start_block) {
       null_positions &= all_ones << (start_bit_idx - block_start_bit);
@@ -1580,8 +1564,6 @@ __device__ void zero_fill_null_positions_shared(
     }
   };
 
-  // Every word is now self-contained, so the whole range is one flat loop with no boundary cases
-  // and no dependence on how many warps the block has.
   for (int block_idx = start_block + t; block_idx < end_block; block_idx += block_size) {
     process_block(block_idx);
   }

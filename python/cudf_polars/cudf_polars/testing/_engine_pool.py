@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -132,16 +133,21 @@ class EnginePool:
             assert isinstance(engine, DaskEngine)
             if engine._dask_context is None:
                 raise RuntimeError("Dask engine was shut down")
+            workers = engine._dask_context.client.scheduler_info(n_workers=-1)[
+                "workers"
+            ]
+            if len(workers) != engine.nranks:
+                raise RuntimeError("dask engine lost a worker")
         elif engine_name == "ray":
             from cudf_polars.engine.ray import RayEngine
 
             assert isinstance(engine, RayEngine)
             if engine._rank_actors is None:
                 raise RuntimeError("Ray engine was shut down")
+            if len(engine._run(os.getpid)) != engine.nranks:
+                raise RuntimeError("ray engine lost a worker")
         else:  # pragma: no cover - guarded by acquire
             raise ValueError(f"Unknown pooled engine: {engine_name!r}")
-        if len(engine.gather_cluster_info()) != engine.nranks:
-            raise RuntimeError(f"{engine_name} engine lost a worker")
 
     def _discard(
         self, engine_name: str, engine: StreamingEngine, *, count_discard: bool = True

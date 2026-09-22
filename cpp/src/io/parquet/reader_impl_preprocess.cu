@@ -41,6 +41,32 @@
 namespace cudf::io::parquet::detail {
 
 namespace {
+
+/**
+ * @brief Decide which level-prepass consumer, if any, can decode @p page.
+ *
+ * Structural only -- it answers "is there a consumer for this page's shape and encoding", not
+ * "is the prepass enabled". Enablement is applied separately by the caller so that the family
+ * classification is stable for a given file regardless of the env var.
+ */
+[[nodiscard]] level_prepass_family classify_prepass_family(PageInfo const& page,
+                                                           ColumnChunkDesc const& chunk)
+{
+  // Only the DELTA encodings have a prepass consumer. Everything else -- the PLAIN, dictionary
+  // and BYTE_STREAM_SPLIT families -- decodes with the legacy kernels, which walk levels
+  // themselves, so those pages have no family and never reach a producer.
+  bool const is_delta = BitAnd(page.kernel_mask,
+                               BitOr(decode_kernel_mask::DELTA_BINARY,
+                                     decode_kernel_mask::DELTA_BYTE_ARRAY,
+                                     decode_kernel_mask::DELTA_LENGTH_BA)) != 0;
+  if (!is_delta) { return level_prepass_family::NONE; }
+
+  // Only flat (depth-1, non-repeated) columns have a consumer today. Lists and structs of delta
+  // leaves stay on the legacy path.
+  bool const is_flat = chunk.max_level[level_type::REPETITION] == 0 && chunk.max_nesting_depth <= 1;
+  return is_flat ? level_prepass_family::DELTA_FLAT : level_prepass_family::NONE;
+}
+
 // Tests the passed in logical type for a FIXED_LENGTH_BYTE_ARRAY column to see if it should
 // be treated as a string. Currently the only logical type that has special handling is DECIMAL.
 // Other valid types in the future would be UUID (still treated as string) and FLOAT16 (which
@@ -299,6 +325,12 @@ void reader_impl::allocate_level_decode_space()
   // Loop over pages to compute sizes
   size_t total_memory_size = 0;
   for (size_t idx = 0; idx < num_pages; idx++) {
+    // Classify before the page mask check: a masked-out page still travels to the device, and a
+    // stale family on it would be read by the prepass launch gates.
+    auto& p           = pages[idx];
+    auto const& chunk = pass.chunks[p.chunk_idx];
+    p.prepass_family  = classify_prepass_family(p, chunk);
+
     // Skip pages that are masked out - no need to allocate level decode space for them
     auto const page_mask = subpass_page_mask_span();
     if (!page_mask.is_empty() && !page_mask[idx]) {
@@ -306,9 +338,6 @@ void reader_impl::allocate_level_decode_space()
       rep_level_sizes[idx] = 0;
       continue;
     }
-
-    auto const& p     = pages[idx];
-    auto const& chunk = pass.chunks[p.chunk_idx];
 
     compute_page_level_decode_sizes(p,
                                     chunk,
@@ -350,6 +379,68 @@ void reader_impl::allocate_level_decode_space()
                  "Repetition level size is not a multiple of the level type size");
     pages[idx].num_decoded_level_values =
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
+  }
+
+  // Hand out the out-of-line prepass scratch. A page gets an entry exactly when the selector
+  // claims its family, so a null `prepass_state` *is* "not selected" and no separate flag is
+  // needed. With the prepass off nothing is allocated at all, which is the entire point of
+  // holding this state out of line: inlined in `PageInfo` it cost 104 bytes on every page of
+  // every read and regressed page-dense reads by 5-22%.
+  auto const any_prepass_selected =
+    _level_prepass_enabled &&
+    std::any_of(pages.host_begin(), pages.host_end(), [](PageInfo const& page) {
+      return page.prepass_family != level_prepass_family::NONE;
+    });
+  if (any_prepass_selected) {
+    subpass.prepass_state_buf =
+      cudf::detail::hostdevice_vector<PagePrepassState>(num_pages, _stream);
+  }
+
+  // `PageInfo` travels to the device, so the pointer it carries must be the DEVICE address; the
+  // host-side sizing loops below write through the host mirror (`host_state(idx)`) instead. The
+  // two are uploaded together in `setup_next_subpass`, so the device sees a consistent pair.
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto& page         = pages[idx];
+    auto const on      = any_prepass_selected && page.prepass_family != level_prepass_family::NONE;
+    page.prepass_state = on ? subpass.prepass_state_buf.device_ptr(idx) : nullptr;
+    if (on) { subpass.prepass_state_buf[idx] = PagePrepassState{}; }
+  }
+  // Host view of a page's scratch. Null for pages the selector did not claim, mirroring
+  // `PageInfo::prepass_state` on the device side.
+  auto host_state = [&](size_t idx) -> PagePrepassState* {
+    return pages[idx].prepass_state != nullptr ? subpass.prepass_state_buf.host_ptr(idx) : nullptr;
+  };
+
+  // Carve the flat valid-rank maps. A required page needs no map at all: its rank map is the
+  // identity, which the consumer synthesises rather than reading.
+  size_t flat_prepass_size = 0;
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto const& page         = pages[idx];
+    auto const& chunk        = pass.chunks[page.chunk_idx];
+    bool const optional      = chunk.max_level[level_type::DEFINITION] != 0;
+    bool const selected_flat = page.prepass_is(level_prepass_family::DELTA_FLAT);
+    // The scratch was value-initialised when it was handed out above, so the only thing specific
+    // to this shape is the "selected, not yet produced" sentinel.
+    if (selected_flat) { host_state(idx)->nz_count = -2; }
+    if (selected_flat && optional) {
+      // Round each page's slice up to 4 bytes so a narrow page never leaves the next page's
+      // uint32_t view misaligned.
+      flat_prepass_size += cudf::util::round_up_unsafe(
+        static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
+    }
+  }
+  subpass.flat_prepass_data =
+    rmm::device_buffer(flat_prepass_size, _stream, cudf::get_current_device_resource_ref());
+  auto* flat_prepass_ptr = static_cast<uint8_t*>(subpass.flat_prepass_data.data());
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    auto const& page  = pages[idx];
+    auto const& chunk = pass.chunks[page.chunk_idx];
+    if (page.prepass_is(level_prepass_family::DELTA_FLAT) &&
+        chunk.max_level[level_type::DEFINITION] != 0) {
+      host_state(idx)->nz_idx = reinterpret_cast<uint32_t*>(flat_prepass_ptr);
+      flat_prepass_ptr += cudf::util::round_up_unsafe(
+        static_cast<size_t>(page.num_input_values) * sizeof(uint32_t), size_t{4});
+    }
   }
 }
 

@@ -1499,23 +1499,16 @@ __device__ void zero_fill_null_positions_shared(
   auto const start_block   = start_bit_idx / bits_per_mask;
   auto const end_block     = cudf::util::div_rounding_up_safe(end_bit_idx, bits_per_mask);
 
-  // The optimal distribution of work across threads depends on the sparsity of nulls. When nulls
-  // are dense, the optimal choice is to assign each thread a value so that neighboring writes can
-  // be coalesced within a sector. When nulls are sparse, it's more efficient to assign each thread
-  // a single validity word because most threads will do no writing and we can optimize instruction
-  // throughput by reducing how many loop iterations are required since each validity word
-  // encompasses 32 values.
-  //
-  // The sparse/dense crossover is not a fixed null fraction: it scales with `dtype_len`, and by
-  // more than an order of magnitude across the widths this function sees. The dense path walks
-  // every value while the sparse path's work scales with the null count, and a page of a given
-  // byte size holds ~1/dtype_len as many values, so a narrow type must be far more null-dense
-  // before paying per value wins. The heuristic chosen is that the null fraction must be greater
-  // than 0.5/dtype_len. This gives the desired inverse scaling with dtype_len while keeping the
-  // constants simple and easy to reason about: for a single byte dtype, we need more than 50% nulls
-  // to justify the flip to the dense code path, and that drops to 6.25% nulls for 8 byte dtypes.
-  // For comparison, a sweep of possible hardcode crossover values on an H100 produced at most a 2%
-  // improvement over this heuristic.
+  // When nulls are dense, assigning one thread per value allows coalesced writes. When nulls are
+  // sparse, coalescence is no longer critical since writes are few, and assigning each thread a
+  // whole validity word optimizes instruction throughput by only looping through null elements,
+  // thereby scaling with the null count rather than the value count, as the dense path does.
+  // Empirically the ideal crossover between these regimes scales inversely with `dtype_len`. The
+  // heuristic chosen is that the null fraction must be greater than 0.5/dtype_len. This gives the
+  // desired inverse scaling with dtype_len while keeping the constants simple and easy to reason
+  // about: for a single byte dtype, we need more than 50% nulls to justify the flip to the dense
+  // code path, and that drops to 6.25% nulls for 8 byte dtypes. For comparison, a sweep of possible
+  // hardcode crossover values on an H100 produced at most a 2% improvement over this heuristic.
 
   // This is the dense path: one value per thread and one loop iteration per block of values.
   // Cast to int64 because a large page can push num_values * dtype_len past INT32_MAX.

@@ -1703,60 +1703,73 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeMiniBlockSkipRows)
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayBlockBoundary)
 {
-  // Ending exactly on a block boundary is where a decoder that reaches for the next block header
-  // unconditionally reads past the end of the page's data; ending one delta past it is where a
-  // block's trailing mini-blocks are empty and their bit widths describe no values at all.
+  // Value counts that land exactly on a block boundary, and one that lands a single delta past it.
+  // The block shape here is cudf's own writer default (delta_enc.cuh), so what is unusual is the
+  // count, not the geometry: a page whose delta stream ends with no partial block is where
+  // find_end_of_block has to locate the start of the string data from a full block, and a block
+  // holding one delta is where the trailing mini-blocks are empty and their bit widths describe no
+  // values at all.
   //
   // block_size=128, mini_block_count=4 -> 32 deltas/mini-block, 128 deltas/block. The stream holds
   // n - 1 deltas, so n = 129 is exactly one full block and n = 257 exactly two. n = 130 is the
   // other side of that boundary: a second block holding a lone delta, its other three mini-blocks
   // empty.
   for (auto const n : {129, 130, 257}) {
+    SCOPED_TRACE("n = " + std::to_string(n));
     auto const strings = delta_test_strings(n, false);
-    delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 128, 4),
-                                            strings);
+    auto const file    = build_delta_length_byte_array_parquet(strings, 128, 4);
+    delta_large_mini_block_string_read_test(file, strings);
+    // A trimmed read makes this a bounds page, where the string output is sized from the
+    // delta-decoded lengths rather than read straight through.
+    delta_large_mini_block_string_read_test(file, strings, 40, 50);
   }
 }
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayTwoMiniBlocks)
 {
-  // A block header carries one bit width per mini-block, and each mini-block's packed data begins
-  // after the sum of the preceding widths, so the shortest possible width array is where an
-  // off-by-one in walking it shows up. cudf's writer hardcodes four mini-blocks, so nothing that
-  // round-trips through it can reach this.
+  // The only coverage of a block header carrying exactly two bit widths. Walking that array is how
+  // the decoder finds each mini-block's packed data -- it advances by
+  // `cur_bitwidths[mb] * values_per_mb / CHAR_BIT` per mini-block -- and the other delta tests use
+  // one or four mini-blocks, so two is the untested arity. cudf's writer hardcodes four, so nothing
+  // round-tripping through it reaches this.
   //
   // block_size=256, mini_block_count=2 -> 128 deltas/mini-block. n = 333 gives 332 deltas, so the
   // second block is partial: its first mini-block holds 76 deltas and its second is empty.
   auto const strings = delta_test_strings(333, false);
-  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 256, 2),
-                                          strings);
+  auto const file    = build_delta_length_byte_array_parquet(strings, 256, 2);
+  delta_large_mini_block_string_read_test(file, strings);
+  delta_large_mini_block_string_read_test(file, strings, 100, 150);
 }
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeBlockSize)
 {
-  // The decoder consumes values in batches of delta_max_batch_size (64). At 128 values per
-  // mini-block a single mini-block spans two batches, so its bit width, min delta and data pointer
-  // all have to survive a batch boundary rather than being re-read per batch.
+  // The largest block covered here, and the only one where all four of a block's mini-blocks are
+  // full-size: the decoder rolls through four 128-value mini-blocks before it reaches the next
+  // block header. The existing tests reach 128- and 256-value mini-blocks (DeltaLengthByteArray-
+  // LargeMiniBlock128 and ...256) but only with a single mini-block per block, so the sequencing
+  // from one mini-block to the next within a block is what is new.
   //
   // block_size=512, mini_block_count=4 -> 128 deltas/mini-block, 512 deltas/block. n = 600 gives
   // 599 deltas: one full block, then a partial one whose first mini-block holds 87 deltas.
   auto const strings = delta_test_strings(600, false);
-  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 512, 4),
-                                          strings);
+  auto const file    = build_delta_length_byte_array_parquet(strings, 512, 4);
+  delta_large_mini_block_string_read_test(file, strings);
+  delta_large_mini_block_string_read_test(file, strings, 200, 300);
 }
 
-TEST_F(ParquetReaderTest, DeltaLengthByteArrayNonPowerOfTwoBlockSize)
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayOddPassCountFullBlock)
 {
-  // The decoder advances a mini-block in warp-size passes, so 96 values per mini-block is three
-  // passes - an odd count, which catches anything that assumes a power-of-two number of passes or
-  // reaches for a mask or shift where it needs a division.
+  // A block whose mini-blocks each take an odd number of warp-size passes (96 values -> 3 passes),
+  // filled exactly to capacity. DeltaLengthByteArrayLargeMiniBlock96 already covers the odd pass
+  // count on this same geometry, but with n = 141 it populates only two of the four mini-blocks and
+  // stops mid-block; what is untested is that sequence running to the end of the block, where the
+  // last mini-block's final pass coincides with the end of the delta stream.
   //
-  // block_size=384, mini_block_count=4 -> 96 deltas/mini-block. n = 385 gives exactly 384 deltas,
-  // so the single block is completely full. DeltaLengthByteArrayLargeMiniBlock96 uses the same
-  // block shape but leaves it partially filled.
+  // block_size=384, mini_block_count=4 -> 96 deltas/mini-block. n = 385 gives exactly 384 deltas.
   auto const strings = delta_test_strings(385, false);
-  delta_large_mini_block_string_read_test(build_delta_length_byte_array_parquet(strings, 384, 4),
-                                          strings);
+  auto const file    = build_delta_length_byte_array_parquet(strings, 384, 4);
+  delta_large_mini_block_string_read_test(file, strings);
+  delta_large_mini_block_string_read_test(file, strings, 130, 200);
 }
 
 TEST_F(ParquetReaderTest, DeltaBinaryListMiniBlock64)
@@ -3917,28 +3930,24 @@ TEST_F(ParquetReaderTest, DeltaByteArraySkipAllValid)
                                 result.tbl->view());
 }
 
-TEST_F(ParquetReaderTest, DeltaByteArrayDegenerateNullMasks)
+TEST_F(ParquetReaderTest, DeltaByteArrayAllNull)
 {
-  // The two degenerate validity masks for a DELTA_BYTE_ARRAY column, which the other delta tests
-  // do not reach: a mask that marks every value valid, and one that marks every value null.
-  // DeltaSkipRowsWithNulls covers the ordinary middle at ~30% nulls, but its unmasked columns use
-  // `no_nulls()` and so are written `required` -- no definition levels at all -- rather than
-  // `optional` with an all-valid mask, which is a different decode path. 100% null is covered
-  // nowhere: the delta stream is empty while the page still carries a full run of definition
-  // levels. 50% is included as an ordinary case to sit between them.
+  // An all-null DELTA_BYTE_ARRAY column: the delta stream is empty while the page still carries a
+  // full run of definition levels, so every output position is a null the decoder has to fill
+  // without consuming a value. Nothing else covers this -- DeltaSkipRowsWithNulls and
+  // DeltaByteArraySkipAllValid both keep some values valid. 50% is included as an ordinary case to
+  // check the all-null result is not an artefact of the fixture.
   //
   // Each is read twice: in full, and as a row range, the latter putting the pages on the
   // bounds-page path where skip_rows interacts with delta's prefix/suffix reconstruction (skipped
   // values still have to be decoded to carry the prefix seed forward).
   constexpr int num_rows = 40000;
 
-  for (int null_percent : {0, 50, 100}) {
+  for (int null_percent : {50, 100}) {
     SCOPED_TRACE("null_percent = " + std::to_string(null_percent));
     auto const strings = cudf::detail::make_counting_transform_iterator(
       0, [](auto i) { return "string_value_" + std::to_string(i); });
-    // Deterministic, and spread evenly so every page sees the same null density. Always supplied,
-    // including at 0%, so the column is nullable and gets written `optional` with an all-valid
-    // mask rather than `required` with no definition levels.
+    // Deterministic, and spread evenly so every page sees the same null density.
     auto const valids = cudf::detail::make_counting_transform_iterator(
       0, [null_percent](auto i) { return (i % 100) >= null_percent; });
 

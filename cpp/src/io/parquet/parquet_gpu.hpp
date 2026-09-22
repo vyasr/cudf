@@ -260,6 +260,49 @@ enum class decode_kernel_mask {
   DICT_INT32               = (1 << 26),  // Run decode kernel for dict string → INT32 indices
 };
 
+/**
+ * @brief Which level-prepass consumer a page uses, or NONE for the legacy decoders.
+ *
+ * The level prepass walks a page's definition levels once up front and publishes a valid-rank map,
+ * so that the decode kernel can place values without decoding levels itself. Only the DELTA
+ * encodings have a consumer for that map; everything else -- PLAIN, dictionary and
+ * BYTE_STREAM_SPLIT -- decodes with the legacy kernels, which walk the levels themselves. See
+ * `classify_prepass_family` in reader_impl_preprocess.cu.
+ */
+enum class level_prepass_family : uint16_t {
+  NONE,
+  DELTA_FLAT,
+};
+
+/**
+ * @brief Whether the Parquet level prepass is enabled for this process.
+ *
+ * Opt-in while the feature is being built out: unset, or any value other than a positive integer,
+ * leaves every page on the legacy decoders. `LIBCUDF_PARQUET_LEVEL_PREPASS=1` enables it.
+ */
+CUDF_EXPORT [[nodiscard]] bool level_prepass_enabled_from_environment();
+
+/**
+ * @brief Out-of-line per-page scratch for the level prepass.
+ *
+ * Held out of `PageInfo` deliberately. Inlining these fields cost 104 bytes on every page of every
+ * read, including reads that never engage the prepass, and that alone regressed the reader by
+ * 5-22% -- `PageInfo` is copied host-to-device once per subpass and the cost scales with page
+ * count, so it was worst on page-dense columns.
+ *
+ * `nz_count` and `aux_count` are seeded on the host, written by a producer kernel, and read by a
+ * consumer kernel in a *later* launch, so this array must live in device memory across launches
+ * and must not be re-uploaded from the host in between.
+ */
+struct PagePrepassState {
+  /// Valid-rank map. Null means legacy dispatch or the required-column identity path.
+  uint32_t* nz_idx{};
+  /// -1 = not selected, -2 = selected but not yet produced, >=0 = produced.
+  int32_t nz_count{-1};
+  /// The page's null count.
+  int32_t aux_count{};
+};
+
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
                                                   decode_kernel_mask::STRING_LIST,
@@ -400,6 +443,32 @@ struct PageInfo {
   // while doing chunked reads, persist the value from the page index here.
   int32_t str_bytes_from_index;
   decode_kernel_mask kernel_mask;
+
+  // Which level-prepass consumer decodes this page, or NONE for the legacy decoders. Together
+  // with `prepass_state` below this answers "is the prepass on for this page" -- see
+  // `prepass_is()`.
+  level_prepass_family prepass_family{level_prepass_family::NONE};
+
+  // Out-of-line scratch for the opt-in level prepass, or null when the selector did not claim
+  // this page. Non-null *is* the selection flag, so a page can be released individually by
+  // nulling this rather than by clearing a separate bool.
+  //
+  // Held out of line because it is dead weight on every page of every read when the prepass is
+  // off; see PagePrepassState. Reaching it through PageInfo rather than a separate kernel
+  // parameter matches how the decode buffers themselves are already threaded.
+  PagePrepassState* prepass_state{};
+
+  /**
+   * @brief True when the selector claimed this page for @p family.
+   *
+   * Keying off the family *and* the scratch pointer keeps per-page divergence available: a
+   * budget fallback can release individual pages while the mask-level decision still selects
+   * the family.
+   */
+  [[nodiscard]] CUDF_HOST_DEVICE constexpr bool prepass_is(level_prepass_family family) const
+  {
+    return prepass_state != nullptr && prepass_family == family;
+  }
 
   bool is_num_rows_adjusted;  // Flag to indicate if the number of rows of this page have been
                               // adjusted to compensate for the list row size estimates.

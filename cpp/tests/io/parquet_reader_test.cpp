@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -86,6 +87,84 @@ TEST_F(ParquetReaderTest, ManyTinyStringPages)
   auto const result = cudf::io::read_parquet(read_options);
 
   CUDF_TEST_EXPECT_TABLES_EQUAL(input, result.tbl->view());
+}
+
+TEST_F(ParquetReaderTest, LevelPrepassMatchesLegacyDecoder)
+{
+  // The level prepass is a second decode path selected by an env var, so the property that has to
+  // hold is that it is invisible: the same file must read identically with it on and off. That is
+  // what this pins, rather than the env-var parsing itself (which is
+  // `cudf::detail::get_bool_env_or`, tested with that utility).
+  //
+  // The column is DELTA_BINARY_PACKED and nullable, because that is the only combination the
+  // prepass claims at this point in the series; a required or PLAIN column would exercise nothing.
+  struct scoped_env {
+    scoped_env(char const* v)
+    {
+      v ? setenv("LIBCUDF_PARQUET_LEVEL_PREPASS", v, 1) : unsetenv("LIBCUDF_PARQUET_LEVEL_PREPASS");
+    }
+    ~scoped_env() { unsetenv("LIBCUDF_PARQUET_LEVEL_PREPASS"); }
+  };
+
+  constexpr int num_rows = 50000;
+  auto const values      = cudf::detail::make_counting_transform_iterator(
+    0, [](auto i) { return static_cast<int32_t>(i * 3 - 7); });
+  auto const valids =
+    cudf::detail::make_counting_transform_iterator(0, [](auto i) { return (i % 7) != 0; });
+  cudf::test::fixed_width_column_wrapper<int32_t> const col{values, values + num_rows, valids};
+  auto const expected = table_view({col});
+
+  auto input_metadata = cudf::io::table_input_metadata{expected};
+  input_metadata.column_metadata[0].set_encoding(cudf::io::column_encoding::DELTA_BINARY_PACKED);
+
+  std::vector<char> buffer;
+  cudf::io::write_parquet(
+    cudf::io::parquet_writer_options::builder(cudf::io::sink_info{&buffer}, expected)
+      .write_v2_headers(true)
+      .metadata(input_metadata)
+      .dictionary_policy(cudf::io::dictionary_policy::NEVER)
+      .build());
+
+  auto const read_back = [&] {
+    return cudf::io::read_parquet(
+      cudf::io::parquet_reader_options::builder(
+        cudf::io::source_info{cudf::host_span<std::byte const>{
+          reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
+        .build());
+  };
+
+  // Unset is the shipping configuration while the feature is opt-in.
+  {
+    scoped_env env{nullptr};
+    auto const legacy = read_back();
+    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, legacy.tbl->view());
+  }
+  {
+    scoped_env env{"1"};
+    auto const prepass = read_back();
+    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, prepass.tbl->view());
+  }
+  // A bounded read puts the same pages on the bounds-page path, where the two routes diverge most.
+  {
+    auto const trimmed = [&] {
+      return cudf::io::read_parquet(
+        cudf::io::parquet_reader_options::builder(
+          cudf::io::source_info{cudf::host_span<std::byte const>{
+            reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
+          .skip_rows(1001)
+          .num_rows(4321)
+          .build());
+    };
+    auto const sliced = cudf::slice(expected, {1001, 1001 + 4321});
+    {
+      scoped_env env{nullptr};
+      CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
+    }
+    {
+      scoped_env env{"1"};
+      CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
+    }
+  }
 }
 
 TEST_F(ParquetReaderTest, UserBounds)

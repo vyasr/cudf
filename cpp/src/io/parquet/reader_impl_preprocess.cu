@@ -390,7 +390,7 @@ void reader_impl::allocate_level_decode_space()
   // claims it, so a null `prepass_state` *is* "not selected" and no separate flag is needed.
   auto const any_prepass_selected =
     std::any_of(pages.host_begin(), pages.host_end(), [](PageInfo const& page) {
-      return page.prepass_family != level_prepass_family::NONE;
+      return flat_prepass_has_consumer(page);
     });
   if (!any_prepass_selected) { return; }
 
@@ -400,7 +400,7 @@ void reader_impl::allocate_level_decode_space()
   // below goes through `host_state()`. Both are uploaded together in `setup_next_subpass`.
   for (size_t idx = 0; idx < num_pages; ++idx) {
     auto& page = pages[idx];
-    if (page.prepass_family != level_prepass_family::NONE) {
+    if (flat_prepass_has_consumer(page)) {
       page.prepass_state = subpass.prepass_state_buf.device_ptr(idx);
     }
   }

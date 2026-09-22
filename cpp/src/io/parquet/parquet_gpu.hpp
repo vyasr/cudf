@@ -305,6 +305,16 @@ struct PagePrepassState {
   int32_t aux_count{};
 };
 
+/**
+ * @brief Decoder masks whose flat pages have a level-prepass consumer.
+ *
+ * `classify_prepass_family` answers a structural question -- can a page of this shape and encoding
+ * be consumed from a rank map -- and is deliberately independent of which consumers have been
+ * written. This is the other half: a page whose mask is absent here gets no scratch and no map,
+ * and keeps the legacy decoder. It widens as the remaining consumers land.
+ */
+constexpr uint32_t FLAT_LEVEL_PREPASS_MASK = BitOr(decode_kernel_mask::DELTA_BINARY);
+
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
                                                   decode_kernel_mask::STRING_LIST,
@@ -474,6 +484,13 @@ struct PageInfo {
     return prepass_state != nullptr && prepass_family == family;
   }
 };
+
+/** @brief True when @p page's shape and encoding both have a flat prepass consumer. */
+[[nodiscard]] CUDF_HOST_DEVICE inline bool flat_prepass_has_consumer(PageInfo const& page)
+{
+  return page.prepass_family == level_prepass_family::DELTA_FLAT &&
+         BitAnd(page.kernel_mask, FLAT_LEVEL_PREPASS_MASK) != 0;
+}
 
 // forward declaration
 struct column_chunk_info;
@@ -1094,7 +1111,8 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          int level_type_size,
                          cudf::device_span<bool const> page_mask,
                          kernel_error::pointer error_code,
-                         cuda::stream_ref stream);
+                         cuda::stream_ref stream,
+                         bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_BYTE_ARRAY column data stored in the pages
@@ -1194,6 +1212,21 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
                        size_t num_rows,
                        int level_type_size,
                        cuda::stream_ref stream);
+
+/**
+ * @brief Publish the flat level-prepass valid-rank map and output validity from decoded levels.
+ *
+ * Runs once per subpass, before the decode kernels, over the pages the selector claimed. Writes
+ * `PagePrepassState::nz_idx` / `nz_count` / `aux_count` and the leaf column's null mask, so that
+ * the matching decode kernel can place values without walking definition levels itself.
+ */
+void precompute_flat_level_state(cudf::detail::hostdevice_span<PageInfo> pages,
+                                 cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
+                                 cudf::device_span<bool const> page_mask,
+                                 size_t min_row,
+                                 size_t num_rows,
+                                 int level_type_size,
+                                 cuda::stream_ref stream);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

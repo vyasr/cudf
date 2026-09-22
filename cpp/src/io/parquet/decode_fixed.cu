@@ -380,10 +380,8 @@ __device__ int skip_validity_and_row_indices_nonlist(
     value_count += batch_size;
     max_depth_valid_count += block_valid_count;
 
-    // `scan_storage` is a single shared allocation that is reused by the next iteration of this
-    // loop. CUB requires a barrier between the last read of a collective's TempStorage and its
-    // reuse, otherwise a thread racing ahead into the next iteration can clobber the scan that
-    // slower threads are still reading. Do not remove.
+    // Required before the next iteration reuses `scan_storage`: CUB needs a barrier between the
+    // last read of a collective's TempStorage and its reuse.
     __syncthreads();
   }  // end loop
 
@@ -494,13 +492,9 @@ __device__ int update_validity_and_row_indices_nested(
         max_depth_valid_count += block_valid_count;
       }
 
-      // `scan_storage` is a single shared allocation that is reused by the next iteration of the
-      // depth loop (and by the next iteration of the enclosing value loop). CUB requires a barrier
-      // between the last read of a collective's TempStorage and its reuse, otherwise a thread
-      // racing ahead into the next iteration can clobber the scan that slower threads are still
-      // reading, silently corrupting the validity bits and valid counts of nested columns.
-      // Placing the barrier at the end of the depth loop body also covers the value-loop back
-      // edge, since the depth loop always executes at least once. Do not remove.
+      // Required before `scan_storage` is reused: CUB needs a barrier between the last read of a
+      // collective's TempStorage and its reuse. At the end of the depth loop it also covers the
+      // enclosing value loop's back edge, since the depth loop always runs at least once.
       __syncthreads();
     }  // end depth loop
 
@@ -616,10 +610,8 @@ __device__ int update_validity_and_row_indices_flat(
     value_count += block_value_count;
     valid_count += block_valid_count;
 
-    // `scan_storage` is a single shared allocation that is reused by the next iteration of this
-    // loop. CUB requires a barrier between the last read of a collective's TempStorage and its
-    // reuse, otherwise a thread racing ahead into the next iteration can clobber the scan that
-    // slower threads are still reading. Do not remove.
+    // Required before the next iteration reuses `scan_storage`: CUB needs a barrier between the
+    // last read of a collective's TempStorage and its reuse.
     __syncthreads();
   }
 

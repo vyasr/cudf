@@ -414,9 +414,9 @@ void reader_impl::allocate_level_decode_space()
   std::vector<size_t> flat_map_sizes(num_pages, 0);
   size_t flat_prepass_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto const& page  = pages[idx];
-    auto const& chunk = pass.chunks[page.chunk_idx];
+    auto const& page = pages[idx];
     if (page.prepass_is(level_prepass_family::DELTA_FLAT)) {
+      auto const& chunk         = pass.chunks[page.chunk_idx];
       host_state(idx)->nz_count = PagePrepassState::not_yet_produced;
       if (chunk.max_level[level_type::DEFINITION] != 0) {
         flat_map_sizes[idx] = static_cast<size_t>(page.num_input_values) * sizeof(uint32_t);

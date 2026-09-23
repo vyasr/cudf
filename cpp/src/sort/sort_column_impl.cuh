@@ -70,8 +70,15 @@ struct string_prefix_extractor {
 /**
  * @brief String comparator accelerated by a contiguous array of cached prefix keys.
  *
- * This cached-prefix optimization was inspired by Eiger (https://arxiv.org/abs/2607.04489), but
- * is not an implementation of Eiger's string-sorting algorithm.
+ * This optimization was inspired by Eiger (https://arxiv.org/abs/2607.04489), which optionally
+ * caches four-byte prefixes based on runtime prefix-distribution statistics. This implementation
+ * instead uses a fixed-width prefix (currently eight bytes) for every nontrivial single-column
+ * string sort and does not perform Eiger's runtime profiling or algorithm selection.
+ *
+ * This implementation also right-pads short strings with zero bytes and resolves the resulting
+ * prefix collisions using string lengths. Comparisons tied after a complete prefix resume at the
+ * first uncached byte, and nullable and non-nullable inputs use separate comparator
+ * specializations.
  */
 template <typename PrefixKey, bool has_nulls>
 struct string_prefix_comparator {

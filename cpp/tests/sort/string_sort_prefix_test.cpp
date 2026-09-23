@@ -6,11 +6,19 @@
 #include <cudf_test/base_fixture.hpp>
 #include <cudf_test/column_utilities.hpp>
 #include <cudf_test/column_wrapper.hpp>
+#include <cudf_test/cudf_gtest.hpp>
+#include <cudf_test/memory_resource_utilities.hpp>
 #include <cudf_test/table_utilities.hpp>
 
+#include <cudf/column/column_factories.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/table/table_view.hpp>
+#include <cudf/utilities/memory_resource.hpp>
+
+#include <rmm/mr/statistics_resource_adaptor.hpp>
+
+#include <cuda/stream>
 
 #include <algorithm>
 #include <cstdint>
@@ -73,7 +81,57 @@ std::vector<bool> edge_case_validity()
           true};
 }
 
+bool bytewise_less(std::string const& lhs, std::string const& rhs)
+{
+  return std::lexicographical_compare(
+    lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), [](char left, char right) {
+      return static_cast<uint8_t>(left) < static_cast<uint8_t>(right);
+    });
+}
+
+}  // namespace
+
 struct StringPrefixSort : public cudf::test::BaseFixture {};
+
+TEST_F(StringPrefixSort, EmptySingletonAndAllNull)
+{
+  auto const empty       = cudf::make_empty_column(cudf::type_id::STRING);
+  auto const empty_order = cudf::stable_sorted_order(cudf::table_view{{empty->view()}});
+  EXPECT_EQ(empty_order->size(), 0);
+
+  auto const singleton          = cudf::test::strings_column_wrapper{"only"};
+  auto const singleton_order    = cudf::stable_sorted_order(cudf::table_view{{singleton}});
+  auto const expected_singleton = cudf::test::fixed_width_column_wrapper<cudf::size_type>{0};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_singleton, singleton_order->view());
+
+  auto const all_null       = cudf::test::strings_column_wrapper{{"x", "y", "z"}, {0, 0, 0}};
+  auto const all_null_order = cudf::stable_sorted_order(
+    cudf::table_view{{all_null}}, {cudf::order::DESCENDING}, {cudf::null_order::AFTER});
+  auto const expected_all_null = cudf::test::fixed_width_column_wrapper<cudf::size_type>{0, 1, 2};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_all_null, all_null_order->view());
+
+  auto const unstable_order = cudf::sorted_order(
+    cudf::table_view{{all_null}}, {cudf::order::ASCENDING}, {cudf::null_order::BEFORE});
+  EXPECT_EQ(unstable_order->size(), 3);
+}
+
+TEST_F(StringPrefixSort, HalfNullBothOrders)
+{
+  auto const input = cudf::test::strings_column_wrapper{
+    {"z", "ignored", "a", "ignored", "m", "ignored"}, {1, 0, 1, 0, 1, 0}};
+
+  auto const ascending = cudf::stable_sorted_order(
+    cudf::table_view{{input}}, {cudf::order::ASCENDING}, {cudf::null_order::BEFORE});
+  auto const expected_ascending =
+    cudf::test::fixed_width_column_wrapper<cudf::size_type>{1, 3, 5, 2, 4, 0};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_ascending, ascending->view());
+
+  auto const descending = cudf::stable_sorted_order(
+    cudf::table_view{{input}}, {cudf::order::DESCENDING}, {cudf::null_order::AFTER});
+  auto const expected_descending =
+    cudf::test::fixed_width_column_wrapper<cudf::size_type>{1, 3, 5, 0, 4, 2};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
+}
 
 TEST_F(StringPrefixSort, UnstableAscendingEdgeCases)
 {
@@ -204,12 +262,7 @@ TEST_F(StringPrefixSort, StableMultiBlockInput)
   std::vector<cudf::size_type> expected_indices(count);
   std::iota(expected_indices.begin(), expected_indices.end(), 0);
   std::stable_sort(expected_indices.begin(), expected_indices.end(), [&](auto lhs, auto rhs) {
-    auto const& left  = strings[lhs];
-    auto const& right = strings[rhs];
-    return std::lexicographical_compare(
-      left.begin(), left.end(), right.begin(), right.end(), [](char l, char r) {
-        return static_cast<uint8_t>(l) < static_cast<uint8_t>(r);
-      });
+    return bytewise_less(strings[lhs], strings[rhs]);
   });
 
   auto const input    = cudf::test::strings_column_wrapper{strings.begin(), strings.end()};
@@ -237,14 +290,7 @@ TEST_F(StringPrefixSort, VariableLengthStrings)
 
   std::vector<cudf::size_type> ascending_indices(count);
   std::iota(ascending_indices.begin(), ascending_indices.end(), 0);
-  auto const less = [&](auto lhs, auto rhs) {
-    auto const& left  = strings[lhs];
-    auto const& right = strings[rhs];
-    return std::lexicographical_compare(
-      left.begin(), left.end(), right.begin(), right.end(), [](char l, char r) {
-        return static_cast<std::uint8_t>(l) < static_cast<std::uint8_t>(r);
-      });
-  };
+  auto const less = [&](auto lhs, auto rhs) { return bytewise_less(strings[lhs], strings[rhs]); };
   std::stable_sort(ascending_indices.begin(), ascending_indices.end(), less);
 
   auto const input     = cudf::test::strings_column_wrapper{strings.begin(), strings.end()};
@@ -264,4 +310,27 @@ TEST_F(StringPrefixSort, VariableLengthStrings)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
 }
 
-}  // namespace
+TEST_F(StringPrefixSort, NonDefaultStreamAndCurrentMemoryResource)
+{
+  auto const input = cudf::test::strings_column_wrapper{
+    "abcdefghZ", "abcdefghA", "short", "abcdefghA", "long-common-prefix"};
+  auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>{1, 3, 0, 4, 2};
+
+  int device{};
+  CUDF_CUDA_TRY(cudaGetDevice(&device));
+  cuda::stream stream{cuda::device_ref{device}};
+  auto const upstream = cudf::get_current_device_resource_ref();
+  auto output_mr      = rmm::mr::statistics_resource_adaptor{upstream};
+  auto temporary_mr   = rmm::mr::statistics_resource_adaptor{upstream};
+
+  std::unique_ptr<cudf::column> result;
+  {
+    auto current_scope = cudf::test::scoped_current_device_resource{temporary_mr};
+    result = cudf::stable_sorted_order(cudf::table_view{{input}}, {}, {}, stream, output_mr);
+    stream.sync();
+  }
+
+  EXPECT_GT(output_mr.get_bytes_counter().total, 0);
+  EXPECT_GT(temporary_mr.get_bytes_counter().total, 0);
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+}

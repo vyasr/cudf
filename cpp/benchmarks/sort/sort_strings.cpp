@@ -12,6 +12,7 @@
 #include <cudf/table/table.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
+#include <cudf/utilities/error.hpp>
 
 #include <nvbench/nvbench.cuh>
 
@@ -20,73 +21,28 @@
 
 namespace {
 
-std::unique_ptr<cudf::column> make_input(cudf::size_type num_rows,
-                                         cudf::size_type min_width,
-                                         cudf::size_type max_width,
-                                         std::string const& workload,
-                                         unsigned seed = 1)
+constexpr unsigned seed = 1;
+
+void run_sorted_order_benchmark(nvbench::state& state, std::unique_ptr<cudf::column> const& input)
 {
-  if (workload == "duplicates") {
-    data_profile const profile =
-      data_profile_builder().no_validity().cardinality(64).avg_run_length(1).distribution(
-        cudf::type_id::STRING, distribution_id::NORMAL, min_width, max_width);
-    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-  }
+  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().get()));
+  state.add_global_memory_reads<nvbench::int8_t>(input->alloc_size());
+  state.add_global_memory_writes<cudf::size_type>(input->size());
 
-  if (workload == "shared_prefix") {
-    constexpr cudf::size_type suffix_width = 8;
-    auto const prefix_width                = max_width - suffix_width;
-    data_profile const prefix_profile =
-      data_profile_builder()
-        .no_validity()
-        .cardinality(1)
-        .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, prefix_width, prefix_width)
-        .string_char_range('a', 'a');
-    data_profile const suffix_profile =
-      data_profile_builder()
-        .no_validity()
-        .cardinality(0)
-        .avg_run_length(1)
-        .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, suffix_width, suffix_width)
-        .string_char_range(' ', '~');
-    auto const prefix =
-      create_random_column(cudf::type_id::STRING, row_count{num_rows}, prefix_profile, seed);
-    auto const suffix =
-      create_random_column(cudf::type_id::STRING, row_count{num_rows}, suffix_profile, seed + 1);
-    return cudf::strings::concatenate(cudf::table_view{{prefix->view(), suffix->view()}});
-  }
+  auto const mem_stats_logger = cudf::memory_stats_logger();
 
-  if (workload == "normal") {
-    data_profile const profile = data_profile_builder().distribution(
-      cudf::type_id::STRING, distribution_id::NORMAL, min_width, max_width);
-    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-  }
+  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
+    cudf::sorted_order(cudf::table_view{{input->view()}});
+  });
 
-  data_profile const profile =
-    data_profile_builder().no_validity().cardinality(0).avg_run_length(1).distribution(
-      cudf::type_id::STRING, distribution_id::UNIFORM, min_width, max_width);
-  return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  state.add_buffer_size(
+    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
 }
 
-std::unique_ptr<cudf::column> make_cardinality_input(cudf::size_type num_rows,
-                                                     cudf::size_type max_width,
-                                                     cudf::size_type cardinality,
-                                                     unsigned seed)
+std::unique_ptr<cudf::column> make_prefixed_input(cudf::size_type num_rows,
+                                                  cudf::size_type prefix_width,
+                                                  cudf::size_type suffix_width)
 {
-  data_profile const profile =
-    data_profile_builder()
-      .no_validity()
-      .cardinality(cardinality)
-      .avg_run_length(1)
-      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, 0, max_width);
-  return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-}
-
-std::unique_ptr<cudf::column> make_prefix_input(cudf::size_type num_rows,
-                                                cudf::size_type prefix_width,
-                                                unsigned seed)
-{
-  constexpr cudf::size_type suffix_width = 32;
   data_profile const prefix_profile =
     data_profile_builder()
       .no_validity()
@@ -107,23 +63,43 @@ std::unique_ptr<cudf::column> make_prefix_input(cudf::size_type num_rows,
   return cudf::strings::concatenate(cudf::table_view{{prefix->view(), suffix->view()}});
 }
 
-std::unique_ptr<cudf::column> make_length_input(cudf::size_type num_rows,
-                                                std::string const& length_profile,
-                                                double null_probability,
-                                                unsigned seed)
+std::unique_ptr<cudf::column> make_distribution_input(cudf::size_type num_rows,
+                                                      std::string const& profile_name)
 {
-  auto min_width    = cudf::size_type{0};
-  auto max_width    = cudf::size_type{32};
-  auto distribution = distribution_id::UNIFORM;
-  if (length_profile == "fixed_8") {
+  if (profile_name == "cardinality_1_width_32") {
+    data_profile const profile =
+      data_profile_builder().no_validity().cardinality(1).avg_run_length(1).distribution(
+        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 32);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  if (profile_name == "cardinality_64_width_128") {
+    data_profile const profile =
+      data_profile_builder().no_validity().cardinality(64).avg_run_length(1).distribution(
+        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 128);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  if (profile_name == "shared_prefix_64") { return make_prefixed_input(num_rows, 64, 32); }
+  if (profile_name == "variable_128") {
+    data_profile const profile =
+      data_profile_builder().no_validity().cardinality(0).avg_run_length(1).distribution(
+        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 128);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  CUDF_FAIL("Unknown string distribution profile: " + profile_name);
+}
+
+std::unique_ptr<cudf::column> make_nullable_input(cudf::size_type num_rows,
+                                                  std::string const& profile_name,
+                                                  double null_probability)
+{
+  auto min_width = cudf::size_type{0};
+  auto max_width = cudf::size_type{0};
+  if (profile_name == "fixed_8") {
     min_width = max_width = 8;
-  } else if (length_profile == "fixed_64") {
-    min_width = max_width = 64;
-  } else if (length_profile == "variable_128") {
+  } else if (profile_name == "variable_128") {
     max_width = 128;
-  } else if (length_profile == "normal_128") {
-    max_width    = 128;
-    distribution = distribution_id::NORMAL;
+  } else {
+    CUDF_FAIL("Unknown nullable string profile: " + profile_name);
   }
 
   data_profile const profile =
@@ -131,25 +107,10 @@ std::unique_ptr<cudf::column> make_length_input(cudf::size_type num_rows,
       .null_probability(null_probability)
       .cardinality(0)
       .avg_run_length(1)
-      .distribution(cudf::type_id::STRING, distribution, min_width, max_width);
-  return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-}
-
-void run_sort_benchmark(nvbench::state& state, std::unique_ptr<cudf::column> const& input)
-{
-  auto const bytes = input->alloc_size();
-
-  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().get()));
-  state.add_global_memory_reads<nvbench::int8_t>(bytes);
-  state.add_global_memory_writes<nvbench::int8_t>(bytes);
-
-  auto const mem_stats_logger = cudf::memory_stats_logger();
-
-  state.exec(nvbench::exec_tag::sync,
-             [&](nvbench::launch& launch) { cudf::sort(cudf::table_view{{input->view()}}); });
-
-  state.add_buffer_size(
-    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
+      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, min_width, max_width);
+  auto result = create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  if (null_probability == 1.0) { result->set_null_count(num_rows); }
+  return result;
 }
 
 }  // namespace
@@ -159,44 +120,30 @@ static void bench_sort_strings(nvbench::state& state)
   auto const num_rows  = static_cast<cudf::size_type>(state.get_int64("num_rows"));
   auto const min_width = static_cast<cudf::size_type>(state.get_int64("min_width"));
   auto const max_width = static_cast<cudf::size_type>(state.get_int64("max_width"));
-  auto const workload  = state.get_string("workload");
 
-  run_sort_benchmark(state, make_input(num_rows, min_width, max_width, workload));
-}
+  data_profile const profile = data_profile_builder().distribution(
+    cudf::type_id::STRING, distribution_id::NORMAL, min_width, max_width);
 
-static void bench_sort_strings_cardinality(nvbench::state& state)
-{
-  auto const num_rows    = static_cast<cudf::size_type>(state.get_int64("num_rows"));
-  auto const max_width   = static_cast<cudf::size_type>(state.get_int64("max_width"));
-  auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
-  auto const seed        = static_cast<unsigned>(state.get_int64("seed"));
-  run_sort_benchmark(state, make_cardinality_input(num_rows, max_width, cardinality, seed));
-}
+  auto const table = create_random_table({cudf::type_id::STRING}, row_count{num_rows}, profile);
+  auto const bytes = table->alloc_size();
 
-static void bench_sort_strings_prefix(nvbench::state& state)
-{
-  auto const num_rows     = static_cast<cudf::size_type>(state.get_int64("num_rows"));
-  auto const prefix_width = static_cast<cudf::size_type>(state.get_int64("prefix_width"));
-  auto const seed         = static_cast<unsigned>(state.get_int64("seed"));
-  run_sort_benchmark(state, make_prefix_input(num_rows, prefix_width, seed));
-}
+  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().get()));
+  state.add_global_memory_reads<nvbench::int8_t>(bytes);
+  state.add_global_memory_writes<nvbench::int8_t>(bytes);
 
-static void bench_sort_strings_length(nvbench::state& state)
-{
-  auto const num_rows       = static_cast<cudf::size_type>(state.get_int64("num_rows"));
-  auto const length_profile = state.get_string("length_profile");
-  auto const null_percent   = static_cast<double>(state.get_int64("null_percent"));
-  auto const seed           = static_cast<unsigned>(state.get_int64("seed"));
-  run_sort_benchmark(state,
-                     make_length_input(num_rows, length_profile, null_percent / 100.0, seed));
+  auto const mem_stats_logger = cudf::memory_stats_logger();
+
+  state.exec(nvbench::exec_tag::sync, [&](nvbench::launch& launch) { cudf::sort(table->view()); });
+
+  state.add_buffer_size(
+    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
 }
 
 NVBENCH_BENCH(bench_sort_strings)
   .set_name("sort_strings")
   .add_int64_axis("min_width", {0})
   .add_int64_axis("max_width", {32, 64, 128, 256})
-  .add_int64_axis("num_rows", {32768, 262144, 2097152})
-  .add_string_axis("workload", {"normal", "duplicates", "shared_prefix", "variable"});
+  .add_int64_axis("num_rows", {32768, 262144, 2097152});
 
 // Measures the `sorted_order` fast-path case: a single strings column with no nulls
 static void bench_sorted_order_strings(nvbench::state& state)
@@ -266,25 +213,30 @@ NVBENCH_BENCH(bench_sorted_order_strings_multi)
   .add_int64_axis("num_cols", {2, 4})
   .add_int64_axis("num_rows", {262144, 2097152});
 
-// These targeted families exercise cardinality, common-prefix, and string-length sensitivity.
-// Two seeds guard against tuning conclusions to a particular generated input.
-NVBENCH_BENCH(bench_sort_strings_cardinality)
-  .set_name("sort_strings_cardinality")
-  .add_int64_axis("num_rows", {262144, 2097152})
-  .add_int64_axis("max_width", {32, 128})
-  .add_int64_axis("cardinality", {1, 4, 16, 64, 1024})
-  .add_int64_axis("seed", {1, 17});
+static void bench_sorted_order_strings_distribution(nvbench::state& state)
+{
+  auto const num_rows = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const profile  = state.get_string("profile");
+  run_sorted_order_benchmark(state, make_distribution_input(num_rows, profile));
+}
 
-NVBENCH_BENCH(bench_sort_strings_prefix)
-  .set_name("sort_strings_prefix")
+NVBENCH_BENCH(bench_sorted_order_strings_distribution)
+  .set_name("sorted_order_strings_distribution")
   .add_int64_axis("num_rows", {262144, 2097152})
-  .add_int64_axis("prefix_width", {0, 8, 24, 64, 128})
-  .add_int64_axis("seed", {1, 17});
+  .add_string_axis(
+    "profile",
+    {"cardinality_1_width_32", "cardinality_64_width_128", "shared_prefix_64", "variable_128"});
 
-NVBENCH_BENCH(bench_sort_strings_length)
-  .set_name("sort_strings_length")
-  .add_int64_axis("num_rows", {262144, 2097152, 16777216})
-  .add_string_axis("length_profile",
-                   {"fixed_8", "fixed_64", "variable_32", "variable_128", "normal_128"})
-  .add_int64_axis("null_percent", {0, 10})
-  .add_int64_axis("seed", {1, 17});
+static void bench_sorted_order_strings_nulls(nvbench::state& state)
+{
+  auto const num_rows     = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const profile      = state.get_string("profile");
+  auto const null_percent = static_cast<double>(state.get_int64("null_percent"));
+  run_sorted_order_benchmark(state, make_nullable_input(num_rows, profile, null_percent / 100.0));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_nulls)
+  .set_name("sorted_order_strings_nulls")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_string_axis("profile", {"fixed_8", "variable_128"})
+  .add_int64_axis("null_percent", {0, 50, 100});

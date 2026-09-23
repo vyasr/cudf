@@ -24,33 +24,65 @@
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/gather.h>
+#include <thrust/sequence.h>
 #include <thrust/transform.h>
 
 #include <cstdint>
+#include <cstdlib>
+#include <string_view>
 #include <type_traits>
 
 namespace cudf {
 namespace detail {
 
+enum class string_sort_prefix_mode : uint8_t { BASELINE = 0, PREFIX_4 = 4, PREFIX_8 = 8 };
+
 /**
- * @brief Extracts the first eight bytes of a string as an unsigned big-endian integer.
+ * @brief Returns the cached-prefix width selected for single-column string sorting.
+ *
+ * This temporary internal selector supports side-by-side performance evaluation during review.
+ * Invalid values select the baseline implementation until a cached-prefix mode passes the
+ * performance acceptance gates.
+ */
+inline string_sort_prefix_mode get_string_sort_prefix_mode()
+{
+  static auto const mode = [] {
+    auto const* value = std::getenv("LIBCUDF_STRING_SORT_PREFIX_BYTES");
+    if (value == nullptr) { return string_sort_prefix_mode::BASELINE; }
+
+    auto const setting = std::string_view{value};
+    if (setting == "0") { return string_sort_prefix_mode::BASELINE; }
+    if (setting == "4") { return string_sort_prefix_mode::PREFIX_4; }
+    if (setting == "8") { return string_sort_prefix_mode::PREFIX_8; }
+    return string_sort_prefix_mode::BASELINE;
+  }();
+  return mode;
+}
+
+/**
+ * @brief Extracts the first bytes of a string as an unsigned big-endian integer.
  *
  * Zero padding is order preserving. It can create a prefix tie between a short string and a
  * longer string containing zero bytes, but the full string comparator resolves every such tie.
  */
-template <bool has_nulls>
+template <typename PrefixKey, bool has_nulls>
 struct string_prefix_extractor {
-  __device__ uint64_t operator()(size_type row) const
+  static_assert(std::is_unsigned_v<PrefixKey>);
+  static constexpr auto prefix_bytes = static_cast<size_type>(sizeof(PrefixKey));
+
+  __device__ PrefixKey operator()(size_type row) const
   {
     if constexpr (has_nulls) {
       if (d_column.is_null(row)) { return 0; }
     }
 
     auto const string = d_column.element<string_view>(row);
-    uint64_t prefix   = 0;
-    for (size_type byte = 0; byte < 8; ++byte) {
+    PrefixKey prefix  = 0;
+    for (size_type byte = 0; byte < prefix_bytes; ++byte) {
       prefix <<= 8;
-      if (byte < string.size_bytes()) { prefix |= static_cast<uint8_t>(string.data()[byte]); }
+      if (byte < string.size_bytes()) {
+        prefix |= static_cast<PrefixKey>(static_cast<uint8_t>(string.data()[byte]));
+      }
     }
     return prefix;
   }
@@ -59,10 +91,13 @@ struct string_prefix_extractor {
 };
 
 /**
- * @brief String comparator accelerated by a contiguous array of eight-byte prefix keys.
+ * @brief String comparator accelerated by a contiguous array of cached prefix keys.
  */
-template <bool has_nulls>
+template <typename PrefixKey, bool has_nulls>
 struct string_prefix_comparator {
+  static_assert(std::is_unsigned_v<PrefixKey>);
+  static constexpr auto prefix_bytes = static_cast<size_type>(sizeof(PrefixKey));
+
   __device__ bool operator()(size_type lhs, size_type rhs)
   {
     if constexpr (has_nulls) {
@@ -82,11 +117,10 @@ struct string_prefix_comparator {
 
     auto const left_element  = d_column.element<string_view>(lhs);
     auto const right_element = d_column.element<string_view>(rhs);
-    // Equal cached keys prove that the first eight bytes match whenever both values contain at
-    // least eight bytes. Resume comparison at the first byte not represented by the key instead
+    // Equal cached keys prove that the cached bytes match whenever both values contain a complete
+    // prefix. Resume comparison at the first byte not represented by the key instead
     // of rescanning the known-equal prefix. Shorter values need the full comparison because zero
     // padding deliberately does not encode the distinction between a missing byte and '\0'.
-    auto constexpr prefix_bytes = static_cast<size_type>(sizeof(uint64_t));
     if (left_element.size_bytes() >= prefix_bytes && right_element.size_bytes() >= prefix_bytes) {
       auto const left_suffix =
         string_view{left_element.data() + prefix_bytes, left_element.size_bytes() - prefix_bytes};
@@ -98,7 +132,7 @@ struct string_prefix_comparator {
   }
 
   column_device_view const d_column;
-  uint64_t const* prefixes;
+  PrefixKey const* prefixes;
   bool ascending;
   null_order null_precedence{};
 };
@@ -156,7 +190,7 @@ struct column_sorted_order_fn {
     }
   }
 
-  template <bool has_nulls>
+  template <typename PrefixKey, bool has_nulls>
   void prefix_sorted_order_impl(column_view const& input,
                                 column_device_view const& keys,
                                 mutable_column_view& indices,
@@ -165,30 +199,41 @@ struct column_sorted_order_fn {
                                 cuda::stream_ref stream)
   {
     auto prefixes =
-      rmm::device_uvector<uint64_t>(input.size(), stream, cudf::get_current_device_resource_ref());
+      rmm::device_uvector<PrefixKey>(input.size(), stream, cudf::get_current_device_resource_ref());
     auto rows = cuda::counting_iterator<cudf::size_type>{0};
     thrust::transform(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                       rows,
                       rows + input.size(),
                       prefixes.begin(),
-                      string_prefix_extractor<has_nulls>{keys});
+                      string_prefix_extractor<PrefixKey, has_nulls>{keys});
 
-    auto comp =
-      string_prefix_comparator<has_nulls>{keys, prefixes.data(), ascending, null_precedence};
+    auto comp = string_prefix_comparator<PrefixKey, has_nulls>{
+      keys, prefixes.data(), ascending, null_precedence};
     merge_sort(indices, comp, stream);
   }
 
+  template <typename PrefixKey>
   void prefix_sorted_order(column_view const& input,
                            mutable_column_view& indices,
                            bool ascending,
                            null_order null_precedence,
                            cuda::stream_ref stream)
   {
+    if (input.size() < 2 or input.null_count() == input.size()) {
+      thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                       indices.begin<size_type>(),
+                       indices.end<size_type>(),
+                       size_type{0});
+      return;
+    }
+
     auto keys = column_device_view::create(input, stream);
     if (input.has_nulls()) {
-      prefix_sorted_order_impl<true>(input, *keys, indices, ascending, null_precedence, stream);
+      prefix_sorted_order_impl<PrefixKey, true>(
+        input, *keys, indices, ascending, null_precedence, stream);
     } else {
-      prefix_sorted_order_impl<false>(input, *keys, indices, ascending, null_precedence, stream);
+      prefix_sorted_order_impl<PrefixKey, false>(
+        input, *keys, indices, ascending, null_precedence, stream);
     }
   }
 
@@ -212,8 +257,15 @@ struct column_sorted_order_fn {
                     cuda::stream_ref stream)
   {
     if constexpr (std::is_same_v<T, string_view>) {
-      prefix_sorted_order(input, indices, ascending, null_precedence, stream);
-      return;
+      switch (get_string_sort_prefix_mode()) {
+        case string_sort_prefix_mode::PREFIX_4:
+          prefix_sorted_order<uint32_t>(input, indices, ascending, null_precedence, stream);
+          return;
+        case string_sort_prefix_mode::PREFIX_8:
+          prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
+          return;
+        case string_sort_prefix_mode::BASELINE: break;
+      }
     }
 
     auto keys = column_device_view::create(input, stream);

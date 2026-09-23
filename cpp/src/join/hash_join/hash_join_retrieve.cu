@@ -21,7 +21,11 @@
 
 #include <cuda/std/cstdint>
 
+#include <memory>
+#include <optional>
+#include <stdexcept>
 #include <tuple>
+#include <utility>
 
 namespace cudf::detail {
 

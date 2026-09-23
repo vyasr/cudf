@@ -15,7 +15,6 @@
 #include <cudf/utilities/bit.hpp>
 #include <cudf/utilities/error.hpp>
 
-#include <cooperative_groups.h>
 #include <cuda/std/algorithm>
 #include <cuda/std/cstdint>
 #include <cuda/std/utility>
@@ -256,7 +255,7 @@ extern template void
 launch_hash_csr_build_count_kernel<hash_csr_primitive_equal, hash_csr_primitive_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_primitive_equal,
@@ -266,7 +265,7 @@ extern template void
 launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash_csr_row_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_non_nested_equal,
@@ -275,7 +274,7 @@ launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash_csr_row_hashe
 extern template void launch_hash_csr_build_count_kernel<hash_csr_nested_equal, hash_csr_row_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_nested_equal,

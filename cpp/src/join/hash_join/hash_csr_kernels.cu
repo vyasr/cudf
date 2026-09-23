@@ -152,7 +152,7 @@ template void
 launch_hash_csr_build_count_kernel<hash_csr_primitive_equal, hash_csr_primitive_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_primitive_equal,
@@ -161,7 +161,7 @@ launch_hash_csr_build_count_kernel<hash_csr_primitive_equal, hash_csr_primitive_
 template void launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash_csr_row_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_non_nested_equal,
@@ -170,7 +170,7 @@ template void launch_hash_csr_build_count_kernel<hash_csr_non_nested_equal, hash
 template void launch_hash_csr_build_count_kernel<hash_csr_nested_equal, hash_csr_row_hasher>(
   size_type,
   bitmask_type const*,
-  build_position_type*,
+  size_type*,
   size_type*,
   hash_table_ref,
   hash_csr_nested_equal,

@@ -15,6 +15,9 @@
 #include <cuda/std/cstdint>
 #include <cuda/std/functional>
 
+#include <limits>
+#include <stdexcept>
+
 namespace cudf::detail {
 
 template <typename Hasher>

@@ -290,6 +290,10 @@ enum class level_prepass_family : uint8_t {
  */
 struct PagePrepassState {
   /// `nz_count` value meaning "selected, but the producer has not run yet".
+  ///
+  /// The backing array is sized to every page of the subpass, so an *unselected* page's slot holds
+  /// this value too. It is only meaningful when reached through `PageInfo::prepass_state`, which is
+  /// null for those pages -- do not iterate the array by page index.
   static constexpr int32_t not_yet_produced = -2;
 
   /// Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a

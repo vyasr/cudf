@@ -45,9 +45,9 @@ namespace {
 /**
  * @brief Decide which level-prepass consumer, if any, can decode @p page.
  *
- * Structural only -- it answers "is there a consumer for this page's shape and encoding", not
- * "is the prepass enabled". Enablement is applied separately by the caller so that the family
- * classification is stable for a given file regardless of the env var.
+ * Structural only: it answers "is there a consumer for this page's shape and encoding", and
+ * knows nothing about whether the prepass is enabled. The caller decides whether to ask at all --
+ * with the feature off it does not, and every page keeps the default `NONE`.
  */
 [[nodiscard]] level_prepass_family classify_prepass_family(PageInfo const& page,
                                                            ColumnChunkDesc const& chunk)

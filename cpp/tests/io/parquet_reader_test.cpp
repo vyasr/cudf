@@ -133,16 +133,17 @@ TEST_F(ParquetReaderTest, LevelPrepassMatchesLegacyDecoder)
         .build());
   };
 
-  // Unset is the shipping configuration while the feature is opt-in.
+  // Unset is now the shipping configuration, and it selects the prepass.
   {
     scoped_env env{nullptr};
-    auto const legacy = read_back();
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, legacy.tbl->view());
-  }
-  {
-    scoped_env env{"1"};
     auto const prepass = read_back();
     CUDF_TEST_EXPECT_TABLES_EQUAL(expected, prepass.tbl->view());
+  }
+  // `0` is the kill switch: it must still reach the legacy decoder.
+  {
+    scoped_env env{"0"};
+    auto const legacy = read_back();
+    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, legacy.tbl->view());
   }
   // A bounded read puts the same pages on the bounds-page path, where the two routes diverge most.
   {
@@ -161,7 +162,7 @@ TEST_F(ParquetReaderTest, LevelPrepassMatchesLegacyDecoder)
       CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
     }
     {
-      scoped_env env{"1"};
+      scoped_env env{"0"};
       CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
     }
   }

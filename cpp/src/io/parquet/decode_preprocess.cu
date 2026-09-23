@@ -54,6 +54,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
   if (!pp->prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+  // Skipping the map for a page whose null rate cannot repay it is the point of the gate; the
+  // consumer and filter_delta_legacy_pages apply the same test, so the page decodes with the
+  // legacy kernel instead. Doing it here rather than only in the consumer means the producer does
+  // not build a map nobody reads.
+  if (!delta_prepass_pays_for_itself(*pp)) { return; }
   if (!page_mask.empty() && !page_mask[page_idx]) { return; }
 
   auto* const s = &state_g;

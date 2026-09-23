@@ -313,8 +313,9 @@ struct PagePrepassState {
  * written. This is the other half: a page whose mask is absent here gets no scratch and no map,
  * and keeps the legacy decoder. It widens as the remaining consumers land.
  */
-constexpr uint32_t FLAT_LEVEL_PREPASS_MASK =
-  BitOr(decode_kernel_mask::DELTA_BINARY, decode_kernel_mask::DELTA_LENGTH_BA);
+constexpr uint32_t FLAT_LEVEL_PREPASS_MASK = BitOr(decode_kernel_mask::DELTA_BINARY,
+                                                   decode_kernel_mask::DELTA_LENGTH_BA,
+                                                   decode_kernel_mask::DELTA_BYTE_ARRAY);
 
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
@@ -485,6 +486,48 @@ struct PageInfo {
     return prepass_state != nullptr && prepass_family == family;
   }
 };
+
+/**
+ * @brief Null rate, in percent, below which the level prepass costs a DELTA_BYTE_ARRAY page more
+ * than it saves it.
+ *
+ * Measured on H100 as the crossover of the flat prepass/legacy ratio against null rate, 512 MiB,
+ * five order-balanced rounds per point: 1% -> 1.105, 5% -> 1.021, 10% -> 0.826, 20% -> 0.584,
+ * 30% -> 0.461, 50% -> 0.258. The curve crosses 1.0 at roughly 5.5%, and 6 is the first whole
+ * percent past it. Within a point either side of the threshold the two paths are within 2% of each
+ * other, so its exact value matters little; what matters is not running the prepass at 1%.
+ */
+constexpr int delta_byte_array_prepass_min_null_percent = 6;
+
+/**
+ * @brief Whether the level prepass earns its keep on @p page.
+ *
+ * The prepass' cost scales with a page's value count and its benefit with its null count, so below
+ * some null rate it is pure overhead. That break-even is per-encoding, because the consumers
+ * differ, and only DELTA_BYTE_ARRAY has one above zero: measured flat at 1% nulls,
+ * DELTA_BINARY_PACKED is already at 0.947 and DELTA_LENGTH_BYTE_ARRAY at 0.803, and both improve
+ * monotonically from there, so gating either would only give away a win.
+ *
+ * Returns true -- keep the prepass -- whenever the page's null counts are unavailable, so a pruned
+ * page (whose counts are zeroed) or one whose counts were never populated keeps exactly the
+ * behaviour it had before this gate existed.
+ *
+ * Must be evaluated identically by the prepass producer, the consumer, `filter_delta_legacy_pages`
+ * and the host launch gate; if those disagree a page is decoded twice or not at all. It is
+ * deliberately *not* folded into `PageInfo::prepass_is()`, which the host calls to size the map
+ * allocations before `num_valids` has been populated and would therefore answer differently.
+ */
+[[nodiscard]] CUDF_HOST_DEVICE inline bool delta_prepass_pays_for_itself(PageInfo const& page)
+{
+  if (page.prepass_family != level_prepass_family::DELTA_FLAT) { return true; }
+  if (BitAnd(page.kernel_mask, decode_kernel_mask::DELTA_BYTE_ARRAY) == 0) { return true; }
+
+  // int64 because num_nulls is an int32 that a large page can push past INT32_MAX/100.
+  auto const nulls = static_cast<int64_t>(page.num_nulls);
+  auto const total = nulls + static_cast<int64_t>(page.num_valids);
+  if (total <= 0) { return true; }
+  return nulls * 100 >= total * delta_byte_array_prepass_min_null_percent;
+}
 
 /** @brief True when @p page's shape and encoding both have a flat prepass consumer. */
 [[nodiscard]] CUDF_HOST_DEVICE inline bool flat_prepass_has_consumer(PageInfo const& page)
@@ -1139,7 +1182,8 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                              cudf::device_span<bool const> page_mask,
                              cudf::device_span<size_t> initial_str_offsets,
                              kernel_error::pointer error_code,
-                             cuda::stream_ref stream);
+                             cuda::stream_ref stream,
+                             bool use_flat_prepass = false);
 
 /**
  * @brief Launches kernel for reading the DELTA_LENGTH_BYTE_ARRAY column data stored in the pages

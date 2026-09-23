@@ -3951,6 +3951,61 @@ TEST_F(ParquetReaderTest, DeltaByteArraySkipAllValid)
                                 result.tbl->view());
 }
 
+TEST_F(ParquetReaderTest, DeltaByteArrayNullRateGateRoundTrips)
+{
+  // The level prepass is gated off for flat DELTA_BYTE_ARRAY pages whose null rate is below
+  // `delta_byte_array_prepass_min_null_percent`, because below that it costs more than it saves.
+  // Four places have to agree on that predicate -- the prepass producer, the consumer,
+  // filter_delta_legacy_pages, and the host-side launch decision -- and a disagreement does not
+  // fail loudly: the page is either decoded twice or by nobody, which shows up as wrong data
+  // rather than an error. So walk null rates either side of the threshold and check the round trip.
+  constexpr int num_rows = 40000;
+
+  for (int null_percent : {0, 1, 5, 6, 7, 10, 50, 100}) {
+    SCOPED_TRACE("null_percent = " + std::to_string(null_percent));
+    auto const strings = cudf::detail::make_counting_transform_iterator(
+      0, [](auto i) { return "string_value_" + std::to_string(i); });
+    // Deterministic, and spread so that pages land on both sides of the threshold consistently.
+    auto const valids = cudf::detail::make_counting_transform_iterator(
+      0, [null_percent](auto i) { return null_percent == 0 || (i % 100) >= null_percent; });
+
+    auto const col      = null_percent == 0
+                            ? cudf::test::strings_column_wrapper{strings, strings + num_rows}
+                            : cudf::test::strings_column_wrapper{strings, strings + num_rows, valids};
+    auto const expected = table_view({col});
+
+    auto input_metadata = cudf::io::table_input_metadata{expected};
+    input_metadata.column_metadata[0].set_encoding(cudf::io::column_encoding::DELTA_BYTE_ARRAY);
+
+    std::vector<char> buffer;
+    cudf::io::write_parquet(
+      cudf::io::parquet_writer_options::builder(cudf::io::sink_info{&buffer}, expected)
+        .write_v2_headers(true)
+        .metadata(input_metadata)
+        .dictionary_policy(cudf::io::dictionary_policy::NEVER)
+        .build());
+
+    auto const result =
+      cudf::io::read_parquet(cudf::io::parquet_reader_options::builder(
+                               cudf::io::source_info{cudf::host_span<std::byte const>{
+                                 reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
+                               .build());
+    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, result.tbl->view());
+
+    // A row-range read puts the same pages on the bounds-page path, where the gated and ungated
+    // routes diverge most (skipped_leaf_values, temp_string_buf staging).
+    auto const trimmed =
+      cudf::io::read_parquet(cudf::io::parquet_reader_options::builder(
+                               cudf::io::source_info{cudf::host_span<std::byte const>{
+                                 reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
+                               .skip_rows(1234)
+                               .num_rows(5678)
+                               .build());
+    SCOPED_TRACE("row-range read");
+    CUDF_TEST_EXPECT_TABLES_EQUAL(cudf::slice(expected, {1234, 1234 + 5678}), trimmed.tbl->view());
+  }
+}
+
 namespace {
 // read `buffer` trimmed to [skip, skip + n) and compare column 0 with the matching slice of
 // `expected`

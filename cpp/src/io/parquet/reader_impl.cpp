@@ -235,9 +235,14 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // create this before we fork streams
   kernel_error error_code(_stream);
 
+  // The null-rate gate is applied here as well as on the device so that a subpass whose pages all
+  // fail it skips the producer launch, its stream and its event entirely, rather than launching a
+  // kernel that exits on every block. `num_valids` is populated and copied back to the host by
+  // `preprocess_subpass_pages`, which runs before this, so the host and device agree.
   auto const has_flat_prepass =
     std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
-      return page.prepass_is(level_prepass_family::DELTA_FLAT);
+      return page.prepass_is(level_prepass_family::DELTA_FLAT) &&
+             delta_prepass_pays_for_itself(page);
     });
 
   // Get the streams up front, so the level prepass can run on one of them concurrently with the
@@ -356,7 +361,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                             subpass_page_mask_span(),
                             initial_str_offsets,
                             error_code.data(),
-                            next_stream(false));
+                            next_stream(has_flat_prepass),
+                            has_flat_prepass);
   }
 
   // launch delta length byte array decoder

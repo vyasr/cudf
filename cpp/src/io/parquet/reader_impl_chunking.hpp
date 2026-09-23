@@ -99,10 +99,8 @@ struct subpass_intermediate_data {
   // Backing store for the flat level-prepass valid-rank maps, carved per page in
   // `allocate_level_decode_space`. Empty unless the prepass claimed at least one page.
   rmm::device_buffer flat_prepass_data;
-  // Out-of-line prepass scratch, one entry per page, allocated empty unless the selector claims
-  // at least one page of this subpass. Host-seeded and then written by the prepass producer
-  // kernels, so it is a hostdevice_vector (uploaded once with the pages) rather than device-only
-  // scratch -- and it must not be re-uploaded between the producer and consumer launches.
+  // Out-of-line prepass scratch, one entry per page. Empty unless the selector claimed at least
+  // one page of this subpass. See PagePrepassState.
   cudf::detail::hostdevice_vector<PagePrepassState> prepass_state_buf;
   cudf::detail::hostdevice_span<PageInfo> pages{};
 

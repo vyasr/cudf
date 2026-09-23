@@ -29,36 +29,10 @@
 #include <thrust/transform.h>
 
 #include <cstdint>
-#include <cstdlib>
-#include <string_view>
 #include <type_traits>
 
 namespace cudf {
 namespace detail {
-
-enum class string_sort_prefix_mode : uint8_t { BASELINE = 0, PREFIX_4 = 4, PREFIX_8 = 8 };
-
-/**
- * @brief Returns the cached-prefix width selected for single-column string sorting.
- *
- * This temporary internal selector supports side-by-side performance evaluation during review.
- * Invalid values select the baseline implementation until a cached-prefix mode passes the
- * performance acceptance gates.
- */
-inline string_sort_prefix_mode get_string_sort_prefix_mode()
-{
-  static auto const mode = [] {
-    auto const* value = std::getenv("LIBCUDF_STRING_SORT_PREFIX_BYTES");
-    if (value == nullptr) { return string_sort_prefix_mode::BASELINE; }
-
-    auto const setting = std::string_view{value};
-    if (setting == "0") { return string_sort_prefix_mode::BASELINE; }
-    if (setting == "4") { return string_sort_prefix_mode::PREFIX_4; }
-    if (setting == "8") { return string_sort_prefix_mode::PREFIX_8; }
-    return string_sort_prefix_mode::BASELINE;
-  }();
-  return mode;
-}
 
 /**
  * @brief Extracts the first bytes of a string as an unsigned big-endian integer.
@@ -266,15 +240,8 @@ struct column_sorted_order_fn {
                     cuda::stream_ref stream)
   {
     if constexpr (std::is_same_v<T, string_view>) {
-      switch (get_string_sort_prefix_mode()) {
-        case string_sort_prefix_mode::PREFIX_4:
-          prefix_sorted_order<uint32_t>(input, indices, ascending, null_precedence, stream);
-          return;
-        case string_sort_prefix_mode::PREFIX_8:
-          prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
-          return;
-        case string_sort_prefix_mode::BASELINE: break;
-      }
+      prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
+      return;
     }
 
     auto keys = column_device_view::create(input, stream);

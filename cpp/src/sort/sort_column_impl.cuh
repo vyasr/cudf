@@ -29,6 +29,7 @@
 #include <thrust/transform.h>
 
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace cudf {
@@ -43,7 +44,8 @@ namespace detail {
 template <typename PrefixKey, bool has_nulls>
 struct string_prefix_extractor {
   static_assert(std::is_unsigned_v<PrefixKey>);
-  static constexpr auto prefix_bytes = static_cast<size_type>(sizeof(PrefixKey));
+  static constexpr auto prefix_bytes  = static_cast<size_type>(sizeof(PrefixKey));
+  static constexpr auto bits_per_byte = std::numeric_limits<uint8_t>::digits;
 
   __device__ PrefixKey operator()(size_type row) const
   {
@@ -54,7 +56,7 @@ struct string_prefix_extractor {
     auto const string = d_column.element<string_view>(row);
     PrefixKey prefix  = 0;
     for (size_type byte = 0; byte < prefix_bytes; ++byte) {
-      prefix <<= 8;
+      prefix <<= bits_per_byte;
       if (byte < string.size_bytes()) {
         prefix |= static_cast<PrefixKey>(static_cast<uint8_t>(string.data()[byte]));
       }

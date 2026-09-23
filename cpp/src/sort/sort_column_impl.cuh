@@ -159,19 +159,19 @@ struct column_sorted_order_fn {
     auto in_keys   = cuda::counting_iterator<cudf::size_type>{0};
     auto out_keys  = indices.begin<size_type>();
     auto tmp_bytes = std::size_t{0};
-    if constexpr (method == sort_method::STABLE) {
-      cub::DeviceMergeSort::StableSortKeysCopy(
-        nullptr, tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
-      auto tmp_stg = rmm::device_buffer(tmp_bytes, stream);
-      cub::DeviceMergeSort::StableSortKeysCopy(
-        tmp_stg.data(), tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
-    } else {
-      cub::DeviceMergeSort::SortKeysCopy(
-        nullptr, tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
-      auto tmp_stg = rmm::device_buffer(tmp_bytes, stream);
-      cub::DeviceMergeSort::SortKeysCopy(
-        tmp_stg.data(), tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
-    }
+    auto sort_keys = [&](void* tmp_stg) {
+      if constexpr (method == sort_method::STABLE) {
+        return cub::DeviceMergeSort::StableSortKeysCopy(
+          tmp_stg, tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
+      } else {
+        return cub::DeviceMergeSort::SortKeysCopy(
+          tmp_stg, tmp_bytes, in_keys, out_keys, indices.size(), comp, stream.get());
+      }
+    };
+
+    sort_keys(nullptr);
+    auto tmp_stg = rmm::device_buffer(tmp_bytes, stream);
+    sort_keys(tmp_stg.data());
   }
 
   template <typename PrefixKey, bool has_nulls>

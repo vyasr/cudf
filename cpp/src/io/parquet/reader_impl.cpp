@@ -244,6 +244,11 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
       return page.prepass_is(level_prepass_family::DELTA_FLAT) &&
              delta_prepass_pays_for_itself(page);
     });
+  auto const has_list_prepass =
+    std::any_of(subpass.pages.host_begin(), subpass.pages.host_end(), [](PageInfo const& page) {
+      return page.prepass_is(level_prepass_family::DELTA_LIST);
+    });
+  auto const has_any_prepass = has_flat_prepass || has_list_prepass;
 
   // Get the streams up front, so the level prepass can run on one of them concurrently with the
   // decode kernels that do not consume it.
@@ -259,8 +264,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // (kernel_mask plus the per-page family), so parallel kernels touch disjoint output.
   int const nkernels = std::bitset<32>(kernel_mask).count();
   // One extra stream for the prepass producer when any page needs it.
-  auto streams = cudf::detail::fork_streams(_stream, nkernels + (has_flat_prepass ? 1 : 0));
-  auto const prepass_stream = has_flat_prepass ? streams.back() : _stream;
+  auto streams = cudf::detail::fork_streams(_stream, nkernels + (has_any_prepass ? 1 : 0));
+  auto const prepass_stream = has_any_prepass ? streams.back() : _stream;
 
   // Signalled once the prepass producer has been enqueued; only consumers wait on it.
   cuda_event_wrapper prepass_done;
@@ -273,8 +278,17 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                 num_rows,
                                 level_type_size,
                                 prepass_stream);
-    prepass_done.record(prepass_stream);
   }
+  if (has_list_prepass) {
+    precompute_list_level_state(subpass.pages,
+                                pass.chunks,
+                                subpass_page_mask_span(),
+                                skip_rows,
+                                num_rows,
+                                level_type_size,
+                                prepass_stream);
+  }
+  if (has_any_prepass) { prepass_done.record(prepass_stream); }
 
   int s_idx = 0;
 
@@ -283,7 +297,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // overlap with the prepass instead of queueing behind it.
   auto next_stream = [&](bool consumes_prepass) -> cuda::stream_ref {
     auto const stream = streams[s_idx++];
-    if (has_flat_prepass && consumes_prepass) { prepass_done.wait(stream); }
+    if (has_any_prepass && consumes_prepass) { prepass_done.wait(stream); }
     return stream;
   };
 
@@ -361,8 +375,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                             subpass_page_mask_span(),
                             initial_str_offsets,
                             error_code.data(),
-                            next_stream(has_flat_prepass),
-                            has_flat_prepass);
+                            next_stream(has_any_prepass),
+                            has_flat_prepass,
+                            has_list_prepass);
   }
 
   // launch delta length byte array decoder
@@ -375,8 +390,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                    subpass_page_mask_span(),
                                    initial_str_offsets,
                                    error_code.data(),
-                                   next_stream(has_flat_prepass),
-                                   has_flat_prepass);
+                                   next_stream(has_any_prepass),
+                                   has_flat_prepass,
+                                   has_list_prepass);
   }
 
   // launch delta binary decoder
@@ -388,8 +404,9 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                         level_type_size,
                         subpass_page_mask_span(),
                         error_code.data(),
-                        next_stream(has_flat_prepass),
-                        has_flat_prepass);
+                        next_stream(has_any_prepass),
+                        has_flat_prepass,
+                        has_list_prepass);
   }
 
   // launch byte stream split decoder

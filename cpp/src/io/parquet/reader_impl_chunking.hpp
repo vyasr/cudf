@@ -82,6 +82,7 @@ struct subpass_intermediate_data {
     : decomp_page_data(0, stream),
       level_decode_data(0, stream),
       flat_prepass_data(0, stream),
+      list_prepass_data(0, stream),
       prepass_state_buf(0, stream),
       page_buf(0, stream),
       page_src_index{0, stream},
@@ -99,6 +100,9 @@ struct subpass_intermediate_data {
   // Backing store for the flat level-prepass valid-rank maps, carved per page in
   // `allocate_level_decode_space`. Empty unless the prepass claimed at least one page.
   rmm::device_buffer flat_prepass_data;
+  // Backing store for the list level-prepass maps and per-depth state, carved per page in
+  // `allocate_level_decode_space`. Empty unless the prepass claimed at least one list page.
+  rmm::device_buffer list_prepass_data;
   // Out-of-line prepass scratch, one entry per page. Empty unless the selector claimed at least
   // one page of this subpass. See PagePrepassState.
   cudf::detail::hostdevice_vector<PagePrepassState> prepass_state_buf;

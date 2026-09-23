@@ -546,7 +546,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
 //
 // This is deliberately a second kernel rather than a branch inside the legacy one above: while the
 // feature is opt-in, the legacy decoder is the rollback path and must stay independent of it.
-template <typename level_t>
+template <typename level_t, bool use_list_prepass_t = false>
 CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
   decode_delta_binary_kernel_prepass(PageInfo* pages,
                                      device_span<ColumnChunkDesc const> chunks,
@@ -568,7 +568,11 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
   // Selection is recorded entirely by the host, as a non-null `prepass_state` on the claimed
   // family. `filter_delta_legacy_pages` below applies the complement of exactly this test, so
   // every page is decoded by one kernel and no page by both.
-  if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+  if constexpr (use_list_prepass_t) {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_LIST)) { return; }
+  } else {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+  }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
   if (!setup_local_page_info(s,
@@ -581,10 +585,10 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
     return;
   }
 
-  // Only flat pages are classified DELTA_FLAT, but a page that somehow carries repetition levels
-  // would index the map wrongly, so refuse it rather than trust the classifier.
+  // The flat instantiation indexes the map by output position, so a page that somehow carried
+  // repetition levels would place values wrongly; refuse it rather than trust the classifier.
   bool const has_repetition = s->setup.col.max_level[level_type::REPETITION] > 0;
-  if (has_repetition) { return; }
+  if (!use_list_prepass_t && has_repetition) { return; }
 
   bool const process_nulls         = should_process_nulls(s);
   auto* const pp                   = &pages[page_idx];
@@ -596,11 +600,16 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
 
   auto& ni = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1];
   if (block.thread_rank() == 0) {
-    auto const prefix_valid_count =
-      process_nulls
-        ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
-        : static_cast<int>(s->setup.first_row);
-    ni.null_count = process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid_count) : 0;
+    // A list page's null counts are per depth and are restored from the prepass state in the
+    // epilogue instead.
+    if constexpr (!use_list_prepass_t) {
+      auto const prefix_valid_count =
+        process_nulls
+          ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
+          : static_cast<int>(s->setup.first_row);
+      ni.null_count =
+        process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid_count) : 0;
+    }
     s->progress.input_value_count = s->setup.num_input_values;
     s->progress.nz_count          = prepass_nz_count;
   }
@@ -661,7 +670,8 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
       for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos; sp += warp.size()) {
         auto dst_pos =
           process_nulls ? static_cast<int32_t>(prepass_nz_idx[sp]) : static_cast<int32_t>(sp);
-        dst_pos -= s->setup.first_row;
+        // A list page's map already holds absolute output positions.
+        if (!has_repetition) { dst_pos -= s->setup.first_row; }
         if (dst_pos >= 0) {
           void* const dst = ni.data_out + dst_pos * s->output_cvt.dtype_len;
           auto const val  = db->value_at(sp + skipped_leaf_values);
@@ -696,7 +706,25 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_prepass_block_size)
   // condition -- which reads s->progress.nz_count -- when a later write lands on that field.
   block.sync();
 
-  if (block.thread_rank() == 0 and s->setup.error != 0) { set_error(s->setup.error, error_code); }
+  if constexpr (use_list_prepass_t) {
+    // The list walker's per-depth counters are what the output-column plumbing reads after this
+    // kernel; the prepass computed them, so restore them verbatim rather than recomputing.
+    if (block.thread_rank() == 0) {
+      for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
+        auto const& source                              = pp->prepass_state->nesting[depth];
+        s->nesting.nesting_info[depth].null_count       = source.null_count;
+        s->nesting.nesting_info[depth].valid_map_offset = source.valid_map_offset;
+        s->nesting.nesting_info[depth].valid_count      = source.valid_count;
+        s->nesting.nesting_info[depth].value_count      = source.value_count;
+      }
+      s->progress.nz_count          = pp->prepass_state->nz_count;
+      s->progress.input_value_count = pp->prepass_state->aux_count;
+      s->progress.input_row_count   = pp->prepass_state->input_row_count;
+    }
+    block.sync();
+  } else if (block.thread_rank() == 0 and s->setup.error != 0) {
+    set_error(s->setup.error, error_code);
+  }
 }
 
 // Build a launch mask for the unchanged legacy delta kernels. Keeping this filtering outside those
@@ -711,7 +739,8 @@ CUDF_KERNEL void filter_delta_legacy_pages(PageInfo const* pages,
   if (page_idx < num_pages) {
     // Must be the exact complement of the consumer's own test: if the two disagree a page is
     // decoded twice or not at all.
-    bool const claimed = pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT) &&
+    bool const claimed = (pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT) ||
+                          pages[page_idx].prepass_is(level_prepass_family::DELTA_LIST)) &&
                          delta_prepass_pays_for_itself(pages[page_idx]);
     legacy_page_mask[page_idx] = (page_mask.empty() || page_mask[page_idx]) && !claimed;
   }
@@ -1172,14 +1201,15 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 // Flat DELTA_LENGTH_BYTE_ARRAY consumer for the opt-in page-global level prepass. As with the
 // DELTA_BINARY_PACKED consumer, this is deliberately a second kernel: the legacy decoder above is
 // the rollback path and stays independent of the selector.
+template <bool use_list_prepass_t = false>
 CUDF_KERNEL void __launch_bounds__(decode_block_size)
-  decode_delta_length_byte_array_kernel_flat_prepass(PageInfo* pages,
-                                                     device_span<ColumnChunkDesc const> chunks,
-                                                     size_t min_row,
-                                                     size_t num_rows,
-                                                     cudf::device_span<bool const> page_mask,
-                                                     cudf::device_span<size_t> initial_str_offsets,
-                                                     kernel_error::pointer error_code)
+  decode_delta_length_byte_array_kernel_prepass(PageInfo* pages,
+                                                device_span<ColumnChunkDesc const> chunks,
+                                                size_t min_row,
+                                                size_t num_rows,
+                                                cudf::device_span<bool const> page_mask,
+                                                cudf::device_span<size_t> initial_str_offsets,
+                                                kernel_error::pointer error_code)
 {
   // The block-wide value loop needs a full-width block: one warp per DELTA pass, bounded by
   // delta_max_decode_warps. Both hold for decode_block_size.
@@ -1197,7 +1227,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   auto const warp    = cg::tiled_partition<cudf::detail::warp_size>(block);
   auto* const db     = &db_state;
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
-  if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+  if constexpr (use_list_prepass_t) {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_LIST)) { return; }
+  } else {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+  }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 
@@ -1224,21 +1258,27 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   bool const process_nulls         = should_process_nulls(s);
   auto const* const prepass_nz_idx = pp->prepass_state->nz_idx;
   int const prepass_nz_count       = pp->prepass_state->nz_count;
-  if (has_repetition || prepass_nz_count < 0 || (process_nulls && prepass_nz_idx == nullptr)) {
+  if ((!use_list_prepass_t && has_repetition) || prepass_nz_count < 0 ||
+      (process_nulls && prepass_nz_idx == nullptr)) {
     return;
   }
 
   int const leaf_level_index      = s->setup.col.max_nesting_depth - 1;
   int const init_valid_map_offset = s->nesting.nesting_info[leaf_level_index].valid_map_offset;
   PageNestingDecodeInfo const* nesting_info_base = s->nesting.nesting_info;
+  uint32_t const skipped_leaf_values             = s->setup.page.skipped_leaf_values;
 
   if (block.thread_rank() == 0) {
-    auto& ni = s->nesting.nesting_info[leaf_level_index];
-    auto const prefix_valid =
-      process_nulls
-        ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
-        : static_cast<int>(s->setup.first_row);
-    ni.null_count = process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid) : 0;
+    // A list page's null counts are per depth and are restored from the prepass state in the
+    // epilogue instead.
+    if constexpr (!use_list_prepass_t) {
+      auto& ni = s->nesting.nesting_info[leaf_level_index];
+      auto const prefix_valid =
+        process_nulls
+          ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
+          : static_cast<int>(s->setup.first_row);
+      ni.null_count = process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid) : 0;
+    }
     s->progress.input_value_count = s->setup.num_input_values;
     s->progress.nz_count          = prepass_nz_count;
     string_offset                 = 0;
@@ -1256,8 +1296,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 
   auto const is_bounds_pg =
     is_bounds_page(s->setup.page, s->setup.col.start_row, min_row, num_rows, has_repetition);
-  bool const is_skip_resume = is_bounds_pg && s->setup.page.start_val > 0;
-  uint32_t const batch_size = min(db->values_per_mb, static_cast<uint32_t>(delta_max_batch_size));
+  bool const is_skip_resume   = is_bounds_pg && s->setup.page.start_val > 0;
+  bool const resumes_mid_page = is_skip_resume && has_repetition;
+  uint32_t const batch_size =
+    resumes_mid_page ? cudf::detail::warp_size
+                     : min(db->values_per_mb, static_cast<uint32_t>(delta_max_batch_size));
   uint32_t const passes_per_batch = batch_size / cudf::detail::warp_size;
 
   // db->init_binary_block below resets db->values_per_mb and db->error, so make sure every thread
@@ -1271,9 +1314,11 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
       warp.sync();
       if (warp.thread_rank() == 0) {
         string_offset = string_off;
-        // A flat page still decodes the whole page after deriving the byte offset, so the length
-        // stream is re-read from the start rather than resumed at start_val.
-        db->init_binary_block(s->stream.data_start, s->stream.data_end);
+        // A flat page still decodes the whole page after deriving the byte offset, whereas a
+        // repeated one resumes the length stream at start_val. Reinitializing the latter would
+        // make the first selected list element consume the first page length, truncating every
+        // selected string after a slice.
+        if (!has_repetition) { db->init_binary_block(s->stream.data_start, s->stream.data_end); }
       }
     }
     block.sync();
@@ -1283,31 +1328,45 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
   // header walk, which holds only when the block is at least as wide as the thread block. That is
   // parsed from the page's own data stream on the device, so it stays a run-time test; pages that
   // fail it fall through to the warp-fused loop below.
-  bool const use_wide_loop = db->block_size >= static_cast<uleb128_t>(decode_block_size);
-  if (use_wide_loop) {
-    constexpr int num_warps = decode_block_size / cudf::detail::warp_size;
-    auto* const offptr = reinterpret_cast<size_type*>(nesting_info_base[leaf_level_index].data_out);
-    auto const idx_end = static_cast<uint32_t>(s->progress.nz_count);
-    auto const write_value = [&](uint32_t idx, zigzag128_t val) {
-      int dst_pos = process_nulls ? static_cast<int>(prepass_nz_idx[idx]) : static_cast<int>(idx);
-      dst_pos -= s->setup.first_row;
-      if (dst_pos >= 0) { offptr[dst_pos] = val; }
-    };
+  //
+  // The repetition half is decided by the instantiation, not at run time: this kernel's page gate
+  // admits DELTA_LIST only when `use_list_prepass_t`, and `classify_prepass_family` keys `is_list`
+  // off `max_level[REPETITION] > 0`. So a page reaching the flat instantiation has no repetition
+  // levels by construction. Spelling that as a constexpr keeps `decode_next_passes_wide` out of
+  // the list instantiation entirely rather than carrying it as dead code.
+  bool const use_wide_loop =
+    !use_list_prepass_t && db->block_size >= static_cast<uleb128_t>(decode_block_size);
+  if constexpr (!use_list_prepass_t) {
+    if (use_wide_loop) {
+      constexpr int num_warps = decode_block_size / cudf::detail::warp_size;
+      auto* const offptr =
+        reinterpret_cast<size_type*>(nesting_info_base[leaf_level_index].data_out);
+      auto const idx_end     = static_cast<uint32_t>(s->progress.nz_count);
+      auto const write_value = [&](uint32_t idx, zigzag128_t val) {
+        int dst_pos = process_nulls ? static_cast<int>(prepass_nz_idx[idx]) : static_cast<int>(idx);
+        dst_pos -= s->setup.first_row;
+        if (dst_pos >= 0) { offptr[dst_pos] = val; }
+      };
 
-    // Stream index 0 is the block header's first value and belongs to no pass.
-    if (block.thread_rank() == 0 && idx_end > 0) { write_value(0, db->value_at(0)); }
+      // Stream index 0 is the block header's first value and belongs to no pass.
+      if (block.thread_rank() == 0 && idx_end > 0) { write_value(0, db->value_at(0)); }
 
-    // Values are consumed in the iteration that produces them, so they never touch the rolling
-    // buffer and the loop does no shared-memory traffic at all.
-    zigzag128_t val{};
-    uint32_t idx{}, produced{};
-    while (!s->setup.error && db->next_pass_start_idx() < idx_end) {
-      if (!db->decode_next_passes_wide<num_warps>(block, warp, val, idx, produced)) { break; }
-      if (idx < idx_end) { write_value(idx, val); }
+      // Values are consumed in the iteration that produces them, so they never touch the rolling
+      // buffer and the loop does no shared-memory traffic at all.
+      zigzag128_t val{};
+      uint32_t idx{}, produced{};
+      while (!s->setup.error && db->next_pass_start_idx() < idx_end) {
+        if (!db->decode_next_passes_wide<num_warps>(block, warp, val, idx, produced)) { break; }
+        if (idx < idx_end) { write_value(idx, val); }
+      }
+      if (block.thread_rank() == 0) { s->progress.src_pos = idx_end; }
+      block.sync();
     }
-    if (block.thread_rank() == 0) { s->progress.src_pos = idx_end; }
-    block.sync();
-  } else {
+  }
+  // Warp-synchronous fallback for every page the wide loop cannot take: list pages (whose stream
+  // index is offset by skipped_leaf_values) and pages whose DELTA block is narrower than the
+  // thread block.
+  if (!use_wide_loop) {
     // Warp-synchronous fallback. Because the prepass already materialized the rank->position map
     // in global memory, the writer's position input no longer depends on any warp in this block,
     // leaving only the delta decode's own serial chain. Folding the write into the decoding warp
@@ -1327,11 +1386,12 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 
         for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos; sp += warp.size()) {
           int dst_pos = process_nulls ? static_cast<int>(prepass_nz_idx[sp]) : static_cast<int>(sp);
-          dst_pos -= s->setup.first_row;
+          // A list page's map already holds absolute output positions.
+          if (!has_repetition) { dst_pos -= s->setup.first_row; }
           if (dst_pos >= 0) {
             auto const offptr =
               reinterpret_cast<size_type*>(nesting_info_base[leaf_level_index].data_out) + dst_pos;
-            *offptr = db->value_at(sp);
+            *offptr = db->value_at(sp + skipped_leaf_values);
           }
         }
         // src_pos is read by every lane at the top of the loop, so lane 0's update has to be
@@ -1344,7 +1404,23 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
     block.sync();
   }
 
-  if (block.thread_rank() == 0) {
+  if constexpr (use_list_prepass_t) {
+    // The list walker's per-depth counters are what the output-column plumbing reads after this
+    // kernel; the prepass computed them, so restore them verbatim rather than recomputing.
+    if (block.thread_rank() == 0) {
+      for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
+        auto const& source                              = pp->prepass_state->nesting[depth];
+        s->nesting.nesting_info[depth].null_count       = source.null_count;
+        s->nesting.nesting_info[depth].valid_map_offset = source.valid_map_offset;
+        s->nesting.nesting_info[depth].valid_count      = source.valid_count;
+        s->nesting.nesting_info[depth].value_count      = source.value_count;
+      }
+      s->progress.nz_count          = pp->prepass_state->nz_count;
+      s->progress.input_value_count = pp->prepass_state->aux_count;
+      s->progress.input_row_count   = pp->prepass_state->input_row_count;
+    }
+    block.sync();
+  } else if (block.thread_rank() == 0) {
     auto& ni = s->nesting.nesting_info[leaf_level_index];
     auto const page_rows =
       min(s->setup.page.num_input_values, s->setup.first_row + s->setup.num_rows);
@@ -1357,18 +1433,20 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 
   auto const& ni = nesting_info_base[leaf_level_index];
   if (ni.valid_map != nullptr) {
+    int const num_values =
+      use_list_prepass_t ? ni.valid_map_offset - init_valid_map_offset : s->setup.num_rows;
     zero_fill_null_positions_shared<decode_block_size>(s,
                                                        sizeof(size_type),
                                                        init_valid_map_offset,
-                                                       s->setup.num_rows,
+                                                       num_values,
                                                        static_cast<int>(block.thread_rank()));
   }
   if (s->setup.col.is_large_string_col) {
     auto const chunks_per_rowgroup = initial_str_offsets.size();
     auto const input_col_idx       = pages[page_idx].chunk_idx % chunks_per_rowgroup;
-    compute_initial_large_strings_offset<false>(s, initial_str_offsets[input_col_idx]);
+    compute_initial_large_strings_offset<use_list_prepass_t>(s, initial_str_offsets[input_col_idx]);
   } else {
-    convert_small_string_lengths_to_offsets<decode_block_size, false>(s);
+    convert_small_string_lengths_to_offsets<decode_block_size, use_list_prepass_t>(s);
   }
   auto const dst = nesting_info_base[leaf_level_index].string_out;
   auto const src = page_string_data + string_offset;
@@ -1380,14 +1458,15 @@ CUDF_KERNEL void __launch_bounds__(decode_block_size)
 // consumers, this is deliberately a second kernel: the legacy decoder is the rollback path and
 // stays independent of the selector. The page-global map replaces only the level-decoding warp;
 // the prefix, suffix and writer roles keep their legacy arrangement.
+template <bool use_list_prepass_t = false>
 CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
-  decode_delta_byte_array_kernel_flat_prepass(PageInfo* pages,
-                                              device_span<ColumnChunkDesc const> chunks,
-                                              size_t min_row,
-                                              size_t num_rows,
-                                              cudf::device_span<bool const> page_mask,
-                                              cudf::device_span<size_t> initial_str_offsets,
-                                              kernel_error::pointer error_code)
+  decode_delta_byte_array_kernel_prepass(PageInfo* pages,
+                                         device_span<ColumnChunkDesc const> chunks,
+                                         size_t min_row,
+                                         size_t num_rows,
+                                         cudf::device_span<bool const> page_mask,
+                                         cudf::device_span<size_t> initial_str_offsets,
+                                         kernel_error::pointer error_code)
 {
   __shared__ __align__(16) delta_byte_array_decoder db_state;
   __shared__ __align__(16) full_page_decode_state state_g;
@@ -1400,10 +1479,15 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
   auto* const suffix_db = &db_state.suffixes;
   auto* const dba       = &db_state;
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
-  if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
-  // Too few nulls for the prepass to repay its map: the producer skipped this page, and
-  // filter_delta_legacy_pages hands it to the legacy kernel instead.
-  if (!delta_prepass_pays_for_itself(pages[page_idx])) { return; }
+  if constexpr (use_list_prepass_t) {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_LIST)) { return; }
+  } else {
+    if (!pages[page_idx].prepass_is(level_prepass_family::DELTA_FLAT)) { return; }
+    // Too few nulls for the prepass to repay its map: the producer skipped this page, and
+    // filter_delta_legacy_pages hands it to the legacy kernel instead. The gate is flat-only --
+    // the list shapes are ahead of the legacy decoders even at 1% nulls.
+    if (!delta_prepass_pays_for_itself(pages[page_idx])) { return; }
+  }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 
@@ -1430,24 +1514,33 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
   bool const process_nulls         = should_process_nulls(s);
   auto const* const prepass_nz_idx = pp->prepass_state->nz_idx;
   int const prepass_nz_count       = pp->prepass_state->nz_count;
-  if (has_repetition || prepass_nz_count < 0 || (process_nulls && prepass_nz_idx == nullptr)) {
+  if ((!use_list_prepass_t && has_repetition) || prepass_nz_count < 0 ||
+      (process_nulls && prepass_nz_idx == nullptr)) {
     return;
   }
 
   int const leaf_level_index      = s->setup.col.max_nesting_depth - 1;
   int const init_valid_map_offset = s->nesting.nesting_info[leaf_level_index].valid_map_offset;
   PageNestingDecodeInfo const* nesting_info_base = s->nesting.nesting_info;
+  // A bounds page in a repeated hierarchy can resume after leaf values that precede the selected
+  // rows. The delta streams retain those values in their decode position, so the legacy
+  // adjustment is retained when looking up the unpacked prefix and suffix lengths.
+  uint32_t const skipped_leaf_values = s->setup.page.skipped_leaf_values;
   auto const use_char_ll =
     s->setup.page.num_valids > 0 &&
     (s->setup.page.str_bytes / s->setup.page.num_valids) > cudf::detail::warp_size;
 
   if (block.thread_rank() == 0) {
-    auto& ni = s->nesting.nesting_info[leaf_level_index];
-    auto const prefix_valid =
-      process_nulls
-        ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
-        : static_cast<int>(s->setup.first_row);
-    ni.null_count = process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid) : 0;
+    // A list page's null counts are per depth and are restored from the prepass state in the
+    // epilogue instead.
+    if constexpr (!use_list_prepass_t) {
+      auto& ni = s->nesting.nesting_info[leaf_level_index];
+      auto const prefix_valid =
+        process_nulls
+          ? flat_prepass_valid_count_before(prepass_nz_idx, prepass_nz_count, s->setup.first_row)
+          : static_cast<int>(s->setup.first_row);
+      ni.null_count = process_nulls ? s->setup.num_rows - (prepass_nz_count - prefix_valid) : 0;
+    }
     s->progress.input_value_count = s->setup.num_input_values;
     s->progress.nz_count          = prepass_nz_count;
     dba->init(s->stream.data_start,
@@ -1476,7 +1569,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
   }
 
   auto strings_data = nesting_info_base[leaf_level_index].string_out;
-  int string_pos    = 0;
+  int string_pos    = has_repetition ? s->setup.page.start_val : 0;
   auto const is_bounds_pg =
     is_bounds_page(s->setup.page, s->setup.col.start_row, min_row, num_rows, has_repetition);
   bool const is_skip_resume = is_bounds_pg && string_pos > 0;
@@ -1500,7 +1593,12 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
     // and it keeps `nproc` within the `values_per_mb` limit that calculate_string_values() applies
     // internally -- advancing `string_pos` past what that call actually converted would silently
     // drop strings.
-    uint32_t const target_pos = min(s->progress.nz_count, min(produced, src_pos + batch_size));
+    // Decoder indices run ahead of output positions by `skipped_leaf_values` on a resumed list
+    // page, so the watermark is compared in decoder space.
+    uint32_t const target_pos =
+      min(s->progress.nz_count,
+          min(produced > skipped_leaf_values ? produced - skipped_leaf_values : 0,
+              src_pos + batch_size));
     block.sync();
 
     // Three warps, three jobs: the prepass owns level decoding, so there is no fourth. The roles
@@ -1531,11 +1629,13 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
            sp += warp.size()) {
         if (sp < target_pos) {
           int dst_pos = process_nulls ? static_cast<int>(prepass_nz_idx[sp]) : static_cast<int>(sp);
-          dst_pos -= s->setup.first_row;
+          // A list page's map already holds absolute output positions.
+          if (!has_repetition) { dst_pos -= s->setup.first_row; }
           if (dst_pos >= 0) {
             auto const offptr =
               reinterpret_cast<size_type*>(nesting_info_base[leaf_level_index].data_out) + dst_pos;
-            *offptr = prefix_db->value_at(sp) + suffix_db->value_at(sp);
+            auto const src_idx = sp + skipped_leaf_values;
+            *offptr            = prefix_db->value_at(src_idx) + suffix_db->value_at(src_idx);
           }
         }
         warp.sync();
@@ -1557,7 +1657,23 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
   // condition -- which reads s->progress.nz_count -- when thread 0 overwrites that field below.
   block.sync();
 
-  if (block.thread_rank() == 0) {
+  if constexpr (use_list_prepass_t) {
+    // The list walker's per-depth counters are what the output-column plumbing reads after this
+    // kernel; the prepass computed them, so restore them verbatim rather than recomputing.
+    if (block.thread_rank() == 0) {
+      for (int depth = 0; depth < s->setup.page.nesting_info_size; ++depth) {
+        auto const& source                              = pp->prepass_state->nesting[depth];
+        s->nesting.nesting_info[depth].null_count       = source.null_count;
+        s->nesting.nesting_info[depth].valid_map_offset = source.valid_map_offset;
+        s->nesting.nesting_info[depth].valid_count      = source.valid_count;
+        s->nesting.nesting_info[depth].value_count      = source.value_count;
+      }
+      s->progress.nz_count          = pp->prepass_state->nz_count;
+      s->progress.input_value_count = pp->prepass_state->aux_count;
+      s->progress.input_row_count   = pp->prepass_state->input_row_count;
+    }
+    block.sync();
+  } else if (block.thread_rank() == 0) {
     auto& ni = s->nesting.nesting_info[leaf_level_index];
     auto const page_rows =
       min(s->setup.page.num_input_values, s->setup.first_row + s->setup.num_rows);
@@ -1570,19 +1686,22 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_byte_array_prepass_block_size)
 
   auto const& ni = s->nesting.nesting_info[leaf_level_index];
   if (ni.valid_map != nullptr) {
+    int const num_values =
+      use_list_prepass_t ? ni.valid_map_offset - init_valid_map_offset : s->setup.num_rows;
     zero_fill_null_positions_shared<decode_delta_byte_array_prepass_block_size>(
       s,
       sizeof(size_type),
       init_valid_map_offset,
-      s->setup.num_rows,
+      num_values,
       static_cast<int>(block.thread_rank()));
   }
   if (s->setup.col.is_large_string_col) {
     auto const chunks_per_rowgroup = initial_str_offsets.size();
     auto const input_col_idx       = pages[page_idx].chunk_idx % chunks_per_rowgroup;
-    compute_initial_large_strings_offset<false>(s, initial_str_offsets[input_col_idx]);
+    compute_initial_large_strings_offset<use_list_prepass_t>(s, initial_str_offsets[input_col_idx]);
   } else {
-    convert_small_string_lengths_to_offsets<decode_delta_byte_array_prepass_block_size, false>(s);
+    convert_small_string_lengths_to_offsets<decode_delta_byte_array_prepass_block_size,
+                                            use_list_prepass_t>(s);
   }
   if (block.thread_rank() == 0 and s->setup.error != 0) { set_error(s->setup.error, error_code); }
 }
@@ -1600,7 +1719,8 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          cudf::device_span<bool const> page_mask,
                          kernel_error::pointer error_code,
                          cuda::stream_ref stream,
-                         bool use_flat_prepass)
+                         bool use_flat_prepass,
+                         bool use_list_prepass)
 {
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
@@ -1609,19 +1729,24 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   // The prepass consumer drops the legacy kernel's level-decoding warp rather than idling it.
   dim3 dim_block_prepass(decode_delta_binary_prepass_block_size, 1);
 
-  rmm::device_uvector<bool> legacy_page_mask(use_flat_prepass ? pages.size() : 0, stream);
-  if (use_flat_prepass) {
+  auto const use_prepass = use_flat_prepass || use_list_prepass;
+  rmm::device_uvector<bool> legacy_page_mask(use_prepass ? pages.size() : 0, stream);
+  auto launch_prepass = [&]<bool list_t>() {
     if (level_type_size == 1) {
-      decode_delta_binary_kernel_prepass<uint8_t><<<dim_grid, dim_block_prepass, 0, stream.get()>>>(
-        pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
+      decode_delta_binary_kernel_prepass<uint8_t, list_t>
+        <<<dim_grid, dim_block_prepass, 0, stream.get()>>>(
+          pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     } else {
-      decode_delta_binary_kernel_prepass<uint16_t>
+      decode_delta_binary_kernel_prepass<uint16_t, list_t>
         <<<dim_grid, dim_block_prepass, 0, stream.get()>>>(
           pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     }
     CUDF_CUDA_TRY(cudaGetLastError());
-
-    // Hand the legacy kernel everything the consumer above did not claim.
+  };
+  if (use_flat_prepass) { launch_prepass.template operator()<false>(); }
+  if (use_list_prepass) { launch_prepass.template operator()<true>(); }
+  if (use_prepass) {
+    // Hand the legacy kernel everything the consumers above did not claim.
     constexpr int filter_block_size = 256;
     auto const filter_grid =
       cudf::util::div_rounding_up_safe<size_t>(pages.size(), filter_block_size);
@@ -1654,7 +1779,8 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                              cudf::device_span<size_t> initial_str_offsets,
                              kernel_error::pointer error_code,
                              cuda::stream_ref stream,
-                             bool use_flat_prepass)
+                             bool use_flat_prepass,
+                             bool use_list_prepass)
 {
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
@@ -1666,13 +1792,18 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
   // blocks with one idle warp each.
   dim3 const dim_block_prepass(decode_delta_byte_array_prepass_block_size, 1);
 
-  rmm::device_uvector<bool> legacy_page_mask(use_flat_prepass ? pages.size() : 0, stream);
-  if (use_flat_prepass) {
-    decode_delta_byte_array_kernel_flat_prepass<<<dim_grid, dim_block_prepass, 0, stream.get()>>>(
-      pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
+  auto const use_prepass = use_flat_prepass || use_list_prepass;
+  rmm::device_uvector<bool> legacy_page_mask(use_prepass ? pages.size() : 0, stream);
+  auto launch_prepass = [&]<bool list_t>() {
+    decode_delta_byte_array_kernel_prepass<list_t>
+      <<<dim_grid, dim_block_prepass, 0, stream.get()>>>(
+        pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
-
-    // Hand the legacy kernel everything the consumer above did not claim.
+  };
+  if (use_flat_prepass) { launch_prepass.template operator()<false>(); }
+  if (use_list_prepass) { launch_prepass.template operator()<true>(); }
+  if (use_prepass) {
+    // Hand the legacy kernel everything the consumers above did not claim.
     constexpr int filter_block_size = 256;
     auto const filter_grid =
       cudf::util::div_rounding_up_safe<size_t>(pages.size(), filter_block_size);
@@ -1705,20 +1836,25 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     cudf::device_span<size_t> initial_str_offsets,
                                     kernel_error::pointer error_code,
                                     cuda::stream_ref stream,
-                                    bool use_flat_prepass)
+                                    bool use_flat_prepass,
+                                    bool use_list_prepass)
 {
   CUDF_EXPECTS(pages.size() > 0, "There is no page to decode");
 
   dim3 const dim_block(decode_block_size, 1);
   dim3 const dim_grid(pages.size(), 1);  // 1 threadblock per page
 
-  rmm::device_uvector<bool> legacy_page_mask(use_flat_prepass ? pages.size() : 0, stream);
-  if (use_flat_prepass) {
-    decode_delta_length_byte_array_kernel_flat_prepass<<<dim_grid, dim_block, 0, stream.get()>>>(
+  auto const use_prepass = use_flat_prepass || use_list_prepass;
+  rmm::device_uvector<bool> legacy_page_mask(use_prepass ? pages.size() : 0, stream);
+  auto launch_prepass = [&]<bool list_t>() {
+    decode_delta_length_byte_array_kernel_prepass<list_t><<<dim_grid, dim_block, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, initial_str_offsets, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
-
-    // Hand the legacy kernel everything the consumer above did not claim.
+  };
+  if (use_flat_prepass) { launch_prepass.template operator()<false>(); }
+  if (use_list_prepass) { launch_prepass.template operator()<true>(); }
+  if (use_prepass) {
+    // Hand the legacy kernel everything the consumers above did not claim.
     constexpr int filter_block_size = 256;
     auto const filter_grid =
       cudf::util::div_rounding_up_safe<size_t>(pages.size(), filter_block_size);

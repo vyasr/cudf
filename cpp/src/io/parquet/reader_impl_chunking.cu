@@ -382,7 +382,7 @@ void reader_impl::setup_next_subpass(read_mode mode)
   // empty unless the level prepass claimed at least one page. Nothing may copy it back to the
   // host and re-upload it later in the subpass: the prepass producer kernels write counts into
   // it that the decode kernels read in a subsequent launch.
-  if (subpass.prepass_state_buf.size() > 0) {
+  if (!subpass.prepass_state_buf.empty()) {
     subpass.prepass_state_buf.host_to_device_async(_stream);
   }
 

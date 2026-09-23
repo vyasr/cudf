@@ -13,6 +13,7 @@
 #include <cudf/detail/row_operator/common_utils.cuh>
 #include <cudf/dictionary/dictionary_column_view.hpp>
 #include <cudf/strings/string_view.cuh>
+#include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
@@ -63,7 +64,7 @@ inline string_sort_prefix_mode get_string_sort_prefix_mode()
  * @brief Extracts the first bytes of a string as an unsigned big-endian integer.
  *
  * Zero padding is order preserving. It can create a prefix tie between a short string and a
- * longer string containing zero bytes, but the full string comparator resolves every such tie.
+ * longer string containing zero bytes; string lengths resolve that case.
  */
 template <typename PrefixKey, bool has_nulls>
 struct string_prefix_extractor {
@@ -117,18 +118,22 @@ struct string_prefix_comparator {
 
     auto const left_element  = d_column.element<string_view>(lhs);
     auto const right_element = d_column.element<string_view>(rhs);
-    // Equal cached keys prove that the cached bytes match whenever both values contain a complete
-    // prefix. Resume comparison at the first byte not represented by the key instead
-    // of rescanning the known-equal prefix. Shorter values need the full comparison because zero
-    // padding deliberately does not encode the distinction between a missing byte and '\0'.
-    if (left_element.size_bytes() >= prefix_bytes && right_element.size_bytes() >= prefix_bytes) {
-      auto const left_suffix =
-        string_view{left_element.data() + prefix_bytes, left_element.size_bytes() - prefix_bytes};
-      auto const right_suffix =
-        string_view{right_element.data() + prefix_bytes, right_element.size_bytes() - prefix_bytes};
-      return ascending ? left_suffix < right_suffix : right_suffix < left_suffix;
+    auto const left_size     = left_element.size_bytes();
+    auto const right_size    = right_element.size_bytes();
+    if (left_size < prefix_bytes or right_size < prefix_bytes) {
+      // Equal zero-padded prefixes prove that all bytes in the shorter value match and that any
+      // represented bytes beyond it are zero. The shorter value is therefore lexicographically
+      // smaller, while equal lengths prove equality without rereading either string.
+      return ascending ? left_size < right_size : right_size < left_size;
     }
-    return ascending ? left_element < right_element : right_element < left_element;
+
+    // Both values contain a complete cached prefix, so resume comparison at the first byte not
+    // represented by the key instead of rescanning known-equal bytes.
+    auto const left_suffix =
+      string_view{left_element.data() + prefix_bytes, left_element.size_bytes() - prefix_bytes};
+    auto const right_suffix =
+      string_view{right_element.data() + prefix_bytes, right_element.size_bytes() - prefix_bytes};
+    return ascending ? left_suffix < right_suffix : right_suffix < left_suffix;
   }
 
   column_device_view const d_column;
@@ -219,7 +224,11 @@ struct column_sorted_order_fn {
                            null_order null_precedence,
                            cuda::stream_ref stream)
   {
-    if (input.size() < 2 or input.null_count() == input.size()) {
+    // A non-null strings column with no chars buffer contains only empty strings. Checking the
+    // buffer pointer avoids the host synchronization required to read the terminal offset.
+    auto const all_values_equal =
+      not input.has_nulls() and strings_column_view{input}.chars_begin(stream) == nullptr;
+    if (input.size() < 2 or input.null_count() == input.size() or all_values_equal) {
       thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                        indices.begin<size_type>(),
                        indices.end<size_type>(),

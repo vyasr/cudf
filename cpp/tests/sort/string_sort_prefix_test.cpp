@@ -113,6 +113,12 @@ TEST_F(StringPrefixSort, EmptySingletonAndAllNull)
   auto const unstable_order = cudf::sorted_order(
     cudf::table_view{{all_null}}, {cudf::order::ASCENDING}, {cudf::null_order::BEFORE});
   EXPECT_EQ(unstable_order->size(), 3);
+
+  auto const all_empty       = cudf::test::strings_column_wrapper{"", "", ""};
+  auto const all_empty_order = cudf::stable_sorted_order(
+    cudf::table_view{{all_empty}}, {cudf::order::DESCENDING}, {cudf::null_order::AFTER});
+  auto const expected_all_empty = cudf::test::fixed_width_column_wrapper<cudf::size_type>{0, 1, 2};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_all_empty, all_empty_order->view());
 }
 
 TEST_F(StringPrefixSort, HalfNullBothOrders)

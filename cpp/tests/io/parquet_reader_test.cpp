@@ -1780,6 +1780,19 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeMiniBlockSkipRows)
     build_delta_length_byte_array_parquet(s96, 384, 4), s96, 40, 60);
 }
 
+TEST_F(ParquetReaderTest, DeltaLengthByteArrayWideSkipMidBlock)
+{
+  // The prepass consumer's block-wide value loop hands one DELTA pass to each warp, so it can only
+  // start on a block boundary. A leading skip re-inits the flat decoder and re-decodes from index
+  // 0, which keeps that true; this pins that behaviour for a single-mini-block geometry, where a
+  // resumed decoder would otherwise land mid-block. Both a leading skip and a bounded slice are
+  // exercised, since only the latter also trims the tail.
+  auto const strings = delta_test_strings(301, false);
+  auto const file    = build_delta_length_byte_array_parquet(strings, 256, 1);
+  delta_large_mini_block_string_read_test(file, strings, 70);
+  delta_large_mini_block_string_read_test(file, strings, 70, 90);
+}
+
 TEST_F(ParquetReaderTest, DeltaBinaryListMiniBlock64)
 {
   // LIST<INT64> with 64 values/mini-block. The leading-skip read resumes the delta decoder

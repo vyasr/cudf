@@ -369,7 +369,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                                    subpass_page_mask_span(),
                                    initial_str_offsets,
                                    error_code.data(),
-                                   next_stream(false));
+                                   next_stream(has_flat_prepass),
+                                   has_flat_prepass);
   }
 
   // launch delta binary decoder

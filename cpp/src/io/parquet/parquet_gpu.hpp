@@ -313,7 +313,8 @@ struct PagePrepassState {
  * written. This is the other half: a page whose mask is absent here gets no scratch and no map,
  * and keeps the legacy decoder. It widens as the remaining consumers land.
  */
-constexpr uint32_t FLAT_LEVEL_PREPASS_MASK = BitOr(decode_kernel_mask::DELTA_BINARY);
+constexpr uint32_t FLAT_LEVEL_PREPASS_MASK =
+  BitOr(decode_kernel_mask::DELTA_BINARY, decode_kernel_mask::DELTA_LENGTH_BA);
 
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
@@ -1155,6 +1156,7 @@ void decode_delta_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
  * @param[out] initial_str_offsets Vector to store the initial offsets for large nested string cols
  * @param[out] error_code Error code for kernel failures
  * @param[in] stream CUDA stream to use
+ * @param[in] use_flat_prepass Route claimed flat pages through the level-prepass consumer
  */
 void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> pages,
                                     cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
@@ -1164,7 +1166,8 @@ void decode_delta_length_byte_array(cudf::detail::hostdevice_span<PageInfo> page
                                     cudf::device_span<bool const> page_mask,
                                     cudf::device_span<size_t> initial_str_offsets,
                                     kernel_error::pointer error_code,
-                                    cuda::stream_ref stream);
+                                    cuda::stream_ref stream,
+                                    bool use_flat_prepass = false);
 
 /**
  * @brief Launches pre-processing kernel to fill string offsets for non-dictionary columns

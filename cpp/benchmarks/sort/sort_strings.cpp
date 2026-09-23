@@ -113,6 +113,35 @@ std::unique_ptr<cudf::column> make_nullable_input(cudf::size_type num_rows,
   return result;
 }
 
+std::unique_ptr<cudf::column> make_workload_input(cudf::size_type num_rows,
+                                                  cudf::size_type min_width,
+                                                  cudf::size_type max_width,
+                                                  std::string const& workload)
+{
+  if (workload == "duplicates") {
+    data_profile const profile =
+      data_profile_builder().no_validity().cardinality(64).avg_run_length(1).distribution(
+        cudf::type_id::STRING, distribution_id::NORMAL, min_width, max_width);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  if (workload == "shared_prefix") {
+    constexpr cudf::size_type suffix_width = 8;
+    return make_prefixed_input(num_rows, max_width - suffix_width, suffix_width);
+  }
+  if (workload == "normal") {
+    data_profile const profile = data_profile_builder().no_validity().distribution(
+      cudf::type_id::STRING, distribution_id::NORMAL, min_width, max_width);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  if (workload == "variable") {
+    data_profile const profile =
+      data_profile_builder().no_validity().cardinality(0).avg_run_length(1).distribution(
+        cudf::type_id::STRING, distribution_id::UNIFORM, min_width, max_width);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+  CUDF_FAIL("Unknown string workload: " + workload);
+}
+
 }  // namespace
 
 static void bench_sort_strings(nvbench::state& state)
@@ -240,3 +269,19 @@ NVBENCH_BENCH(bench_sorted_order_strings_nulls)
   .add_int64_axis("num_rows", {262144, 2097152})
   .add_string_axis("profile", {"fixed_8", "variable_128"})
   .add_int64_axis("null_percent", {0, 50, 100});
+
+static void bench_sorted_order_strings_workload(nvbench::state& state)
+{
+  auto const num_rows  = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const min_width = static_cast<cudf::size_type>(state.get_int64("min_width"));
+  auto const max_width = static_cast<cudf::size_type>(state.get_int64("max_width"));
+  auto const workload  = state.get_string("workload");
+  run_sorted_order_benchmark(state, make_workload_input(num_rows, min_width, max_width, workload));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_workload)
+  .set_name("sorted_order_strings_workload")
+  .add_int64_axis("min_width", {0})
+  .add_int64_axis("max_width", {32, 64, 128, 256})
+  .add_int64_axis("num_rows", {32768, 262144, 2097152})
+  .add_string_axis("workload", {"normal", "duplicates", "shared_prefix", "variable"});

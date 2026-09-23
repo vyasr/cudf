@@ -5,8 +5,10 @@
 
 #pragma once
 
+#include "segmented_string_sort.cuh"
 #include "sort.hpp"
 #include "sort_radix.hpp"
+#include "string_sort_config.hpp"
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/detail/indexalator.cuh>
@@ -129,6 +131,32 @@ struct string_prefix_comparator {
 };
 
 /**
+ * @brief Direct single-direction string comparator used to finish segmented runs.
+ */
+template <bool has_nulls>
+struct string_comparator {
+  __device__ bool operator()(size_type lhs, size_type rhs)
+  {
+    if constexpr (has_nulls) {
+      bool const lhs_null{d_column.is_null(lhs)};
+      bool const rhs_null{d_column.is_null(rhs)};
+      if (lhs_null || rhs_null) {
+        return null_compare(lhs_null, rhs_null, null_precedence) ==
+               (ascending ? weak_ordering::LESS : weak_ordering::GREATER);
+      }
+    }
+
+    auto const left_element  = d_column.element<string_view>(lhs);
+    auto const right_element = d_column.element<string_view>(rhs);
+    return ascending ? left_element < right_element : right_element < left_element;
+  }
+
+  column_device_view const d_column;
+  bool ascending;
+  null_order null_precedence{};
+};
+
+/**
  * @brief Comparator functor needed for single column sort.
  *
  * @tparam Column element type.
@@ -210,18 +238,6 @@ struct column_sorted_order_fn {
                            null_order null_precedence,
                            cuda::stream_ref stream)
   {
-    // A non-null strings column with no chars buffer contains only empty strings. Checking the
-    // buffer pointer avoids the host synchronization required to read the terminal offset.
-    auto const all_values_equal =
-      not input.has_nulls() and strings_column_view{input}.chars_begin(stream) == nullptr;
-    if (input.size() < 2 or input.null_count() == input.size() or all_values_equal) {
-      thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                       indices.begin<size_type>(),
-                       indices.end<size_type>(),
-                       size_type{0});
-      return;
-    }
-
     auto keys = column_device_view::create(input, stream);
     if (input.has_nulls()) {
       prefix_sorted_order_impl<PrefixKey, true>(
@@ -230,6 +246,55 @@ struct column_sorted_order_fn {
       prefix_sorted_order_impl<PrefixKey, false>(
         input, *keys, indices, ascending, null_precedence, stream);
     }
+  }
+
+  template <bool detect_duplicates, bool has_nulls>
+  void segmented_sorted_order_impl(column_view const& input,
+                                   column_device_view const& keys,
+                                   mutable_column_view& indices,
+                                   bool ascending,
+                                   null_order null_precedence,
+                                   cuda::stream_ref stream)
+  {
+    auto const comp = string_comparator<has_nulls>{keys, ascending, null_precedence};
+    segmented_string_sort::sorted_order<method, detect_duplicates>(
+      input, indices, ascending, null_precedence, comp, stream);
+  }
+
+  template <bool detect_duplicates>
+  void segmented_sorted_order(column_view const& input,
+                              mutable_column_view& indices,
+                              bool ascending,
+                              null_order null_precedence,
+                              cuda::stream_ref stream)
+  {
+    auto keys = column_device_view::create(input, stream);
+    if (input.has_nulls()) {
+      segmented_sorted_order_impl<detect_duplicates, true>(
+        input, *keys, indices, ascending, null_precedence, stream);
+    } else {
+      segmented_sorted_order_impl<detect_duplicates, false>(
+        input, *keys, indices, ascending, null_precedence, stream);
+    }
+  }
+
+  bool emit_identity_for_equal_strings(column_view const& input,
+                                       mutable_column_view& indices,
+                                       cuda::stream_ref stream)
+  {
+    // A non-null strings column with no chars buffer contains only empty strings. Checking the
+    // buffer pointer avoids the host synchronization required to read the terminal offset.
+    auto const all_values_equal =
+      not input.has_nulls() and strings_column_view{input}.chars_begin(stream) == nullptr;
+    if (input.size() >= 2 and input.null_count() != input.size() and not all_values_equal) {
+      return false;
+    }
+
+    thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                     indices.begin<size_type>(),
+                     indices.end<size_type>(),
+                     size_type{0});
+    return true;
   }
 
  public:
@@ -252,7 +317,19 @@ struct column_sorted_order_fn {
                     cuda::stream_ref stream)
   {
     if constexpr (std::is_same_v<T, string_view>) {
-      prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
+      if (emit_identity_for_equal_strings(input, indices, stream)) { return; }
+
+      switch (configured_string_sort_algorithm()) {
+        case string_sort_algorithm::SEGMENTED:
+          segmented_sorted_order<false>(input, indices, ascending, null_precedence, stream);
+          break;
+        case string_sort_algorithm::SEGMENTED_RLE:
+          segmented_sorted_order<true>(input, indices, ascending, null_precedence, stream);
+          break;
+        case string_sort_algorithm::PREFIX:
+          prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
+          break;
+      }
       return;
     }
 

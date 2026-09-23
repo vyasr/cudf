@@ -67,6 +67,9 @@ struct string_prefix_extractor {
 
 /**
  * @brief String comparator accelerated by a contiguous array of cached prefix keys.
+ *
+ * This cached-prefix optimization was inspired by Eiger (https://arxiv.org/abs/2607.04489), but
+ * is not an implementation of Eiger's string-sorting algorithm.
  */
 template <typename PrefixKey, bool has_nulls>
 struct string_prefix_comparator {

@@ -405,6 +405,11 @@ ConfigureTest(
   GPUS 1
   PERCENT 70
 )
+ConfigureTest(
+  STRING_SORT_PREFIX_TEST sort/string_sort_prefix_test.cpp
+  GPUS 1
+  PERCENT 70
+)
 
 # ##################################################################################################
 # * copying tests ---------------------------------------------------------------------------------

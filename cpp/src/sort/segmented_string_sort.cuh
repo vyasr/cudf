@@ -6,6 +6,7 @@
 #pragma once
 
 #include "sort.hpp"
+#include "string_sort_config.hpp"
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/detail/device_scalar.hpp>
@@ -21,29 +22,30 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cub/device/device_segmented_radix_sort.cuh>
+#include <thrust/copy.h>
 #include <thrust/fill.h>
+#include <thrust/functional.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
+#include <thrust/transform_reduce.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <utility>
 
 namespace cudf::detail {
 namespace segmented_string_sort {
 
-// Six bytes leave room in a uint64_t key for a null category and the number of valid bytes.
-constexpr size_type bytes_per_pass       = 6;
-constexpr size_type maximum_radix_passes = 4;
-constexpr size_type comparison_threshold = 32;
-constexpr size_type block_sort_size      = 256;
-constexpr size_type invalid_index        = -1;
+constexpr size_type block_sort_size = 256;
+constexpr size_type invalid_index   = -1;
 
 struct finish_counts {
   size_type segments{};
   size_type block_tasks{};
 };
 
-template <typename IndexIterator>
+template <int bytes_per_pass, typename IndexIterator>
 CUDF_KERNEL void make_keys(column_device_view strings,
                            IndexIterator indices,
                            std::uint8_t const* active,
@@ -56,13 +58,15 @@ CUDF_KERNEL void make_keys(column_device_view strings,
   if (position >= size || active[position] == 0) { return; }
 
   auto const row = indices[position];
-  // Category zero sorts before category one, while category two sorts after it. Descending radix
-  // sort reverses all three categories, matching libcudf's existing null-order semantics.
-  if (strings.is_null(row)) {
-    auto const category =
-      null_precedence == null_order::BEFORE ? std::uint64_t{0} : std::uint64_t{2};
-    keys[position] = category << 62;
-    return;
+  if constexpr (bytes_per_pass == 6) {
+    // Category zero sorts before category one, while category two sorts after it. Descending radix
+    // sort reverses all three categories, matching libcudf's existing null-order semantics.
+    if (strings.is_null(row)) {
+      auto const category =
+        null_precedence == null_order::BEFORE ? std::uint64_t{0} : std::uint64_t{2};
+      keys[position] = category << 62;
+      return;
+    }
   }
 
   auto const value     = strings.element<string_view>(row);
@@ -76,8 +80,30 @@ CUDF_KERNEL void make_keys(column_device_view strings,
       bytes |= static_cast<unsigned char>(value.data()[byte_offset + i]);
     }
   }
-  keys[position] = (std::uint64_t{1} << 62) | (bytes << 3) | length;
+  if constexpr (bytes_per_pass == 6) {
+    keys[position] = (std::uint64_t{1} << 62) | (bytes << 3) | length;
+  } else {
+    keys[position] = bytes;
+  }
 }
+
+struct valid_row_predicate {
+  __device__ bool operator()(size_type row) const { return not strings.is_null(row); }
+  column_device_view strings;
+};
+
+struct null_row_predicate {
+  __device__ bool operator()(size_type row) const { return strings.is_null(row); }
+  column_device_view strings;
+};
+
+struct string_length_fn {
+  __device__ size_type operator()(size_type row) const
+  {
+    return strings.is_null(row) ? size_type{0} : strings.element<string_view>(row).size_bytes();
+  }
+  column_device_view strings;
+};
 
 CUDF_KERNEL void mark_segment_endpoints(size_type const* segment_begins,
                                         size_type const* segment_ends,
@@ -155,19 +181,60 @@ CUDF_KERNEL void mark_nonduplicate_runs(column_device_view strings,
   if (!equal) { atomicExch(run_has_mismatch + run, size_type{1}); }
 }
 
-template <bool detect_duplicates, typename IndexIterator>
+struct rle_metrics {
+  unsigned long long covered_rows{};
+  unsigned long long sampled_pairs{};
+  unsigned long long equal_pairs{};
+};
+
+template <typename IndexIterator>
+CUDF_KERNEL void collect_rle_metrics(column_device_view strings,
+                                     IndexIterator indices,
+                                     std::uint8_t const* active,
+                                     size_type const* inclusive_run_ids,
+                                     size_type const* run_begins,
+                                     size_type const* run_ends,
+                                     size_type size,
+                                     size_type minimum_run_length,
+                                     size_type sampling_stride,
+                                     rle_metrics* metrics)
+{
+  auto const position = cudf::detail::grid_1d::global_thread_id();
+  if (position >= size || active[position] == 0) { return; }
+  auto const run    = inclusive_run_ids[position] - 1;
+  auto const begin  = run_begins[run];
+  auto const end    = run_ends[run];
+  auto const length = end - begin;
+  if (length < minimum_run_length) { return; }
+  if (position == begin) {
+    atomicAdd(&metrics->covered_rows, static_cast<unsigned long long>(length));
+  }
+  if (position == begin || position % sampling_stride != 0) { return; }
+
+  auto const lhs   = indices[position - 1];
+  auto const rhs   = indices[position];
+  auto const equal = strings.element<string_view>(lhs) == strings.element<string_view>(rhs);
+  atomicAdd(&metrics->sampled_pairs, 1ULL);
+  if (equal) { atomicAdd(&metrics->equal_pairs, 1ULL); }
+}
+
+template <int bytes_per_pass, typename IndexIterator>
 CUDF_KERNEL void classify_runs(column_device_view strings,
                                IndexIterator indices,
                                std::uint64_t const* sorted_keys,
                                size_type const* run_begins,
                                size_type const* run_ends,
                                size_type num_slots,
+                               size_type byte_offset,
                                bool last_pass,
+                               bool detect_duplicates,
                                size_type const* run_has_mismatch,
+                               size_type comparison_threshold,
                                size_type* next_run_flags,
                                std::uint8_t* run_classes,
                                size_type* final_begins,
                                size_type* final_ends,
+                               size_type* final_prefix_bytes,
                                size_type* task_begins,
                                size_type* task_ends,
                                finish_counts* counts)
@@ -178,29 +245,34 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
   auto const end   = run_ends[run];
   if (begin == invalid_index || end - begin <= 1) { return; }
 
-  auto const row       = indices[begin];
-  auto const is_null   = strings.is_null(row);
-  auto const key_bytes = static_cast<size_type>(sorted_keys[begin] & 0x7);
-  // A short equal chunk means the entire run consists of exact duplicates. Stable radix sorting
-  // has already put it in its final order, including null runs.
-  if (is_null || key_bytes != bytes_per_pass) { return; }
+  auto const row        = indices[begin];
+  auto const is_null    = strings.is_null(row);
+  auto const value_size = is_null ? size_type{0} : strings.element<string_view>(row).size_bytes();
+  auto const remaining  = value_size <= byte_offset ? size_type{0} : value_size - byte_offset;
+  auto const key_bytes  = bytes_per_pass == 6
+                            ? static_cast<size_type>(sorted_keys[begin] & 0x7)
+                            : (remaining < bytes_per_pass ? remaining : bytes_per_pass);
+  // Six-byte keys encode the valid-byte count, so a tied short chunk proves exact equality.
+  // Eight-byte keys use all bits for payload and zero padding can collide with a longer string;
+  // such runs must be finished by comparison from the preceding known prefix.
+  if (is_null || (bytes_per_pass == 6 && key_bytes != bytes_per_pass)) { return; }
+  auto const terminal_collision = bytes_per_pass == 8 && key_bytes != bytes_per_pass;
 
   // The final radix chunk cannot distinguish long exact duplicates from strings that differ
   // later. Exact duplicate runs are already stable and need no comparison-sort finish.
-  if constexpr (detect_duplicates) {
-    if (last_pass && run_has_mismatch[run] == 0) { return; }
-  }
+  if (detect_duplicates && last_pass && run_has_mismatch[run] == 0) { return; }
 
-  if (!last_pass && end - begin > comparison_threshold) {
+  if (!terminal_collision && !last_pass && end - begin > comparison_threshold) {
     next_run_flags[run] = 1;
     run_classes[run]    = 1;
     return;
   }
 
-  run_classes[run]         = 2;
-  auto const final_slot    = atomicAdd(&counts->segments, size_type{1});
-  final_begins[final_slot] = begin;
-  final_ends[final_slot]   = end;
+  run_classes[run]               = 2;
+  auto const final_slot          = atomicAdd(&counts->segments, size_type{1});
+  final_begins[final_slot]       = begin;
+  final_ends[final_slot]         = end;
+  final_prefix_bytes[final_slot] = terminal_collision ? byte_offset : byte_offset + bytes_per_pass;
   if (end - begin > comparison_threshold) {
     auto task_begin = begin;
     while (task_begin < end) {
@@ -246,9 +318,12 @@ CUDF_KERNEL void update_active_runs(std::uint8_t const* active,
 
 CUDF_KERNEL void map_final_segments(size_type const* final_begins,
                                     size_type const* final_ends,
+                                    size_type const* final_prefix_bytes,
                                     size_type num_segments,
+                                    size_type const* indices,
                                     size_type* final_begin_for_position,
-                                    size_type* final_end_for_position)
+                                    size_type* final_end_for_position,
+                                    size_type* known_prefix_by_row)
 {
   auto const segment = static_cast<size_type>(blockIdx.x);
   if (segment >= num_segments) { return; }
@@ -260,6 +335,9 @@ CUDF_KERNEL void map_final_segments(size_type const* final_begins,
     auto const position = static_cast<size_type>(static_cast<std::int64_t>(begin) + offset);
     final_begin_for_position[position] = begin;
     final_end_for_position[position]   = end;
+    if (known_prefix_by_row != nullptr) {
+      known_prefix_by_row[indices[position]] = final_prefix_bytes[segment];
+    }
   }
 }
 
@@ -278,6 +356,7 @@ CUDF_KERNEL void finish_small_segments(size_type* indices,
                                        size_type const* final_begins,
                                        size_type const* final_ends,
                                        size_type num_segments,
+                                       size_type comparison_threshold,
                                        Comparator comparator)
 {
   auto const segment = cudf::detail::grid_1d::global_thread_id();
@@ -346,6 +425,7 @@ CUDF_KERNEL void merge_sorted_blocks(size_type const* input,
                                      size_type const* final_end_for_position,
                                      size_type size,
                                      std::int64_t run_width,
+                                     size_type comparison_threshold,
                                      Comparator comparator)
 {
   auto const position = cudf::detail::grid_1d::global_thread_id();
@@ -401,6 +481,7 @@ inline void segmented_radix_sort(std::uint64_t const* keys_in,
                                  size_type const* segment_begins,
                                  size_type const* segment_ends,
                                  bool ascending,
+                                 rmm::device_buffer& temp_storage,
                                  cuda::stream_ref stream)
 {
   std::size_t temp_storage_bytes = 0;
@@ -435,8 +516,10 @@ inline void segmented_radix_sort(std::uint64_t const* keys_in,
                                                               stream.get());
   };
   CUDF_CUDA_TRY(invoke(nullptr));
-  auto temp_storage =
-    rmm::device_buffer(temp_storage_bytes, stream, cudf::get_current_device_resource_ref());
+  if (temp_storage_bytes > temp_storage.size()) {
+    temp_storage =
+      rmm::device_buffer(temp_storage_bytes, stream, cudf::get_current_device_resource_ref());
+  }
   CUDF_CUDA_TRY(invoke(temp_storage.data()));
 }
 
@@ -449,55 +532,104 @@ inline void segmented_radix_sort(std::uint64_t const* keys_in,
  * segment count as a host argument, so only passes that feed a subsequent radix pass transfer that
  * scalar.
  */
-template <sort_method method, bool detect_duplicates, typename Comparator>
+template <sort_method method, int bytes_per_pass, typename Comparator>
 void sorted_order(column_view const& input,
                   mutable_column_view& output,
                   bool ascending,
                   null_order null_precedence,
                   Comparator comparator,
+                  segmented_string_sort_config const& tuning,
                   cuda::stream_ref stream)
 {
   auto const size = input.size();
   if (size == 0) { return; }
 
-  auto const temp_mr = cudf::get_current_device_resource_ref();
-  auto strings       = column_device_view::create(input, stream);
-  auto indices_a     = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto indices_b     = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto keys_in       = rmm::device_uvector<std::uint64_t>(size, stream, temp_mr);
-  auto keys_out      = rmm::device_uvector<std::uint64_t>(size, stream, temp_mr);
+  auto const temp_mr    = cudf::get_current_device_resource_ref();
+  auto strings          = column_device_view::create(input, stream);
+  auto const exec       = rmm::exec_policy_nosync(stream, temp_mr);
+  auto const valid_size = bytes_per_pass == 8 ? size - input.null_count() : size;
+  auto const null_size  = size - valid_size;
+  auto indices_a        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto indices_b        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto null_indices =
+    rmm::device_uvector<size_type>(bytes_per_pass == 8 ? null_size : 0, stream, temp_mr);
+  auto const rows = cuda::counting_iterator<size_type>{0};
+  if constexpr (bytes_per_pass == 8) {
+    thrust::copy_if(exec, rows, rows + size, indices_a.begin(), valid_row_predicate{*strings});
+    if (null_size > 0) {
+      thrust::copy_if(exec, rows, rows + size, null_indices.begin(), null_row_predicate{*strings});
+    }
+  } else {
+    thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
+  }
 
-  auto begins_a = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto ends_a   = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto begins_b = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto ends_b   = rmm::device_uvector<size_type>(size, stream, temp_mr);
+  auto const max_length   = valid_size == 0 ? size_type{0}
+                                            : thrust::transform_reduce(exec,
+                                                                     indices_a.begin(),
+                                                                     indices_a.end(),
+                                                                     string_length_fn{*strings},
+                                                                     size_type{0},
+                                                                     cuda::maximum<size_type>{});
+  auto const target_bytes = std::max<size_type>(
+    1,
+    static_cast<size_type>((static_cast<std::int64_t>(max_length) * tuning.radix_percent + 99) /
+                           100));
+  auto maximum_radix_passes =
+    std::max<size_type>(1, (target_bytes + bytes_per_pass - 1) / bytes_per_pass);
+  if (tuning.max_radix_passes != 0) {
+    maximum_radix_passes =
+      std::min(maximum_radix_passes, static_cast<size_type>(tuning.max_radix_passes));
+  }
+  auto const comparison_threshold = static_cast<size_type>(tuning.finish_threshold);
+  if (tuning.trace) {
+    std::fprintf(stderr,
+                 "segmented-string-sort bytes=%d percent=%d passes=%d known-prefix=%d "
+                 "finish-threshold=%d rle-policy=%d valid=%d nulls=%d max-length=%d\n",
+                 bytes_per_pass,
+                 tuning.radix_percent,
+                 maximum_radix_passes,
+                 tuning.known_prefix,
+                 tuning.finish_threshold,
+                 static_cast<int>(tuning.rle_policy),
+                 valid_size,
+                 null_size,
+                 max_length);
+  }
 
-  auto active_a        = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto active_b        = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto segment_starts  = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto segment_ends_at = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto run_starts_at   = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto run_ends_at     = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto run_ids         = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto run_begins      = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto run_ends        = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto run_classes     = rmm::device_uvector<std::uint8_t>(size, stream, temp_mr);
-  auto run_has_mismatch =
-    rmm::device_uvector<size_type>(detect_duplicates ? size : 0, stream, temp_mr);
+  auto keys_in  = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
+  auto keys_out = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
 
-  auto final_begins = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto final_ends   = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto task_begins  = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto task_ends    = rmm::device_uvector<size_type>(size, stream, temp_mr);
-  auto counts       = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
+  auto begins_a = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto ends_a   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto begins_b = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto ends_b   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+
+  auto active_a        = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto active_b        = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto segment_starts  = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto segment_ends_at = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto run_starts_at   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto run_ends_at     = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto run_ids         = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto run_begins      = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto run_ends        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto run_classes     = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+
+  // Every recorded final segment and block task contains at least two rows, so half the row count
+  // is a tight upper bound for each collection.
+  auto const maximum_finish_items = (valid_size + 1) / 2;
+  auto final_begins       = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
+  auto final_ends         = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
+  auto final_prefix_bytes = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
+  auto task_begins        = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
+  auto task_ends          = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
+  auto counts = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
   auto next_segment_count = cudf::detail::device_scalar<size_type>(size_type{0}, stream, temp_mr);
 
-  auto const exec = rmm::exec_policy_nosync(stream, temp_mr);
-  thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
-  thrust::fill(exec, begins_a.begin(), begins_a.end(), size);
-  thrust::fill(exec, ends_a.begin(), ends_a.end(), size);
+  thrust::fill(exec, begins_a.begin(), begins_a.end(), valid_size);
+  thrust::fill(exec, ends_a.begin(), ends_a.end(), valid_size);
   thrust::fill_n(exec, begins_a.begin(), 1, size_type{0});
-  thrust::fill_n(exec, ends_a.begin(), 1, size);
+  thrust::fill_n(exec, ends_a.begin(), 1, valid_size);
   thrust::fill(exec, active_a.begin(), active_a.end(), std::uint8_t{1});
 
   auto* current_indices = indices_a.data();
@@ -508,7 +640,8 @@ void sorted_order(column_view const& input,
   auto* next_ends       = ends_b.data();
   auto* active          = active_a.data();
   auto* next_active     = active_b.data();
-  auto const config     = cudf::detail::grid_1d{size, 256};
+  auto const config     = cudf::detail::grid_1d{valid_size, 256};
+  auto cub_temp_storage = rmm::device_buffer{};
   size_type num_segments{1};
 
   for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
@@ -519,29 +652,30 @@ void sorted_order(column_view const& input,
     thrust::fill(exec, run_begins.begin(), run_begins.end(), invalid_index);
     thrust::fill(exec, run_ends.begin(), run_ends.end(), invalid_index);
     thrust::fill(exec, run_classes.begin(), run_classes.end(), std::uint8_t{0});
-    thrust::fill(exec, next_begins, next_begins + size, size);
-    thrust::fill(exec, next_ends, next_ends + size, size);
+    thrust::fill(exec, next_begins, next_begins + valid_size, valid_size);
+    thrust::fill(exec, next_ends, next_ends + valid_size, valid_size);
 
-    make_keys<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-      *strings,
-      current_indices,
-      active,
-      keys_in.data(),
-      size,
-      pass * bytes_per_pass,
-      null_precedence);
+    make_keys<bytes_per_pass>
+      <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(*strings,
+                                                                             current_indices,
+                                                                             active,
+                                                                             keys_in.data(),
+                                                                             valid_size,
+                                                                             pass * bytes_per_pass,
+                                                                             null_precedence);
     CUDF_CUDA_TRY(cudaGetLastError());
-    CUDF_CUDA_TRY(
-      cudf::detail::memcpy_async(other_indices, current_indices, sizeof(size_type) * size, stream));
+    CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+      other_indices, current_indices, sizeof(size_type) * valid_size, stream));
     segmented_radix_sort(keys_in.data(),
                          keys_out.data(),
                          current_indices,
                          other_indices,
-                         size,
+                         valid_size,
                          num_segments,
                          current_begins,
                          current_ends,
                          ascending,
+                         cub_temp_storage,
                          stream);
     std::swap(current_indices, other_indices);
 
@@ -556,7 +690,7 @@ void sorted_order(column_view const& input,
       segment_starts.data(),
       segment_ends_at.data(),
       keys_out.data(),
-      size,
+      valid_size,
       run_starts_at.data(),
       run_ends_at.data());
     CUDF_CUDA_TRY(cudaGetLastError());
@@ -567,61 +701,94 @@ void sorted_order(column_view const& input,
       run_starts_at.data(),
       run_ends_at.data(),
       run_ids.data(),
-      size,
+      valid_size,
       run_begins.data(),
       run_ends.data());
-    auto const last_pass = pass + 1 == maximum_radix_passes;
-    if constexpr (detect_duplicates) {
-      if (last_pass) {
-        thrust::fill(exec, run_has_mismatch.begin(), run_has_mismatch.end(), size_type{0});
-        mark_nonduplicate_runs<<<config.num_blocks,
-                                 config.num_threads_per_block,
-                                 0,
-                                 stream.get()>>>(*strings,
-                                                 current_indices,
-                                                 active,
-                                                 run_ids.data(),
-                                                 run_begins.data(),
-                                                 size,
-                                                 run_has_mismatch.data());
+    auto const last_pass   = pass + 1 == maximum_radix_passes;
+    auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
+    if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
+      auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
+      auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
+      collect_rle_metrics<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+        *strings,
+        current_indices,
+        active,
+        run_ids.data(),
+        run_begins.data(),
+        run_ends.data(),
+        valid_size,
+        tuning.rle_min_run_length,
+        sampling_stride,
+        metrics.data());
+      auto const observed = metrics.value(stream);
+      auto const coverage = valid_size == 0 ? 0ULL : observed.covered_rows * 100 / valid_size;
+      auto const equality =
+        observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
+      detect_duplicates = coverage >= static_cast<unsigned>(tuning.rle_min_coverage_percent) &&
+                          equality >= static_cast<unsigned>(tuning.rle_min_equal_percent);
+      if (tuning.trace) {
+        std::fprintf(stderr,
+                     "segmented-string-sort adaptive-rle coverage=%llu equality=%llu samples=%llu "
+                     "enabled=%d\n",
+                     coverage,
+                     equality,
+                     observed.sampled_pairs,
+                     detect_duplicates);
       }
+    }
+    auto run_has_mismatch = rmm::device_uvector<size_type>(
+      detect_duplicates ? valid_size : size_type{0}, stream, temp_mr);
+    if (detect_duplicates) {
+      thrust::fill(exec, run_has_mismatch.begin(), run_has_mismatch.end(), size_type{0});
+      mark_nonduplicate_runs<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+        *strings,
+        current_indices,
+        active,
+        run_ids.data(),
+        run_begins.data(),
+        valid_size,
+        run_has_mismatch.data());
     }
     // The positional start flags are no longer needed. Reuse their storage for the per-run next
     // flags and later for compacted next-segment IDs.
     thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
-    classify_runs<detect_duplicates>
+    classify_runs<bytes_per_pass>
       <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
         *strings,
         current_indices,
         keys_out.data(),
         run_begins.data(),
         run_ends.data(),
-        size,
+        valid_size,
+        pass * bytes_per_pass,
         last_pass,
+        detect_duplicates,
         run_has_mismatch.data(),
+        comparison_threshold,
         run_starts_at.data(),
         run_classes.data(),
         final_begins.data(),
         final_ends.data(),
+        final_prefix_bytes.data(),
         task_begins.data(),
         task_ends.data(),
         counts.data());
     update_active_runs<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-      active, run_ids.data(), run_classes.data(), size, next_active);
+      active, run_ids.data(), run_classes.data(), valid_size, next_active);
     thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
     compact_next_segments<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
       run_begins.data(),
       run_ends.data(),
       run_starts_at.data(),
       run_ids.data(),
-      size,
+      valid_size,
       next_begins,
       next_ends);
     CUDF_CUDA_TRY(cudaGetLastError());
 
     if (pass + 1 < maximum_radix_passes) {
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-        next_segment_count.data(), run_ids.data() + size - 1, sizeof(size_type), stream));
+        next_segment_count.data(), run_ids.data() + valid_size - 1, sizeof(size_type), stream));
       num_segments = next_segment_count.value(stream);
     }
 
@@ -631,36 +798,50 @@ void sorted_order(column_view const& input,
   }
 
   // Transfer both finish launch counts together after refinement.
-  auto const finish = counts.value(stream);
+  auto const finish        = counts.value(stream);
+  auto known_prefix_by_row = rmm::device_uvector<size_type>(
+    tuning.known_prefix && finish.segments > 0 ? size : size_type{0}, stream, temp_mr);
+  if (known_prefix_by_row.size() != 0) {
+    thrust::fill(exec, known_prefix_by_row.begin(), known_prefix_by_row.end(), size_type{0});
+    comparator.known_prefix_bytes = known_prefix_by_row.data();
+  }
   if (finish.segments > 0) {
-    auto final_begin_for_position = rmm::device_uvector<size_type>(size, stream, temp_mr);
-    auto final_end_for_position   = rmm::device_uvector<size_type>(size, stream, temp_mr);
+    auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+    auto final_end_for_position   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
     thrust::fill(
       exec, final_begin_for_position.begin(), final_begin_for_position.end(), invalid_index);
     thrust::fill(exec, final_end_for_position.begin(), final_end_for_position.end(), invalid_index);
     map_final_segments<<<finish.segments, 256, 0, stream.get()>>>(final_begins.data(),
                                                                   final_ends.data(),
+                                                                  final_prefix_bytes.data(),
                                                                   finish.segments,
+                                                                  current_indices,
                                                                   final_begin_for_position.data(),
-                                                                  final_end_for_position.data());
+                                                                  final_end_for_position.data(),
+                                                                  known_prefix_by_row.data());
 
     auto const finish_config = cudf::detail::grid_1d{finish.segments, 128};
     finish_small_segments<<<finish_config.num_blocks,
                             finish_config.num_threads_per_block,
                             0,
-                            stream.get()>>>(
-      current_indices, final_begins.data(), final_ends.data(), finish.segments, comparator);
+                            stream.get()>>>(current_indices,
+                                            final_begins.data(),
+                                            final_ends.data(),
+                                            finish.segments,
+                                            comparison_threshold,
+                                            comparator);
     if (finish.block_tasks > 0) {
       block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
         current_indices, task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
-      for (std::int64_t width = block_sort_size; width < size; width *= 2) {
+      for (std::int64_t width = block_sort_size; width < valid_size; width *= 2) {
         merge_sorted_blocks<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
           current_indices,
           other_indices,
           final_begin_for_position.data(),
           final_end_for_position.data(),
-          size,
+          valid_size,
           width,
+          comparison_threshold,
           comparator);
         std::swap(current_indices, other_indices);
       }
@@ -668,8 +849,24 @@ void sorted_order(column_view const& input,
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 
-  CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-    output.begin<size_type>(), current_indices, sizeof(size_type) * size, stream));
+  if constexpr (bytes_per_pass == 8) {
+    auto const nulls_first  = ascending == (null_precedence == null_order::BEFORE);
+    auto const valid_offset = nulls_first ? null_size : size_type{0};
+    auto const null_offset  = nulls_first ? size_type{0} : valid_size;
+    CUDF_CUDA_TRY(cudf::detail::memcpy_async(output.begin<size_type>() + valid_offset,
+                                             current_indices,
+                                             sizeof(size_type) * valid_size,
+                                             stream));
+    if (null_size > 0) {
+      CUDF_CUDA_TRY(cudf::detail::memcpy_async(output.begin<size_type>() + null_offset,
+                                               null_indices.data(),
+                                               sizeof(size_type) * null_size,
+                                               stream));
+    }
+  } else {
+    CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+      output.begin<size_type>(), current_indices, sizeof(size_type) * size, stream));
+  }
 }
 
 }  // namespace segmented_string_sort

@@ -473,6 +473,43 @@ TEST_F(StringSort, IterativeSegmentedRefinementAndArbitraryBytes)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
 }
 
+TEST_F(StringSort, KnownPrefixRunsFinalizeAfterDifferentPasses)
+{
+  std::vector<std::string> strings;
+
+  // This run is small enough to finalize after its first six-byte key. Its first unknown byte
+  // determines the order, so skipping beyond the recorded prefix would fail the comparison.
+  for (int suffix = 3; suffix >= 0; --suffix) {
+    strings.push_back(std::string{"Aaaaa"} + static_cast<char>('a' + suffix));
+  }
+
+  // Each remaining family survives until the requested pass, then splits into pairs. The pair
+  // shares every radix byte processed so far and differs immediately afterward. Together these
+  // exercise known-prefix offsets of 12, 18, and 24 bytes.
+  for (int final_pass = 2; final_pass <= 4; ++final_pass) {
+    auto const family = static_cast<char>('A' + final_pass);
+    for (int subgroup = 16; subgroup >= 0; --subgroup) {
+      auto prefix = std::string(static_cast<std::size_t>((final_pass - 1) * 6), family);
+      prefix.append(5, static_cast<char>('k' + final_pass));
+      prefix.push_back(static_cast<char>('a' + subgroup));
+      strings.push_back(prefix + 'y');
+      strings.push_back(prefix + 'x');
+    }
+  }
+
+  auto expected_indices = std::vector<cudf::size_type>(strings.size());
+  std::iota(expected_indices.begin(), expected_indices.end(), cudf::size_type{0});
+  std::stable_sort(expected_indices.begin(), expected_indices.end(), [&](auto lhs, auto rhs) {
+    return bytewise_less(strings[lhs], strings[rhs]);
+  });
+
+  auto const input    = cudf::test::strings_column_wrapper(strings.begin(), strings.end());
+  auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    expected_indices.begin(), expected_indices.end());
+  auto const result = cudf::stable_sorted_order(cudf::table_view{{input}});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+}
+
 TEST_F(StringSort, RadixBoundariesAndZeroPaddedCollisions)
 {
   std::vector<std::string> strings;

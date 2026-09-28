@@ -358,6 +358,67 @@ TEST_F(StringSort, AlgorithmSelectorParsing)
   EXPECT_EQ(parse_string_sort_algorithm("invalid"), string_sort_algorithm::PREFIX);
 }
 
+TEST_F(StringSort, SegmentedTuningSelectorParsing)
+{
+  using cudf::detail::parse_segmented_string_sort_config;
+  using cudf::detail::segmented_rle_policy;
+  using cudf::detail::string_sort_algorithm;
+
+  auto const defaults = parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr);
+  EXPECT_EQ(defaults.bytes_per_pass, 6);
+  EXPECT_EQ(defaults.radix_percent, 100);
+  EXPECT_EQ(defaults.max_radix_passes, 4);
+  EXPECT_FALSE(defaults.known_prefix);
+  EXPECT_EQ(defaults.finish_threshold, 32);
+  EXPECT_EQ(defaults.rle_policy, segmented_rle_policy::NEVER);
+
+  auto const tuned = parse_segmented_string_sort_config(
+    string_sort_algorithm::SEGMENTED, "8", "80", "0", "1", "128", "2", "64", "50", "25", "1");
+  EXPECT_EQ(tuned.bytes_per_pass, 8);
+  EXPECT_EQ(tuned.radix_percent, 80);
+  EXPECT_EQ(tuned.max_radix_passes, 0);
+  EXPECT_TRUE(tuned.known_prefix);
+  EXPECT_EQ(tuned.finish_threshold, 128);
+  EXPECT_EQ(tuned.rle_policy, segmented_rle_policy::ADAPTIVE);
+  EXPECT_EQ(tuned.rle_min_run_length, 64);
+  EXPECT_EQ(tuned.rle_min_coverage_percent, 50);
+  EXPECT_EQ(tuned.rle_min_equal_percent, 25);
+  EXPECT_TRUE(tuned.trace);
+
+  auto const compatibility =
+    parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED_RLE,
+                                       "7",
+                                       "101",
+                                       "-1",
+                                       "2",
+                                       "1",
+                                       nullptr,
+                                       "1",
+                                       "101",
+                                       "-1",
+                                       "2");
+  EXPECT_EQ(compatibility.bytes_per_pass, 6);
+  EXPECT_EQ(compatibility.radix_percent, 100);
+  EXPECT_EQ(compatibility.max_radix_passes, 4);
+  EXPECT_FALSE(compatibility.known_prefix);
+  EXPECT_EQ(compatibility.finish_threshold, 32);
+  EXPECT_EQ(compatibility.rle_policy, segmented_rle_policy::ALWAYS);
+  EXPECT_EQ(compatibility.rle_min_run_length, 32);
+  EXPECT_EQ(compatibility.rle_min_coverage_percent, 25);
+  EXPECT_EQ(compatibility.rle_min_equal_percent, 10);
+  EXPECT_FALSE(compatibility.trace);
+}
+
 TEST_F(StringSort, IterativeSegmentedRefinementAndArbitraryBytes)
 {
   // Forty values exceed the comparison threshold. Their common prefix survives all four radix
@@ -381,6 +442,42 @@ TEST_F(StringSort, IterativeSegmentedRefinementAndArbitraryBytes)
     expected_data.begin(), expected_data.end());
   auto const result = cudf::sorted_order(cudf::table_view{{input}});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+}
+
+TEST_F(StringSort, RadixBoundariesAndZeroPaddedCollisions)
+{
+  std::vector<std::string> strings;
+  for (auto const length : {7, 8, 9, 15, 16, 17, 31, 32, 33}) {
+    for (int suffix = 3; suffix >= 0; --suffix) {
+      auto value   = std::string(static_cast<std::size_t>(length), 'a');
+      value.back() = static_cast<char>('a' + suffix);
+      strings.push_back(std::move(value));
+    }
+  }
+  strings.emplace_back("aaaaaaaa");
+  strings.emplace_back(std::string{"aaaaaaaa\0", 9});
+  strings.emplace_back(std::string{"aaaaaaaa\0x", 10});
+  strings.emplace_back("aaaaaaaa");
+
+  auto expected_indices = std::vector<cudf::size_type>(strings.size());
+  std::iota(expected_indices.begin(), expected_indices.end(), cudf::size_type{0});
+  std::stable_sort(expected_indices.begin(), expected_indices.end(), [&](auto lhs, auto rhs) {
+    return bytewise_less(strings[lhs], strings[rhs]);
+  });
+  auto const input    = cudf::test::strings_column_wrapper(strings.begin(), strings.end());
+  auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    expected_indices.begin(), expected_indices.end());
+  auto const ascending = cudf::stable_sorted_order(cudf::table_view{{input}});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, ascending->view());
+
+  std::stable_sort(expected_indices.begin(), expected_indices.end(), [&](auto lhs, auto rhs) {
+    return bytewise_less(strings[rhs], strings[lhs]);
+  });
+  auto const expected_descending = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    expected_indices.begin(), expected_indices.end());
+  auto const descending =
+    cudf::stable_sorted_order(cudf::table_view{{input}}, {cudf::order::DESCENDING});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
 }
 
 TEST_F(StringSort, LongExactDuplicateRun)

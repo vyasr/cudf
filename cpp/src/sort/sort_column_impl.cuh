@@ -148,12 +148,20 @@ struct string_comparator {
 
     auto const left_element  = d_column.element<string_view>(lhs);
     auto const right_element = d_column.element<string_view>(rhs);
-    return ascending ? left_element < right_element : right_element < left_element;
+    auto const skip = known_prefix_bytes == nullptr ? size_type{0} : known_prefix_bytes[lhs];
+    auto const left_suffix =
+      skip == 0 ? left_element
+                : string_view{left_element.data() + skip, left_element.size_bytes() - skip};
+    auto const right_suffix =
+      skip == 0 ? right_element
+                : string_view{right_element.data() + skip, right_element.size_bytes() - skip};
+    return ascending ? left_suffix < right_suffix : right_suffix < left_suffix;
   }
 
   column_device_view const d_column;
   bool ascending;
   null_order null_precedence{};
+  size_type const* known_prefix_bytes{};
 };
 
 /**
@@ -248,7 +256,7 @@ struct column_sorted_order_fn {
     }
   }
 
-  template <bool detect_duplicates, bool has_nulls>
+  template <bool has_nulls>
   void segmented_sorted_order_impl(column_view const& input,
                                    column_device_view const& keys,
                                    mutable_column_view& indices,
@@ -256,12 +264,17 @@ struct column_sorted_order_fn {
                                    null_order null_precedence,
                                    cuda::stream_ref stream)
   {
-    auto const comp = string_comparator<has_nulls>{keys, ascending, null_precedence};
-    segmented_string_sort::sorted_order<method, detect_duplicates>(
-      input, indices, ascending, null_precedence, comp, stream);
+    auto const comp    = string_comparator<has_nulls>{keys, ascending, null_precedence, nullptr};
+    auto const& config = configured_segmented_string_sort();
+    if (config.bytes_per_pass == 8) {
+      segmented_string_sort::sorted_order<method, 8>(
+        input, indices, ascending, null_precedence, comp, config, stream);
+    } else {
+      segmented_string_sort::sorted_order<method, 6>(
+        input, indices, ascending, null_precedence, comp, config, stream);
+    }
   }
 
-  template <bool detect_duplicates>
   void segmented_sorted_order(column_view const& input,
                               mutable_column_view& indices,
                               bool ascending,
@@ -270,11 +283,9 @@ struct column_sorted_order_fn {
   {
     auto keys = column_device_view::create(input, stream);
     if (input.has_nulls()) {
-      segmented_sorted_order_impl<detect_duplicates, true>(
-        input, *keys, indices, ascending, null_precedence, stream);
+      segmented_sorted_order_impl<true>(input, *keys, indices, ascending, null_precedence, stream);
     } else {
-      segmented_sorted_order_impl<detect_duplicates, false>(
-        input, *keys, indices, ascending, null_precedence, stream);
+      segmented_sorted_order_impl<false>(input, *keys, indices, ascending, null_precedence, stream);
     }
   }
 
@@ -321,10 +332,10 @@ struct column_sorted_order_fn {
 
       switch (configured_string_sort_algorithm()) {
         case string_sort_algorithm::SEGMENTED:
-          segmented_sorted_order<false>(input, indices, ascending, null_precedence, stream);
+          segmented_sorted_order(input, indices, ascending, null_precedence, stream);
           break;
         case string_sort_algorithm::SEGMENTED_RLE:
-          segmented_sorted_order<true>(input, indices, ascending, null_precedence, stream);
+          segmented_sorted_order(input, indices, ascending, null_precedence, stream);
           break;
         case string_sort_algorithm::PREFIX:
           prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);

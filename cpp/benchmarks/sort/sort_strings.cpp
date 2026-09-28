@@ -39,6 +39,20 @@ void run_sorted_order_benchmark(nvbench::state& state, std::unique_ptr<cudf::col
     mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
 }
 
+void run_sort_benchmark(nvbench::state& state, std::unique_ptr<cudf::column> const& input)
+{
+  auto const bytes = input->alloc_size();
+  state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().get()));
+  state.add_global_memory_reads<nvbench::int8_t>(bytes);
+  state.add_global_memory_writes<nvbench::int8_t>(bytes);
+
+  auto const mem_stats_logger = cudf::memory_stats_logger();
+  state.exec(nvbench::exec_tag::sync,
+             [&](nvbench::launch& launch) { cudf::sort(cudf::table_view{{input->view()}}); });
+  state.add_buffer_size(
+    mem_stats_logger.peak_memory_usage(), "peak_memory_usage", "peak_memory_usage");
+}
+
 std::unique_ptr<cudf::column> make_prefixed_input(cudf::size_type num_rows,
                                                   cudf::size_type prefix_width,
                                                   cudf::size_type suffix_width)
@@ -140,6 +154,46 @@ std::unique_ptr<cudf::column> make_workload_input(cudf::size_type num_rows,
     return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
   }
   CUDF_FAIL("Unknown string workload: " + workload);
+}
+
+std::unique_ptr<cudf::column> make_sensitivity_input(cudf::size_type num_rows,
+                                                     std::string const& profile_name)
+{
+  constexpr cudf::size_type width = 128;
+  if (profile_name.starts_with("duplicates_")) {
+    auto cardinality = cudf::size_type{0};
+    if (profile_name == "duplicates_1") {
+      cardinality = 1;
+    } else if (profile_name == "duplicates_64") {
+      cardinality = 64;
+    } else if (profile_name == "duplicates_4096") {
+      cardinality = 4096;
+    } else if (profile_name != "duplicates_unique") {
+      CUDF_FAIL("Unknown string sensitivity profile: " + profile_name);
+    }
+    data_profile const profile =
+      data_profile_builder()
+        .no_validity()
+        .cardinality(cardinality)
+        .avg_run_length(1)
+        .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, 0, width);
+    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+  }
+
+  auto prefix_percent = cudf::size_type{-1};
+  if (profile_name == "prefix_0") {
+    prefix_percent = 0;
+  } else if (profile_name == "prefix_50") {
+    prefix_percent = 50;
+  } else if (profile_name == "prefix_75") {
+    prefix_percent = 75;
+  } else if (profile_name == "prefix_90") {
+    prefix_percent = 90;
+  } else {
+    CUDF_FAIL("Unknown string sensitivity profile: " + profile_name);
+  }
+  auto const prefix_width = width * prefix_percent / 100;
+  return make_prefixed_input(num_rows, prefix_width, width - prefix_width);
 }
 
 }  // namespace
@@ -285,3 +339,39 @@ NVBENCH_BENCH(bench_sorted_order_strings_workload)
   .add_int64_axis("max_width", {32, 64, 128, 256})
   .add_int64_axis("num_rows", {32768, 262144, 2097152})
   .add_string_axis("workload", {"normal", "duplicates", "shared_prefix", "variable"});
+
+static void bench_sort_strings_workload(nvbench::state& state)
+{
+  auto const num_rows  = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const min_width = static_cast<cudf::size_type>(state.get_int64("min_width"));
+  auto const max_width = static_cast<cudf::size_type>(state.get_int64("max_width"));
+  auto const workload  = state.get_string("workload");
+  run_sort_benchmark(state, make_workload_input(num_rows, min_width, max_width, workload));
+}
+
+NVBENCH_BENCH(bench_sort_strings_workload)
+  .set_name("sort_strings_workload")
+  .add_int64_axis("min_width", {0})
+  .add_int64_axis("max_width", {32, 64, 128, 256})
+  .add_int64_axis("num_rows", {32768, 262144, 2097152})
+  .add_string_axis("workload", {"normal", "duplicates", "shared_prefix", "variable"});
+
+static void bench_sorted_order_strings_sensitivity(nvbench::state& state)
+{
+  auto const num_rows = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const profile  = state.get_string("profile");
+  run_sorted_order_benchmark(state, make_sensitivity_input(num_rows, profile));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_sensitivity)
+  .set_name("sorted_order_strings_sensitivity")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_string_axis("profile",
+                   {"duplicates_1",
+                    "duplicates_64",
+                    "duplicates_4096",
+                    "duplicates_unique",
+                    "prefix_0",
+                    "prefix_50",
+                    "prefix_75",
+                    "prefix_90"});

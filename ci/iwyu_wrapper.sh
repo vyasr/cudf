@@ -8,6 +8,7 @@ set -uo pipefail
 : "${CUDF_IWYU_REAL_EXE:?CUDF_IWYU_REAL_EXE must be set}"
 : "${CUDF_IWYU_DIAGNOSTICS_DIR:?CUDF_IWYU_DIAGNOSTICS_DIR must be set}"
 
+wrapper_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 iwyu_args=("$@")
 
 log_invocation() {
@@ -60,10 +61,9 @@ if (( profile_iwyu )); then
 fi
 if (( gdb_iwyu )); then
   gdb_log="${CUDF_IWYU_DIAGNOSTICS_DIR}/iwyu.${BASHPID}.gdb.log"
-  command=(gdb --batch --quiet --ex 'set pagination off' --ex 'set target-async on' \
-    --ex "set logging file ${gdb_log}" --ex 'set logging enabled on' --ex 'run &' \
-    --ex "shell sleep ${CUDF_IWYU_GDB_TIMEOUT_SECONDS:?CUDF_IWYU_GDB_TIMEOUT_SECONDS must be set}" \
-    --ex interrupt --ex 'shell sleep 1' --ex 'thread apply all bt' --ex quit \
+  : "${CUDF_IWYU_GDB_TIMEOUT_SECONDS:?CUDF_IWYU_GDB_TIMEOUT_SECONDS must be set}"
+  command=(gdb --batch --quiet --ex "set logging file ${gdb_log}" --ex 'set logging enabled on' \
+    --command "${wrapper_dir}/iwyu_capture.gdb" \
     --args "${CUDF_IWYU_REAL_EXE}" "$@")
 fi
 "${time_exe}" -v -o "${time_log}" "${command[@]}"

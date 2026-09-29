@@ -4,6 +4,7 @@
  */
 
 #include "groupby/sort/group_single_pass_reduction_util.cuh"
+#include "groupby/sort/group_validity.cuh"
 
 namespace cudf::groupby::detail {
 
@@ -41,9 +42,7 @@ std::unique_ptr<column> group_nested_argminmax(
   if (values.has_nulls()) {
     auto const d_values_ptr = column_device_view::create(values, stream);
     auto validity           = rmm::device_uvector<bool>(num_groups, stream);
-    do_reduction(cudf::detail::make_validity_iterator(*d_values_ptr),
-                 validity.begin(),
-                 cuda::std::logical_or{});
+    reduce_group_validity(group_labels, *d_values_ptr, validity.data(), stream);
 
     auto [null_mask, null_count] =
       cudf::detail::valid_if(validity.begin(), validity.end(), cuda::std::identity{}, stream, mr);

@@ -68,6 +68,7 @@ def right():
     )
 
 
+@pytest.mark.engine_params(["spmd", "spmd-small"])
 @pytest.mark.parametrize("how", ["inner", "left", "right", "full"])
 @pytest.mark.parametrize(
     "options",
@@ -83,6 +84,18 @@ def test_dynamic_join_how(left, right, streaming_engine_factory, options, how):
     assert_gpu_result_equal(q, engine=streaming_engine, check_row_order=False)
 
 
+@pytest.mark.engine_params(["dask", "ray"])
+@pytest.mark.parametrize("how", ["inner", "left", "right", "full"])
+def test_dynamic_join_distributed_backends(left, right, streaming_engine_factory, how):
+    """Exercise dynamic join planning on the task-based executor adapters."""
+    engine = streaming_engine_factory(
+        StreamingOptions(max_rows_per_partition=3, broadcast_limit=48)
+    )
+    q = left.join(right, on="y", how=how)
+    assert_gpu_result_equal(q, engine=engine, check_row_order=False)
+
+
+@pytest.mark.engine_params(["spmd", "spmd-small"])
 @pytest.mark.parametrize("how", ["right", "full"])
 def test_dynamic_join_right_full_reverse(left, right, streaming_engine_factory, how):
     """Dynamic join path: Right/Full with reversed left/right (stress ordering)."""
@@ -314,9 +327,7 @@ def test_ordered_join_strategy_rejects_ambiguous_output_key_metadata(spmd_engine
     assert _make_ordered_strategy(join_ir, partitioning, partitioning) is None
 
 
-@pytest.mark.parametrize("reverse", [True, False])
-@pytest.mark.parametrize("max_rows_per_partition", [3, 9])
-def test_join_conditional(reverse, max_rows_per_partition, streaming_engine_factory):
+def assert_conditional_join(reverse, max_rows_per_partition, streaming_engine_factory):
     streaming_engine = streaming_engine_factory(
         StreamingOptions(
             max_rows_per_partition=max_rows_per_partition,
@@ -335,6 +346,19 @@ def test_join_conditional(reverse, max_rows_per_partition, streaming_engine_fact
         match="ConditionalJoin not supported for multiple partitions.",
     ):
         assert_gpu_result_equal(q, engine=streaming_engine, check_row_order=False)
+
+
+@pytest.mark.engine_params(["spmd", "spmd-small"])
+@pytest.mark.parametrize("reverse", [True, False])
+@pytest.mark.parametrize("max_rows_per_partition", [3, 9])
+def test_join_conditional(reverse, max_rows_per_partition, streaming_engine_factory):
+    assert_conditional_join(reverse, max_rows_per_partition, streaming_engine_factory)
+
+
+@pytest.mark.engine_params(["dask", "ray"])
+@pytest.mark.parametrize("reverse", [True, False])
+def test_join_conditional_distributed_backends(reverse, streaming_engine_factory):
+    assert_conditional_join(reverse, 3, streaming_engine_factory)
 
 
 # ---------------------------------------------------------------------------

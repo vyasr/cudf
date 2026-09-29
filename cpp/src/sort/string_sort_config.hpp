@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cstdlib>
 #include <limits>
+#include <stdexcept>
 #include <string_view>
 
 namespace cudf::detail {
@@ -48,6 +49,15 @@ struct segmented_string_sort_config {
            : fallback;
 }
 
+[[nodiscard]] inline int parse_bytes_per_pass(char const* value)
+{
+  if (value == nullptr) { return 6; }
+  auto const setting = std::string_view{value};
+  if (setting == "6") { return 6; }
+  if (setting == "8") { return 8; }
+  throw std::invalid_argument{"LIBCUDF_SEGMENTED_STRING_SORT_BYTES_PER_PASS must be either 6 or 8"};
+}
+
 [[nodiscard]] inline segmented_string_sort_config parse_segmented_string_sort_config(
   string_sort_algorithm algorithm,
   char const* bytes_per_pass,
@@ -61,9 +71,8 @@ struct segmented_string_sort_config {
   char const* rle_min_equal_percent,
   char const* trace)
 {
-  auto config           = segmented_string_sort_config{};
-  config.bytes_per_pass = parse_integer_setting(bytes_per_pass, 6, 8, 6);
-  if (config.bytes_per_pass != 6 && config.bytes_per_pass != 8) { config.bytes_per_pass = 6; }
+  auto config               = segmented_string_sort_config{};
+  config.bytes_per_pass     = parse_bytes_per_pass(bytes_per_pass);
   config.radix_percent      = parse_integer_setting(radix_percent, 1, 100, 100);
   config.max_radix_passes   = parse_integer_setting(max_radix_passes, 0, 255, 4);
   config.known_prefix       = parse_integer_setting(known_prefix, 0, 1, 0) != 0;

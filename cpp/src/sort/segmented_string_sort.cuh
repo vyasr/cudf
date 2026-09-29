@@ -22,6 +22,7 @@
 
 #include <cub/device/device_segmented_radix_sort.cuh>
 #include <thrust/copy.h>
+#include <thrust/count.h>
 #include <thrust/fill.h>
 #include <thrust/functional.h>
 #include <thrust/scan.h>
@@ -49,6 +50,7 @@ struct radix_key_layout {
 
 struct finish_counts {
   size_type segments{};
+  size_type rows{};
   size_type block_tasks{};
   size_type maximum_segment_size{};
 };
@@ -296,7 +298,8 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
     return;
   }
 
-  auto const final_slot    = atomicAdd(&counts->segments, size_type{1});
+  auto const final_slot = atomicAdd(&counts->segments, size_type{1});
+  atomicAdd(&counts->rows, end - begin);
   final_begins[final_slot] = begin;
   final_ends[final_slot]   = end;
   if (final_prefix_bytes != nullptr) {
@@ -597,15 +600,18 @@ void sorted_order(column_view const& input,
     thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
   }
 
-  auto max_length           = size_type{-1};
-  auto maximum_radix_passes = static_cast<size_type>(tuning.max_radix_passes);
+  auto max_length             = size_type{-1};
+  auto maximum_radix_passes   = static_cast<size_type>(tuning.max_radix_passes);
+  auto synchronization_points = size_type{0};
+  auto trace_readbacks        = size_type{0};
   if (key_layout::uses_full_width || tuning.max_radix_passes == 0 || tuning.radix_percent != 100) {
-    max_length              = thrust::transform_reduce(exec,
+    max_length = thrust::transform_reduce(exec,
                                           indices_a.begin(),
                                           indices_a.end(),
                                           string_length_fn{*strings},
                                           size_type{0},
                                           cuda::maximum<size_type>{});
+    ++synchronization_points;
     auto const target_bytes = std::max<size_type>(
       1,
       static_cast<size_type>((static_cast<std::int64_t>(max_length) * tuning.radix_percent + 99) /
@@ -680,8 +686,19 @@ void sorted_order(column_view const& input,
   auto const config     = cudf::detail::grid_1d{valid_size, 256};
   auto cub_temp_storage = rmm::device_buffer{};
   size_type num_segments{1};
+  // This counts algorithm-visible workspace allocations rather than upstream pool growth. It makes
+  // stage-to-stage buffer lifetime changes observable without replacing the caller's memory
+  // resource.
+  auto allocation_count =
+    size_type{24 + (known_prefix ? 1 : 0) + (null_indices.size() > 0 ? 1 : 0)};
 
   for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
+    auto active_rows = size_type{-1};
+    if (tuning.trace) {
+      active_rows =
+        static_cast<size_type>(thrust::count(exec, active, active + valid_size, std::uint8_t{1}));
+      ++trace_readbacks;
+    }
     thrust::fill(exec, segment_starts.begin(), segment_starts.end(), std::uint8_t{0});
     thrust::fill(exec, segment_ends_at.begin(), segment_ends_at.end(), std::uint8_t{0});
     thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
@@ -702,6 +719,7 @@ void sorted_order(column_view const& input,
     CUDF_CUDA_TRY(cudaGetLastError());
     CUDF_CUDA_TRY(cudf::detail::memcpy_async(
       other_indices, current_indices, sizeof(size_type) * valid_size, stream));
+    auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
     segmented_radix_sort(keys_in.data(),
                          keys_out.data(),
                          current_indices,
@@ -713,6 +731,7 @@ void sorted_order(column_view const& input,
                          ascending,
                          cub_temp_storage,
                          stream);
+    if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
     std::swap(current_indices, other_indices);
 
     auto const segment_config = cudf::detail::grid_1d{num_segments, 256};
@@ -740,12 +759,19 @@ void sorted_order(column_view const& input,
       valid_size,
       run_begins.data(),
       run_ends.data());
+    auto run_count = size_type{-1};
+    if (tuning.trace) {
+      run_count = static_cast<size_type>(
+        thrust::count(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{1}));
+      ++trace_readbacks;
+    }
     auto const last_pass = pass + 1 == maximum_radix_passes;
     auto const rle_known_prefix =
       key_layout::uses_full_width ? size_type{0} : (pass + 1) * bytes_per_pass;
     auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
     if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
       auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
+      ++allocation_count;
       auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
       collect_rle_metrics<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
         *strings,
@@ -760,6 +786,7 @@ void sorted_order(column_view const& input,
         rle_known_prefix,
         metrics.data());
       auto const observed = metrics.value(stream);
+      ++synchronization_points;
       auto const coverage = valid_size == 0 ? 0ULL : observed.covered_rows * 100 / valid_size;
       auto const equality =
         observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
@@ -822,10 +849,25 @@ void sorted_order(column_view const& input,
       next_ends);
     CUDF_CUDA_TRY(cudaGetLastError());
 
-    if (pass + 1 < maximum_radix_passes) {
+    auto const needs_next_segment_count = pass + 1 < maximum_radix_passes;
+    if (needs_next_segment_count || tuning.trace) {
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(
         next_segment_count.data(), run_ids.data() + valid_size - 1, sizeof(size_type), stream));
-      num_segments = next_segment_count.value(stream);
+      auto const next_segments = next_segment_count.value(stream);
+      if (needs_next_segment_count) {
+        num_segments = next_segments;
+        ++synchronization_points;
+      } else {
+        ++trace_readbacks;
+      }
+      if (tuning.trace) {
+        std::fprintf(stderr,
+                     "segmented-string-sort pass=%d active-rows=%d runs=%d next-runs=%d\n",
+                     pass,
+                     active_rows,
+                     run_count,
+                     next_segments);
+      }
     }
 
     std::swap(current_begins, next_begins);
@@ -834,9 +876,12 @@ void sorted_order(column_view const& input,
   }
 
   // Transfer the finish launch metadata together after refinement.
-  auto const finish        = counts.value(stream);
+  auto const finish = counts.value(stream);
+  ++synchronization_points;
   auto known_prefix_by_row = rmm::device_uvector<size_type>(
     known_prefix && finish.segments > 0 ? size : size_type{0}, stream, temp_mr);
+  allocation_count += known_prefix_by_row.size() > 0 ? 1 : 0;
+  auto merge_levels = size_type{0};
   if (known_prefix_by_row.size() != 0) {
     thrust::fill(exec, known_prefix_by_row.begin(), known_prefix_by_row.end(), size_type{0});
     if constexpr (known_prefix) {
@@ -846,6 +891,7 @@ void sorted_order(column_view const& input,
   if (finish.segments > 0) {
     auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
     auto final_end_for_position   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+    allocation_count += 2;
     thrust::fill(
       exec, final_begin_for_position.begin(), final_begin_for_position.end(), invalid_index);
     thrust::fill(exec, final_end_for_position.begin(), final_end_for_position.end(), invalid_index);
@@ -873,6 +919,7 @@ void sorted_order(column_view const& input,
       block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
         current_indices, task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
       for (std::int64_t width = block_sort_size; width < finish.maximum_segment_size; width *= 2) {
+        ++merge_levels;
         merge_sorted_blocks<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
           current_indices,
           other_indices,
@@ -886,6 +933,19 @@ void sorted_order(column_view const& input,
       }
     }
     CUDF_CUDA_TRY(cudaGetLastError());
+  }
+
+  if (tuning.trace) {
+    std::fprintf(stderr,
+                 "segmented-string-sort finish-segments=%d finish-rows=%d block-tasks=%d "
+                 "merge-levels=%d allocations=%d sync-points=%d trace-readbacks=%d\n",
+                 finish.segments,
+                 finish.rows,
+                 finish.block_tasks,
+                 merge_levels,
+                 allocation_count,
+                 synchronization_points,
+                 trace_readbacks);
   }
 
   if constexpr (key_layout::uses_full_width) {

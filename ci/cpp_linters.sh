@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
@@ -14,14 +14,14 @@ ENV_YAML_DIR="$(mktemp -d)"
 
 rapids-dependency-file-generator \
   --output conda \
-  --file-key clang_tidy \
+  --file-key cpp_linters \
   --matrix "cuda=${RAPIDS_CUDA_VERSION%.*};arch=$(arch);py=${RAPIDS_PY_VERSION}" | tee "${ENV_YAML_DIR}/env.yaml"
 
-rapids-mamba-retry env create --yes -f "${ENV_YAML_DIR}/env.yaml" -n clang_tidy
+rapids-mamba-retry env create --yes -f "${ENV_YAML_DIR}/env.yaml" -n cpp_linters
 
 # Temporarily allow unbound variables for conda activation.
 set +u
-conda activate clang_tidy
+conda activate cpp_linters
 set -u
 
 # clang-tidy parses the GCC compile command with clang. Newer conda compilers add
@@ -42,10 +42,9 @@ sccache --stop-server 2>/dev/null || true
 # Run the build via CMake, which will run clang-tidy when CUDF_STATIC_LINTERS is enabled.
 
 iwyu_flag=""
-# Temporarily disabling this until we can figure out why it causes the build to hang
-# if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" ]]; then
-#  iwyu_flag="-DCUDF_IWYU=ON"
-# fi
+if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull-request" ]]; then
+  iwyu_flag="-DCUDF_IWYU=ON"
+fi
 rapids-telemetry-record cpp_linters_build.log cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DCUDF_CLANG_TIDY=ON ${iwyu_flag} -DBUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=75 -GNinja
 cmake --build cpp/build 2>&1 | python cpp/scripts/parse_iwyu_output.py
 

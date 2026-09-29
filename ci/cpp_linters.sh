@@ -59,7 +59,7 @@ if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull
   # Profiling at launch captures the CPU-bound interval that strace cannot explain.
   if perf record --output "${diagnostics_dir}/perf-probe.data" -- /bin/true \
     >"${diagnostics_dir}/perf-probe.log" 2>&1; then
-    export CUDF_IWYU_PERF_SOURCE_REGEX='(expression_parser|binaryop)\.cpp$'
+    :
   else
     printf 'perf record is unavailable under this runner security policy\n' >> "${diagnostics_dir}/perf-probe.log"
   fi

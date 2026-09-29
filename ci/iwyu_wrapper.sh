@@ -29,15 +29,12 @@ if [[ ! -x "${time_exe}" ]]; then
   exit 1
 fi
 trace_iwyu=0
-profile_iwyu=0
 for arg in "${iwyu_args[@]}"; do
   if [[ "${arg}" =~ ${CUDF_IWYU_STRACE_SOURCE_REGEX:-^$} ]]; then
     trace_iwyu=1
   fi
-  if [[ "${arg}" =~ ${CUDF_IWYU_PERF_SOURCE_REGEX:-^$} ]]; then
-    profile_iwyu=1
-  fi
 done
+profile_iwyu=${trace_iwyu}
 
 command=("${CUDF_IWYU_REAL_EXE}" "$@")
 if (( trace_iwyu || profile_iwyu )); then

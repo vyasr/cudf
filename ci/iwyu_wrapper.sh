@@ -29,22 +29,35 @@ if [[ ! -x "${time_exe}" ]]; then
   exit 1
 fi
 trace_iwyu=0
+profile_iwyu=0
 for arg in "${iwyu_args[@]}"; do
   if [[ "${arg}" =~ ${CUDF_IWYU_STRACE_SOURCE_REGEX:-^$} ]]; then
     trace_iwyu=1
-    break
+  fi
+  if [[ "${arg}" =~ ${CUDF_IWYU_PERF_SOURCE_REGEX:-^$} ]]; then
+    profile_iwyu=1
   fi
 done
 
+command=("${CUDF_IWYU_REAL_EXE}" "$@")
+if (( trace_iwyu || profile_iwyu )); then
+  command=(timeout --signal=TERM --kill-after=30s \
+    "${CUDF_IWYU_TRACE_TIMEOUT_SECONDS:?CUDF_IWYU_TRACE_TIMEOUT_SECONDS must be set}" \
+    "${command[@]}")
+fi
 if (( trace_iwyu )); then
   trace_prefix="${CUDF_IWYU_DIAGNOSTICS_DIR}/iwyu.${BASHPID}.strace"
-  "${time_exe}" -v -o "${time_log}" strace -ff -ttt -T -s 256 -o "${trace_prefix}" \
-    -e trace=%file,%process,%network timeout --signal=TERM --kill-after=30s \
-    "${CUDF_IWYU_TRACE_TIMEOUT_SECONDS:?CUDF_IWYU_TRACE_TIMEOUT_SECONDS must be set}" \
-    "${CUDF_IWYU_REAL_EXE}" "$@"
-else
-  "${time_exe}" -v -o "${time_log}" "${CUDF_IWYU_REAL_EXE}" "$@"
+  command=(strace -ff -ttt -T -s 256 -o "${trace_prefix}" \
+    -e 'trace=%file,%process,%network' "${command[@]}")
 fi
+if (( profile_iwyu )); then
+  perf_prefix="${CUDF_IWYU_DIAGNOSTICS_DIR}/iwyu.${BASHPID}.perf"
+  command=(perf record --freq 99 --call-graph 'dwarf,8192' --output "${perf_prefix}.data" -- "${command[@]}")
+fi
+"${time_exe}" -v -o "${time_log}" "${command[@]}"
 status=$?
+if (( profile_iwyu )); then
+  perf report --stdio --input "${perf_prefix}.data" > "${perf_prefix}.report" 2>&1 || true
+fi
 log_invocation end "${status}"
 exit "${status}"

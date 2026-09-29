@@ -998,6 +998,7 @@ dependencies:
           - clang==22.1.8
           - clang-tools==22.1.8
           - include-what-you-use==0.26
+          - linux-perf
           - strace
           - time
   docs:

@@ -6,6 +6,8 @@
 #include <benchmarks/common/generate_input.hpp>
 #include <benchmarks/common/memory_stats.hpp>
 
+#include <cudf_test/column_wrapper.hpp>
+
 #include <cudf/sorting.hpp>
 #include <cudf/strings/combine.hpp>
 #include <cudf/strings/strings_column_view.hpp>
@@ -16,8 +18,12 @@
 
 #include <nvbench/nvbench.cuh>
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 
@@ -191,6 +197,65 @@ std::unique_ptr<cudf::column> make_sensitivity_input(cudf::size_type num_rows,
   }
   auto const prefix_width = width * prefix_percent / 100;
   return make_prefixed_input(num_rows, prefix_width, width - prefix_width);
+}
+
+std::string fixed_width_token(std::uint64_t value, cudf::size_type width)
+{
+  constexpr auto alphabet =
+    std::string_view{"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
+  auto result = std::string(static_cast<std::size_t>(width), alphabet.front());
+  for (auto position = width; position > 0; --position) {
+    result[static_cast<std::size_t>(position - 1)] = alphabet[value % alphabet.size()];
+    value /= alphabet.size();
+  }
+  return result;
+}
+
+std::unique_ptr<cudf::column> make_diagnostic_input(cudf::size_type num_rows,
+                                                    std::string const& profile_name)
+{
+  auto strings = std::vector<std::string>(static_cast<std::size_t>(num_rows));
+  if (profile_name.starts_with("finish_")) {
+    auto const unresolved_rows = static_cast<cudf::size_type>(std::stoll(profile_name.substr(7)));
+    CUDF_EXPECTS(unresolved_rows <= num_rows, "Unresolved run exceeds diagnostic row count");
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      strings[static_cast<std::size_t>(row)] = row < unresolved_rows
+                                                 ? std::string(24, 'z') + fixed_width_token(row, 8)
+                                                 : fixed_width_token(row, 6) + std::string(26, 'x');
+    }
+  } else if (profile_name.starts_with("active_")) {
+    auto const tenths_percent = profile_name == "active_50"    ? 500
+                                : profile_name == "active_10"  ? 100
+                                : profile_name == "active_1"   ? 10
+                                : profile_name == "active_0_1" ? 1
+                                                               : -1;
+    CUDF_EXPECTS(tenths_percent >= 0, "Unknown active-coverage diagnostic profile");
+    auto const active_rows =
+      static_cast<cudf::size_type>(static_cast<std::int64_t>(num_rows) * tenths_percent / 1000);
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      strings[static_cast<std::size_t>(row)] = row < active_rows
+                                                 ? std::string{"zzzzzz"} + fixed_width_token(row, 8)
+                                                 : fixed_width_token(row, 6) + std::string(8, 'x');
+    }
+  } else if (profile_name.starts_with("duplicates_")) {
+    auto const width = static_cast<cudf::size_type>(std::stoll(profile_name.substr(11)));
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      auto value = fixed_width_token(row % 64, std::min<cudf::size_type>(width, 6));
+      value.append(static_cast<std::size_t>(width - value.size()), 'd');
+      strings[static_cast<std::size_t>(row)] = std::move(value);
+    }
+  } else if (profile_name == "zero_collision_pass1" || profile_name == "zero_collision_pass2") {
+    auto const preceding_prefix =
+      profile_name == "zero_collision_pass1" ? std::string{} : std::string(8, 'q');
+    auto const short_value = preceding_prefix + 'a';
+    auto const long_value  = short_value + std::string(7, '\0');
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      strings[static_cast<std::size_t>(row)] = row % 2 == 0 ? long_value : short_value;
+    }
+  } else {
+    CUDF_FAIL("Unknown segmented string diagnostic profile: " + profile_name);
+  }
+  return cudf::test::strings_column_wrapper(strings.begin(), strings.end()).release();
 }
 
 }  // namespace
@@ -404,3 +469,30 @@ NVBENCH_BENCH(bench_sorted_order_strings_sensitivity)
                     "prefix_50",
                     "prefix_75",
                     "prefix_90"});
+
+static void bench_sorted_order_strings_segmented_diagnostics(nvbench::state& state)
+{
+  auto const num_rows = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const profile  = state.get_string("profile");
+  run_sorted_order_benchmark(state, make_diagnostic_input(num_rows, profile));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_segmented_diagnostics)
+  .set_name("sorted_order_strings_segmented_diagnostics")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_string_axis("profile",
+                   {"finish_257",
+                    "finish_1024",
+                    "finish_4096",
+                    "active_50",
+                    "active_10",
+                    "active_1",
+                    "active_0_1",
+                    "duplicates_6",
+                    "duplicates_8",
+                    "duplicates_12",
+                    "duplicates_16",
+                    "duplicates_24",
+                    "duplicates_32",
+                    "zero_collision_pass1",
+                    "zero_collision_pass2"});

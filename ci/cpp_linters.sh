@@ -47,8 +47,15 @@ if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull
   mkdir -p "${diagnostics_dir}"
 
   export CUDF_IWYU_LOG_FILE="${diagnostics_dir}/invocations.log"
+  export CUDF_IWYU_DIAGNOSTICS_DIR="${diagnostics_dir}"
   iwyu_real_exe="$(command -v include-what-you-use)"
   export CUDF_IWYU_REAL_EXE="${iwyu_real_exe}"
+  # Trace only the invocations that remained active in the first diagnostic run.
+  if strace -o "${diagnostics_dir}/strace-probe.log" /bin/true; then
+    export CUDF_IWYU_STRACE_SOURCE_REGEX='(expression_parser|binaryop)\.cpp$'
+  else
+    printf 'strace is unavailable under this runner security policy\n' >> "${diagnostics_dir}/strace-probe.log"
+  fi
   iwyu_flag="-DCUDF_IWYU=ON -DIWYU_EXE=${PWD}/ci/iwyu_wrapper.sh"
 
   snapshot_iwyu_processes() {

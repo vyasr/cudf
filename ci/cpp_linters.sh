@@ -59,9 +59,16 @@ if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull
   # Profiling at launch captures the CPU-bound interval that strace cannot explain.
   if perf record --output "${diagnostics_dir}/perf-probe.data" -- /bin/true \
     >"${diagnostics_dir}/perf-probe.log" 2>&1; then
-    :
+    export CUDF_IWYU_PERF_AVAILABLE=1
   else
     printf 'perf record is unavailable under this runner security policy\n' >> "${diagnostics_dir}/perf-probe.log"
+  fi
+  if gdb --batch --quiet --ex quit \
+    >"${diagnostics_dir}/gdb-probe.log" 2>&1; then
+    export CUDF_IWYU_GDB_SOURCE_REGEX='(expression_parser|binaryop)\.cpp$'
+    export CUDF_IWYU_GDB_TIMEOUT_SECONDS=60
+  else
+    printf 'gdb is unavailable in the linter environment\n' >> "${diagnostics_dir}/gdb-probe.log"
   fi
   # A bounded failure lets the workflow upload diagnostics that cancellation skips.
   export CUDF_IWYU_TRACE_TIMEOUT_SECONDS=300

@@ -44,7 +44,7 @@ if (( trace_iwyu )) && [[ "${CUDF_IWYU_PERF_AVAILABLE:-0}" == 1 ]]; then
 fi
 
 command=("${CUDF_IWYU_REAL_EXE}" "$@")
-if (( trace_iwyu || profile_iwyu || gdb_iwyu )); then
+if (( trace_iwyu || profile_iwyu )); then
   command=(timeout --signal=TERM --kill-after=30s \
     "${CUDF_IWYU_TRACE_TIMEOUT_SECONDS:?CUDF_IWYU_TRACE_TIMEOUT_SECONDS must be set}" \
     "${command[@]}")
@@ -60,9 +60,10 @@ if (( profile_iwyu )); then
 fi
 if (( gdb_iwyu )); then
   gdb_log="${CUDF_IWYU_DIAGNOSTICS_DIR}/iwyu.${BASHPID}.gdb.log"
-  command=(timeout --signal=INT --kill-after=30s "${CUDF_IWYU_GDB_TIMEOUT_SECONDS:?CUDF_IWYU_GDB_TIMEOUT_SECONDS must be set}" \
-    gdb --batch --quiet --ex "set logging file ${gdb_log}" --ex 'set logging enabled on' \
-    --ex run --ex 'thread apply all bt' --args "${command[@]}")
+  command=(gdb --batch --quiet --ex 'set pagination off' --ex 'set target-async on' \
+    --ex "set logging file ${gdb_log}" --ex 'set logging enabled on' --ex 'run &' \
+    --ex "shell sleep ${CUDF_IWYU_GDB_TIMEOUT_SECONDS:?CUDF_IWYU_GDB_TIMEOUT_SECONDS must be set}" \
+    --ex interrupt --ex 'thread apply all bt' --ex quit --args "${CUDF_IWYU_REAL_EXE}" "$@")
 fi
 "${time_exe}" -v -o "${time_log}" "${command[@]}"
 status=$?

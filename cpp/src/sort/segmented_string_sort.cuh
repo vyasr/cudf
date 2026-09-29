@@ -801,7 +801,7 @@ void sorted_order(column_view const& input,
     tuning.known_prefix && finish.segments > 0 ? size : size_type{0}, stream, temp_mr);
   if (known_prefix_by_row.size() != 0) {
     thrust::fill(exec, known_prefix_by_row.begin(), known_prefix_by_row.end(), size_type{0});
-    comparator.known_prefix_bytes = known_prefix_by_row.data();
+    comparator.transform.known_prefix_bytes = known_prefix_by_row.data();
   }
   if (finish.segments > 0) {
     auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);

@@ -130,37 +130,24 @@ struct string_prefix_comparator {
   null_order null_precedence{};
 };
 
-/**
- * @brief Direct single-direction string comparator used to finish segmented runs.
- */
-template <bool has_nulls>
-struct string_comparator {
-  __device__ bool operator()(size_type lhs, size_type rhs)
+struct identity_element_transform {
+  template <typename T>
+  __device__ T operator()(T value, size_type) const
   {
-    if constexpr (has_nulls) {
-      bool const lhs_null{d_column.is_null(lhs)};
-      bool const rhs_null{d_column.is_null(rhs)};
-      if (lhs_null || rhs_null) {
-        return null_compare(lhs_null, rhs_null, null_precedence) ==
-               (ascending ? weak_ordering::LESS : weak_ordering::GREATER);
-      }
-    }
+    return value;
+  }
+};
 
-    auto const left_element  = d_column.element<string_view>(lhs);
-    auto const right_element = d_column.element<string_view>(rhs);
-    auto const skip = known_prefix_bytes == nullptr ? size_type{0} : known_prefix_bytes[lhs];
-    auto const left_suffix =
-      skip == 0 ? left_element
-                : string_view{left_element.data() + skip, left_element.size_bytes() - skip};
-    auto const right_suffix =
-      skip == 0 ? right_element
-                : string_view{right_element.data() + skip, right_element.size_bytes() - skip};
-    return ascending ? left_suffix < right_suffix : right_suffix < left_suffix;
+/**
+ * @brief Removes a prefix already proven equal by segmented radix refinement.
+ */
+struct string_suffix_transform {
+  __device__ string_view operator()(string_view value, size_type row) const
+  {
+    auto const skip = known_prefix_bytes == nullptr ? size_type{0} : known_prefix_bytes[row];
+    return skip == 0 ? value : string_view{value.data() + skip, value.size_bytes() - skip};
   }
 
-  column_device_view const d_column;
-  bool ascending;
-  null_order null_precedence{};
   size_type const* known_prefix_bytes{};
 };
 
@@ -169,7 +156,9 @@ struct string_comparator {
  *
  * @tparam Column element type.
  */
-template <typename T>
+template <typename T,
+          typename Nullate          = nullate::DYNAMIC,
+          typename ElementTransform = identity_element_transform>
 struct simple_comparator {
   __device__ bool operator()(size_type lhs, size_type rhs)
   {
@@ -182,15 +171,16 @@ struct simple_comparator {
       }
     }
 
-    auto const left_element  = d_column.element<T>(lhs);
-    auto const right_element = d_column.element<T>(rhs);
+    auto const left_element  = transform(d_column.element<T>(lhs), lhs);
+    auto const right_element = transform(d_column.element<T>(rhs), rhs);
     return relational_compare(left_element, right_element) ==
            (ascending ? weak_ordering::LESS : weak_ordering::GREATER);
   }
   column_device_view const d_column;
-  bool has_nulls;
+  Nullate has_nulls;
   bool ascending;
   null_order null_precedence{};
+  [[no_unique_address]] ElementTransform transform{};
 };
 
 template <sort_method method>
@@ -276,7 +266,9 @@ struct column_sorted_order_fn {
                                    null_order null_precedence,
                                    cuda::stream_ref stream)
   {
-    auto const comp    = string_comparator<has_nulls>{keys, ascending, null_precedence, nullptr};
+    using nullability = std::conditional_t<has_nulls, nullate::YES, nullate::NO>;
+    auto const comp   = simple_comparator<string_view, nullability, string_suffix_transform>{
+      keys, nullability{}, ascending, null_precedence, string_suffix_transform{}};
     auto const& config = configured_segmented_string_sort();
     if (config.bytes_per_pass == 8) {
       segmented_string_sort::sorted_order<method, 8>(
@@ -348,7 +340,8 @@ struct column_sorted_order_fn {
     }
 
     auto keys = column_device_view::create(input, stream);
-    auto comp = simple_comparator<T>{*keys, input.has_nulls(), ascending, null_precedence};
+    auto comp =
+      simple_comparator<T>{*keys, nullate::DYNAMIC{input.has_nulls()}, ascending, null_precedence};
     merge_sort(indices, comp, stream);
   }
 

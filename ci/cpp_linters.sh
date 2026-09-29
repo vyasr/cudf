@@ -43,10 +43,44 @@ sccache --stop-server 2>/dev/null || true
 
 iwyu_flag=""
 if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull-request" ]]; then
-  iwyu_flag="-DCUDF_IWYU=ON"
+  diagnostics_dir="${RAPIDS_ARTIFACTS_DIR:-${PWD}/artifacts}/iwyu-diagnostics"
+  mkdir -p "${diagnostics_dir}"
+
+  export CUDF_IWYU_LOG_FILE="${diagnostics_dir}/invocations.log"
+  iwyu_real_exe="$(command -v include-what-you-use)"
+  export CUDF_IWYU_REAL_EXE="${iwyu_real_exe}"
+  iwyu_flag="-DCUDF_IWYU=ON -DIWYU_EXE=${PWD}/ci/iwyu_wrapper.sh"
+
+  snapshot_iwyu_processes() {
+    local pid
+
+    printf '\n===== %s =====\n' "$(date -u +%FT%TZ)"
+    for pid in $(pgrep -f include-what-you-use || true); do
+      printf '\n----- PID %s -----\n' "${pid}"
+      ps -p "${pid}" -o pid,ppid,stat,etime,wchan:32,args || true
+      for proc_file in status stack syscall; do
+        if [[ -r "/proc/${pid}/${proc_file}" ]]; then
+          printf '\n/proc/%s/%s\n' "${pid}" "${proc_file}"
+          cat "/proc/${pid}/${proc_file}" || true
+        fi
+      done
+    done
+  }
+
+  (
+    while sleep 60; do
+      snapshot_iwyu_processes
+    done
+  ) | tee -a "${diagnostics_dir}/watchdog.log" &
+  watchdog_pid=$!
+  trap 'kill "${watchdog_pid}" 2>/dev/null || true; wait "${watchdog_pid}" 2>/dev/null || true' EXIT
 fi
 rapids-telemetry-record cpp_linters_build.log cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Release -DCUDF_CLANG_TIDY=ON ${iwyu_flag} -DBUILD_TESTS=OFF -DCMAKE_CUDA_ARCHITECTURES=75 -GNinja
-cmake --build cpp/build 2>&1 | python cpp/scripts/parse_iwyu_output.py
+if [[ -n "${iwyu_flag}" ]]; then
+  cmake --build cpp/build --verbose 2>&1 | tee "${diagnostics_dir}/iwyu-build.log" | python cpp/scripts/parse_iwyu_output.py
+else
+  cmake --build cpp/build 2>&1 | python cpp/scripts/parse_iwyu_output.py
+fi
 
 rapids-telemetry-record sccache-stats.txt sccache --show-adv-stats
 sccache --stop-server >/dev/null 2>&1 || true

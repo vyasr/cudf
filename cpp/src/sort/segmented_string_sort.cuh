@@ -541,9 +541,7 @@ void sorted_order(column_view const& input,
                   segmented_string_sort_config const& tuning,
                   cuda::stream_ref stream)
 {
-  auto const size = input.size();
-  if (size == 0) { return; }
-
+  auto const size       = input.size();
   auto const temp_mr    = cudf::get_current_device_resource_ref();
   auto strings          = column_device_view::create(input, stream);
   auto const exec       = rmm::exec_policy_nosync(stream, temp_mr);

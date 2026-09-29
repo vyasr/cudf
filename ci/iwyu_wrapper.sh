@@ -39,7 +39,9 @@ done
 if (( trace_iwyu )); then
   trace_prefix="${CUDF_IWYU_DIAGNOSTICS_DIR}/iwyu.${BASHPID}.strace"
   "${time_exe}" -v -o "${time_log}" strace -ff -ttt -T -s 256 -o "${trace_prefix}" \
-    -e trace=%file,%process,%network "${CUDF_IWYU_REAL_EXE}" "$@"
+    -e trace=%file,%process,%network timeout --signal=TERM --kill-after=30s \
+    "${CUDF_IWYU_TRACE_TIMEOUT_SECONDS:?CUDF_IWYU_TRACE_TIMEOUT_SECONDS must be set}" \
+    "${CUDF_IWYU_REAL_EXE}" "$@"
 else
   "${time_exe}" -v -o "${time_log}" "${CUDF_IWYU_REAL_EXE}" "$@"
 fi

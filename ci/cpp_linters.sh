@@ -53,6 +53,8 @@ if [[ "${RAPIDS_BUILD_TYPE:-}" == "nightly" || "${RAPIDS_BUILD_TYPE:-}" == "pull
   # Trace only the invocations that remained active in the first diagnostic run.
   if strace -o "${diagnostics_dir}/strace-probe.log" /bin/true; then
     export CUDF_IWYU_STRACE_SOURCE_REGEX='(expression_parser|binaryop)\.cpp$'
+    # A bounded failure lets the workflow upload diagnostics that cancellation skips.
+    export CUDF_IWYU_TRACE_TIMEOUT_SECONDS=300
   else
     printf 'strace is unavailable under this runner security policy\n' >> "${diagnostics_dir}/strace-probe.log"
   fi

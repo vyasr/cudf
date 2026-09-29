@@ -40,6 +40,14 @@ namespace segmented_string_sort {
 constexpr size_type block_sort_size = 256;
 constexpr size_type invalid_index   = -1;
 
+template <int bytes_per_pass>
+struct radix_key_layout {
+  static constexpr bool uses_full_width = bytes_per_pass == static_cast<int>(sizeof(std::uint64_t));
+  static_assert(bytes_per_pass == 6 || uses_full_width,
+                "Segmented string sort supports only six- and eight-byte radix keys");
+  static constexpr bool stores_metadata = not uses_full_width;
+};
+
 struct finish_counts {
   size_type segments{};
   size_type block_tasks{};
@@ -54,11 +62,12 @@ CUDF_KERNEL void make_keys(column_device_view strings,
                            size_type byte_offset,
                            null_order null_precedence)
 {
+  using key_layout    = radix_key_layout<bytes_per_pass>;
   auto const position = cudf::detail::grid_1d::global_thread_id();
   if (position >= size || active[position] == 0) { return; }
 
   auto const row = indices[position];
-  if constexpr (bytes_per_pass == 6) {
+  if constexpr (key_layout::stores_metadata) {
     // Category zero sorts before category one, while category two sorts after it. Descending radix
     // sort reverses all three categories, matching libcudf's existing null-order semantics.
     if (strings.is_null(row)) {
@@ -80,7 +89,7 @@ CUDF_KERNEL void make_keys(column_device_view strings,
       bytes |= static_cast<unsigned char>(value.data()[byte_offset + i]);
     }
   }
-  if constexpr (bytes_per_pass == 6) {
+  if constexpr (key_layout::stores_metadata) {
     keys[position] = (std::uint64_t{1} << 62) | (bytes << 3) | length;
   } else {
     keys[position] = bytes;
@@ -239,7 +248,8 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
                                size_type* task_ends,
                                finish_counts* counts)
 {
-  auto const run = cudf::detail::grid_1d::global_thread_id();
+  using key_layout = radix_key_layout<bytes_per_pass>;
+  auto const run   = cudf::detail::grid_1d::global_thread_id();
   if (run >= num_slots) { return; }
   auto const begin = run_begins[run];
   auto const end   = run_ends[run];
@@ -249,14 +259,14 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
   auto const is_null    = strings.is_null(row);
   auto const value_size = is_null ? size_type{0} : strings.element<string_view>(row).size_bytes();
   auto const remaining  = value_size <= byte_offset ? size_type{0} : value_size - byte_offset;
-  auto const key_bytes  = bytes_per_pass == 6
+  auto const key_bytes  = key_layout::stores_metadata
                             ? static_cast<size_type>(sorted_keys[begin] & 0x7)
                             : (remaining < bytes_per_pass ? remaining : bytes_per_pass);
-  // Six-byte keys encode the valid-byte count, so a tied short chunk proves exact equality.
-  // Eight-byte keys use all bits for payload and zero padding can collide with a longer string;
-  // such runs must be finished by comparison from the preceding known prefix.
-  if (is_null || (bytes_per_pass == 6 && key_bytes != bytes_per_pass)) { return; }
-  auto const terminal_collision = bytes_per_pass == 8 && key_bytes != bytes_per_pass;
+  // Metadata-bearing keys encode the valid-byte count, so a tied short chunk proves exact
+  // equality. Full-width keys use all bits for payload, and zero padding can collide with a longer
+  // string; such runs must be finished by comparison from the preceding known prefix.
+  if (is_null || (key_layout::stores_metadata && key_bytes != bytes_per_pass)) { return; }
+  auto const terminal_collision = key_layout::uses_full_width && key_bytes != bytes_per_pass;
 
   // The final radix chunk cannot distinguish long exact duplicates from strings that differ
   // later. Exact duplicate runs are already stable and need no comparison-sort finish.
@@ -541,18 +551,19 @@ void sorted_order(column_view const& input,
                   segmented_string_sort_config const& tuning,
                   cuda::stream_ref stream)
 {
+  using key_layout      = radix_key_layout<bytes_per_pass>;
   auto const size       = input.size();
   auto const temp_mr    = cudf::get_current_device_resource_ref();
   auto strings          = column_device_view::create(input, stream);
   auto const exec       = rmm::exec_policy_nosync(stream, temp_mr);
-  auto const valid_size = bytes_per_pass == 8 ? size - input.null_count() : size;
+  auto const valid_size = key_layout::uses_full_width ? size - input.null_count() : size;
   auto const null_size  = size - valid_size;
   auto indices_a        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
   auto indices_b        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
   auto null_indices =
-    rmm::device_uvector<size_type>(bytes_per_pass == 8 ? null_size : 0, stream, temp_mr);
+    rmm::device_uvector<size_type>(key_layout::uses_full_width ? null_size : 0, stream, temp_mr);
   auto const rows = cuda::counting_iterator<size_type>{0};
-  if constexpr (bytes_per_pass == 8) {
+  if constexpr (key_layout::uses_full_width) {
     thrust::copy_if(exec, rows, rows + size, indices_a.begin(), valid_row_predicate{*strings});
     if (null_size > 0) {
       thrust::copy_if(exec, rows, rows + size, null_indices.begin(), null_row_predicate{*strings});
@@ -847,7 +858,7 @@ void sorted_order(column_view const& input,
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 
-  if constexpr (bytes_per_pass == 8) {
+  if constexpr (key_layout::uses_full_width) {
     auto const nulls_first  = ascending == (null_precedence == null_order::BEFORE);
     auto const valid_offset = nulls_first ? null_size : size_type{0};
     auto const null_offset  = nulls_first ? size_type{0} : valid_size;

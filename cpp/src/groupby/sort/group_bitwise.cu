@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <cudf/aggregation.hpp>
-
 #include "groupby/sort/group_validity.cuh"
+
+#include <cudf/aggregation.hpp>
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/aggregation/aggregation.cuh>

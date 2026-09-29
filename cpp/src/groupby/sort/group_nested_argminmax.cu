@@ -8,13 +8,12 @@
 
 namespace cudf::groupby::detail {
 
-std::unique_ptr<column> group_nested_argminmax(
-  column_view const& values,
-  size_type num_groups,
-  cudf::device_span<size_type const> group_labels,
-  bool is_argmin,
-  cuda::stream_ref stream,
-  rmm::device_async_resource_ref mr)
+std::unique_ptr<column> group_nested_argminmax(column_view const& values,
+                                               size_type num_groups,
+                                               cudf::device_span<size_type const> group_labels,
+                                               bool is_argmin,
+                                               cuda::stream_ref stream,
+                                               rmm::device_async_resource_ref mr)
 {
   auto result = make_fixed_width_column(
     data_type{type_id::INT32}, num_groups, mask_state::UNALLOCATED, stream, mr);
@@ -22,15 +21,14 @@ std::unique_ptr<column> group_nested_argminmax(
   if (values.is_empty()) { return result; }
 
   auto const do_reduction = [&](auto const& inp_iter, auto const& out_iter, auto const& binop) {
-    thrust::reduce_by_key(
-      rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-      group_labels.data(),
-      group_labels.data() + group_labels.size(),
-      inp_iter,
-      cuda::make_discard_iterator(),
-      out_iter,
-      cuda::std::equal_to{},
-      binop);
+    thrust::reduce_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                          group_labels.data(),
+                          group_labels.data() + group_labels.size(),
+                          inp_iter,
+                          cuda::make_discard_iterator(),
+                          out_iter,
+                          cuda::std::equal_to{},
+                          binop);
   };
 
   auto const count_iter   = cuda::counting_iterator<size_type>{0};

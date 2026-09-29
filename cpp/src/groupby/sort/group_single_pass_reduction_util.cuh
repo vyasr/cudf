@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include "reductions/nested_types_extrema_utils.cuh"
 #include "groupby/sort/group_validity.cuh"
+#include "reductions/nested_types_extrema_utils.cuh"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
@@ -37,21 +37,19 @@ namespace detail {
  * The row comparator's min/max choice is runtime state, allowing the paired
  * aggregation entry points to share one CUB/Thrust reduction instantiation.
  */
-std::unique_ptr<column> group_nested_argminmax(
-  column_view const& values,
-  size_type num_groups,
-  cudf::device_span<size_type const> group_labels,
-  bool is_argmin,
-  cuda::stream_ref stream,
-  rmm::device_async_resource_ref mr);
+std::unique_ptr<column> group_nested_argminmax(column_view const& values,
+                                               size_type num_groups,
+                                               cudf::device_span<size_type const> group_labels,
+                                               bool is_argmin,
+                                               cuda::stream_ref stream,
+                                               rmm::device_async_resource_ref mr);
 
-std::unique_ptr<column> group_argminmax(
-  column_view const& values,
-  size_type num_groups,
-  cudf::device_span<size_type const> group_labels,
-  bool is_argmin,
-  cuda::stream_ref stream,
-  rmm::device_async_resource_ref mr);
+std::unique_ptr<column> group_argminmax(column_view const& values,
+                                        size_type num_groups,
+                                        cudf::device_span<size_type const> group_labels,
+                                        bool is_argmin,
+                                        cuda::stream_ref stream,
+                                        rmm::device_async_resource_ref mr);
 
 /**
  * @brief Value accessor for column which supports dictionary column too.
@@ -249,15 +247,15 @@ struct group_argminmax_functor<
     if (values.is_empty()) { return result; }
 
     auto const d_values_ptr = column_device_view::create(values, stream);
-    thrust::reduce_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                          group_labels.data(),
-                          group_labels.data() + group_labels.size(),
-                          cuda::counting_iterator<size_type>{0},
-                          cuda::make_discard_iterator(),
-                          result->mutable_view().begin<size_type>(),
-                          cuda::std::equal_to{},
-                          cudf::detail::element_argminmax_fn<T>{
-                            *d_values_ptr, values.has_nulls(), is_argmin});
+    thrust::reduce_by_key(
+      rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+      group_labels.data(),
+      group_labels.data() + group_labels.size(),
+      cuda::counting_iterator<size_type>{0},
+      cuda::make_discard_iterator(),
+      result->mutable_view().begin<size_type>(),
+      cuda::std::equal_to{},
+      cudf::detail::element_argminmax_fn<T>{*d_values_ptr, values.has_nulls(), is_argmin});
 
     if (values.has_nulls()) {
       rmm::device_uvector<bool> validity(num_groups, stream);
@@ -295,12 +293,8 @@ struct group_reduction_functor<
                                         cuda::stream_ref stream,
                                         rmm::device_async_resource_ref mr)
   {
-    return group_nested_argminmax(values,
-                                  num_groups,
-                                  group_labels,
-                                  K == aggregation::ARGMIN,
-                                  stream,
-                                  mr);
+    return group_nested_argminmax(
+      values, num_groups, group_labels, K == aggregation::ARGMIN, stream, mr);
   }
 };
 

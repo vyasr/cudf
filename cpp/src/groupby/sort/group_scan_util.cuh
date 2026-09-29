@@ -196,8 +196,7 @@ struct group_scan_functor<K,
                                         cuda::stream_ref stream,
                                         rmm::device_async_resource_ref mr)
   {
-    return group_nested_minmax_scan(
-      values, group_labels, K == aggregation::MIN, stream, mr);
+    return group_nested_minmax_scan(values, group_labels, K == aggregation::MIN, stream, mr);
   }
 };
 

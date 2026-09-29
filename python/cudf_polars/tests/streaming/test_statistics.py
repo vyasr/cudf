@@ -74,6 +74,7 @@ def scan_query(tmp_path: Path) -> pl.LazyFrame:
     return pl.scan_parquet(path)
 
 
+@pytest.mark.engine_params(["spmd", "spmd-small"])
 def test_io_summary(engine: StreamingEngine, scan_query: pl.LazyFrame) -> None:
     """gather_io_summary reports what each rank read."""
     scan_query.collect(engine=engine)
@@ -91,6 +92,7 @@ def test_io_summary(engine: StreamingEngine, scan_query: pl.LazyFrame) -> None:
     assert all(isinstance(s, kvikio.Summary) for s in summaries)
 
 
+@pytest.mark.engine_params(["spmd", "spmd-small"])
 def test_io_summary_clear_starts_a_new_span(
     engine: StreamingEngine, scan_query: pl.LazyFrame
 ) -> None:
@@ -107,6 +109,7 @@ def test_io_summary_clear_starts_a_new_span(
     assert sum(s.bytes_transferred for s in after.values()) == 0
 
 
+@pytest.mark.engine_params(["spmd", "spmd-small"])
 def test_io_summary_is_independent_of_rapidsmpf_statistics(
     streaming_engine_factory: Callable[..., StreamingEngine],
     scan_query: pl.LazyFrame,
@@ -132,6 +135,17 @@ def test_io_summary_is_independent_of_rapidsmpf_statistics(
         )
     )
     assert reset is engine
+    scan_query.collect(engine=engine)
+    summaries = engine.gather_io_summary()
+    assert sorted(summaries) == list(range(engine.nranks))
+    assert sum(s.num_ops for s in summaries.values()) > 0
+
+
+@pytest.mark.engine_params(["dask", "ray"])
+def test_io_summary_distributed_backends(
+    engine: StreamingEngine, scan_query: pl.LazyFrame
+) -> None:
+    """Verify executor adapters publish I/O statistics from a real scan."""
     scan_query.collect(engine=engine)
     summaries = engine.gather_io_summary()
     assert sorted(summaries) == list(range(engine.nranks))

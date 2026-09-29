@@ -533,6 +533,42 @@ TEST_F(StringSort, RadixBoundariesAndZeroPaddedCollisions)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
 }
 
+TEST_F(StringSort, LaterPassZeroPaddedCollision)
+{
+  auto const short_value = std::string{"qqqqqqqqa"};
+  auto const long_value  = short_value + std::string(7, '\0');
+  std::vector<std::string> strings;
+  strings.reserve(40);
+  for (auto i = 0; i < 20; ++i) {
+    // Keeping the longer value first ensures stable equal radix keys cannot accidentally put the
+    // shorter value in lexical order before comparison finishing.
+    strings.push_back(long_value);
+    strings.push_back(short_value);
+  }
+  auto const input = cudf::test::strings_column_wrapper(strings.begin(), strings.end());
+
+  std::vector<cudf::size_type> ascending_data;
+  ascending_data.reserve(strings.size());
+  for (cudf::size_type row = 1; row < static_cast<cudf::size_type>(strings.size()); row += 2) {
+    ascending_data.push_back(row);
+  }
+  for (cudf::size_type row = 0; row < static_cast<cudf::size_type>(strings.size()); row += 2) {
+    ascending_data.push_back(row);
+  }
+  auto const expected_ascending = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    ascending_data.begin(), ascending_data.end());
+  auto const ascending = cudf::stable_sorted_order(cudf::table_view{{input}});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_ascending, ascending->view());
+
+  auto descending_data = ascending_data;
+  std::rotate(descending_data.begin(), descending_data.begin() + 20, descending_data.end());
+  auto const expected_descending = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    descending_data.begin(), descending_data.end());
+  auto const descending =
+    cudf::stable_sorted_order(cudf::table_view{{input}}, {cudf::order::DESCENDING});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
+}
+
 TEST_F(StringSort, LongExactDuplicateRun)
 {
   constexpr cudf::size_type num_duplicates = 1025;

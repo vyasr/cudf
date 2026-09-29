@@ -765,6 +765,7 @@ add_library(
   src/groupby/sort/group_merge_m2.cu
   src/groupby/sort/group_min.cu
   src/groupby/sort/group_min_scan.cu
+  src/groupby/sort/group_nested_minmax_scan.cu
   src/groupby/sort/group_nth_element.cu
   src/groupby/sort/group_nunique.cu
   src/groupby/sort/group_product.cu

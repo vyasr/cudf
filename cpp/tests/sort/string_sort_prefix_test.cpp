@@ -395,9 +395,25 @@ TEST_F(StringSort, SegmentedTuningSelectorParsing)
   EXPECT_EQ(tuned.rle_min_equal_percent, 25);
   EXPECT_TRUE(tuned.trace);
 
+  for (auto const* invalid : {"", "5", "7", "9", "invalid"}) {
+    EXPECT_THROW(
+      static_cast<void>(parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED,
+                                                           invalid,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr,
+                                                           nullptr)),
+      std::invalid_argument);
+  }
+
   auto const compatibility =
     parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED_RLE,
-                                       "7",
+                                       "6",
                                        "101",
                                        "-1",
                                        "2",

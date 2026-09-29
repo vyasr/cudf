@@ -751,6 +751,7 @@ add_library(
   src/groupby/sort/aggregate.cpp
   src/groupby/sort/group_argmax.cu
   src/groupby/sort/group_argmin.cu
+  src/groupby/sort/group_argminmax.cu
   src/groupby/sort/group_nested_argminmax.cu
   src/groupby/sort/group_bitwise.cu
   src/groupby/sort/group_collect.cu

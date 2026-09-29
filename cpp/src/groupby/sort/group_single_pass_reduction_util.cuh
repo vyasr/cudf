@@ -44,6 +44,14 @@ std::unique_ptr<column> group_nested_argminmax(
   cuda::stream_ref stream,
   rmm::device_async_resource_ref mr);
 
+std::unique_ptr<column> group_argminmax(
+  column_view const& values,
+  size_type num_groups,
+  cudf::device_span<size_type const> group_labels,
+  bool is_argmin,
+  cuda::stream_ref stream,
+  rmm::device_async_resource_ref mr);
+
 /**
  * @brief Value accessor for column which supports dictionary column too.
  *
@@ -210,6 +218,70 @@ struct group_reduction_functor<
       result->set_null_mask(std::move(null_mask), null_count);
     }
     return result;
+  }
+};
+
+template <typename T, typename Enable = void>
+struct group_argminmax_functor {
+  static std::unique_ptr<column> invoke(column_view const&,
+                                        size_type,
+                                        cudf::device_span<size_type const>,
+                                        bool,
+                                        cuda::stream_ref,
+                                        rmm::device_async_resource_ref)
+  {
+    CUDF_FAIL("Unsupported groupby ARGMIN/ARGMAX type.");
+  }
+};
+
+template <typename T>
+struct group_argminmax_functor<
+  T,
+  std::enable_if_t<(is_relationally_comparable<T, T>() && !cudf::is_nested<T>())>> {
+  static std::unique_ptr<column> invoke(column_view const& values,
+                                        size_type num_groups,
+                                        cudf::device_span<size_type const> group_labels,
+                                        bool is_argmin,
+                                        cuda::stream_ref stream,
+                                        rmm::device_async_resource_ref mr)
+  {
+    auto result = make_fixed_width_column(
+      data_type{type_id::INT32}, num_groups, mask_state::UNALLOCATED, stream, mr);
+    if (values.is_empty()) { return result; }
+
+    auto const d_values_ptr = column_device_view::create(values, stream);
+    thrust::reduce_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
+                          group_labels.data(),
+                          group_labels.data() + group_labels.size(),
+                          cuda::counting_iterator<size_type>{0},
+                          cuda::make_discard_iterator(),
+                          result->mutable_view().begin<size_type>(),
+                          cuda::std::equal_to{},
+                          cudf::detail::element_argminmax_fn<T>{
+                            *d_values_ptr, values.has_nulls(), is_argmin});
+
+    if (values.has_nulls()) {
+      rmm::device_uvector<bool> validity(num_groups, stream);
+      reduce_group_validity(group_labels, *d_values_ptr, validity.data(), stream);
+      auto [null_mask, null_count] =
+        cudf::detail::valid_if(validity.begin(), validity.end(), cuda::std::identity{}, stream, mr);
+      result->set_null_mask(std::move(null_mask), null_count);
+    }
+    return result;
+  }
+};
+
+struct group_argminmax_dispatcher {
+  template <typename T>
+  std::unique_ptr<column> operator()(column_view const& values,
+                                     size_type num_groups,
+                                     cudf::device_span<size_type const> group_labels,
+                                     bool is_argmin,
+                                     cuda::stream_ref stream,
+                                     rmm::device_async_resource_ref mr)
+  {
+    return group_argminmax_functor<T>::invoke(
+      values, num_groups, group_labels, is_argmin, stream, mr);
   }
 };
 

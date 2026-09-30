@@ -275,6 +275,27 @@ std::unique_ptr<cudf::column> make_diagnostic_input(cudf::size_type num_rows,
   return cudf::test::strings_column_wrapper(strings.begin(), strings.end()).release();
 }
 
+std::unique_ptr<cudf::column> make_source_parity_input(cudf::size_type num_rows,
+                                                       std::string const& profile_name)
+{
+  constexpr cudf::size_type width = 32;
+  auto strings                    = std::vector<std::string>(static_cast<std::size_t>(num_rows));
+  for (cudf::size_type row = 0; row < num_rows; ++row) {
+    auto const token = fixed_width_token(static_cast<std::uint64_t>(row), width);
+    if (profile_name == "unique_32") {
+      strings[static_cast<std::size_t>(row)] = token;
+    } else if (profile_name == "duplicates_32") {
+      strings[static_cast<std::size_t>(row)] =
+        fixed_width_token(static_cast<std::uint64_t>(row % 64), width);
+    } else if (profile_name == "shared_prefix_24") {
+      strings[static_cast<std::size_t>(row)] = std::string(24, 'p') + token.substr(24);
+    } else {
+      CUDF_FAIL("Unknown source-parity profile: " + profile_name);
+    }
+  }
+  return cudf::test::strings_column_wrapper(strings.begin(), strings.end()).release();
+}
+
 }  // namespace
 
 static void bench_sort_strings(nvbench::state& state)
@@ -514,3 +535,15 @@ NVBENCH_BENCH(bench_sorted_order_strings_segmented_diagnostics)
                     "zero_collision_pass1",
                     "zero_collision_pass2",
                     "rle_misaligned"});
+
+static void bench_sorted_order_strings_source_parity(nvbench::state& state)
+{
+  auto const num_rows = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const profile  = state.get_string("profile");
+  run_sorted_order_benchmark(state, make_source_parity_input(num_rows, profile));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_source_parity)
+  .set_name("sorted_order_strings_source_parity")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_string_axis("profile", {"unique_32", "duplicates_32", "shared_prefix_24"});

@@ -632,43 +632,20 @@ void sorted_order(column_view const& input,
     thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
   }
 
-  auto max_length             = size_type{-1};
-  auto maximum_radix_passes   = static_cast<size_type>(tuning.max_radix_passes);
-  auto synchronization_points = size_type{0};
-  auto trace_readbacks        = size_type{0};
-  if (tuning.max_radix_passes == 0 || tuning.radix_percent != 100) {
-    max_length = thrust::transform_reduce(exec,
-                                          indices_a.begin(),
-                                          indices_a.end(),
-                                          string_length_fn{*strings},
-                                          size_type{0},
-                                          cuda::maximum<size_type>{});
-    ++synchronization_points;
-    auto const target_bytes = std::max<size_type>(
-      1,
-      static_cast<size_type>((static_cast<std::int64_t>(max_length) * tuning.radix_percent + 99) /
-                             100));
-    maximum_radix_passes =
-      std::max<size_type>(1, (target_bytes + bytes_per_pass - 1) / bytes_per_pass);
-    if (tuning.max_radix_passes != 0) {
-      maximum_radix_passes =
-        std::min(maximum_radix_passes, static_cast<size_type>(tuning.max_radix_passes));
-    }
-  }
-  auto const comparison_threshold = static_cast<size_type>(tuning.finish_threshold);
+  auto const maximum_radix_passes = static_cast<size_type>(tuning.lexic_precision);
+  auto synchronization_points     = size_type{0};
+  auto trace_readbacks            = size_type{0};
+  auto const comparison_threshold = static_cast<size_type>(tuning.radix_run_min);
   if (tuning.trace) {
     std::fprintf(stderr,
-                 "segmented-string-sort bytes=%d percent=%d passes=%d known-prefix=%d "
-                 "finish-threshold=%d rle-policy=%d valid=%d nulls=%d max-length=%d\n",
+                 "segmented-string-sort bytes=%d precision=%d radix-run-min=%d "
+                 "exact-duplicates=%d valid=%d nulls=%d\n",
                  bytes_per_pass,
-                 tuning.radix_percent,
                  maximum_radix_passes,
-                 tuning.known_prefix,
-                 tuning.finish_threshold,
-                 static_cast<int>(tuning.rle_policy),
+                 tuning.radix_run_min,
+                 tuning.eliminate_exact_duplicates,
                  valid_size,
-                 null_size,
-                 max_length);
+                 null_size);
   }
 
   auto keys_in  = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
@@ -807,43 +784,8 @@ void sorted_order(column_view const& input,
         thrust::count(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{1}));
       ++trace_readbacks;
     }
-    auto const last_pass   = pass + 1 == maximum_radix_passes;
-    auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
-    if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
-      auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
-      ++allocation_count;
-      auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
-      collect_rle_metrics<bytes_per_pass>
-        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-          *strings,
-          current_indices,
-          active,
-          run_ids.data(),
-          run_begins.data(),
-          run_ends.data(),
-          valid_size,
-          tuning.rle_min_run_length,
-          sampling_stride,
-          pass * bytes_per_pass,
-          key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-          metrics.data());
-      auto const observed = metrics.value(stream);
-      ++synchronization_points;
-      auto const coverage = valid_size == 0 ? 0ULL : observed.covered_rows * 100 / valid_size;
-      auto const equality =
-        observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
-      detect_duplicates = coverage >= static_cast<unsigned>(tuning.rle_min_coverage_percent) &&
-                          equality >= static_cast<unsigned>(tuning.rle_min_equal_percent);
-      if (tuning.trace) {
-        std::fprintf(stderr,
-                     "segmented-string-sort adaptive-rle coverage=%llu equality=%llu samples=%llu "
-                     "enabled=%d\n",
-                     coverage,
-                     equality,
-                     observed.sampled_pairs,
-                     detect_duplicates);
-      }
-    }
+    auto const last_pass         = pass + 1 == maximum_radix_passes;
+    auto const detect_duplicates = last_pass && tuning.eliminate_exact_duplicates;
     thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
     if (detect_duplicates) {
       mark_nonduplicate_runs<bytes_per_pass>

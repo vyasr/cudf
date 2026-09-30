@@ -256,7 +256,7 @@ struct column_sorted_order_fn {
     }
   }
 
-  template <int bytes_per_pass, bool known_prefix, bool has_nulls>
+  template <bool has_nulls>
   void segmented_sorted_order_config(column_view const& input,
                                      column_device_view const& keys,
                                      mutable_column_view& indices,
@@ -266,11 +266,10 @@ struct column_sorted_order_fn {
                                      cuda::stream_ref stream)
   {
     using nullability = std::conditional_t<has_nulls, nullate::YES, nullate::NO>;
-    using transform =
-      std::conditional_t<known_prefix, string_suffix_transform, identity_element_transform>;
-    auto const comp = simple_comparator<string_view, nullability, transform>{
+    using transform   = string_suffix_transform;
+    auto const comp   = simple_comparator<string_view, nullability, transform>{
       keys, nullability{}, ascending, null_precedence, transform{}};
-    segmented_string_sort::sorted_order<bytes_per_pass, known_prefix>(
+    segmented_string_sort::sorted_order<8, true>(
       input, indices, ascending, null_precedence, comp, config, stream);
   }
 
@@ -282,21 +281,9 @@ struct column_sorted_order_fn {
                                    null_order null_precedence,
                                    cuda::stream_ref stream)
   {
-    auto const& config               = configured_segmented_string_sort();
-    auto const dispatch_known_prefix = [&]<int bytes_per_pass>() {
-      if (config.known_prefix) {
-        segmented_sorted_order_config<bytes_per_pass, true, has_nulls>(
-          input, keys, indices, ascending, null_precedence, config, stream);
-      } else {
-        segmented_sorted_order_config<bytes_per_pass, false, has_nulls>(
-          input, keys, indices, ascending, null_precedence, config, stream);
-      }
-    };
-    if (config.bytes_per_pass == 8) {
-      dispatch_known_prefix.template operator()<8>();
-    } else {
-      dispatch_known_prefix.template operator()<6>();
-    }
+    auto const& config = configured_segmented_string_sort();
+    segmented_sorted_order_config<has_nulls>(
+      input, keys, indices, ascending, null_precedence, config, stream);
   }
 
   void segmented_sorted_order(column_view const& input,

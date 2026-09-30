@@ -390,77 +390,26 @@ TEST_F(StringSort, AlgorithmSelectorParsing)
 TEST_F(StringSort, SegmentedTuningSelectorParsing)
 {
   using cudf::detail::parse_segmented_string_sort_config;
-  using cudf::detail::segmented_rle_policy;
   using cudf::detail::string_sort_algorithm;
 
-  auto const defaults = parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr);
-  EXPECT_EQ(defaults.bytes_per_pass, 6);
-  EXPECT_EQ(defaults.radix_percent, 100);
-  EXPECT_EQ(defaults.max_radix_passes, 4);
-  EXPECT_FALSE(defaults.known_prefix);
-  EXPECT_EQ(defaults.finish_threshold, 32);
-  EXPECT_EQ(defaults.rle_policy, segmented_rle_policy::NEVER);
+  auto const defaults =
+    parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED, nullptr, nullptr, nullptr);
+  EXPECT_EQ(defaults.lexic_precision, 1);
+  EXPECT_EQ(defaults.radix_run_min, 512);
+  EXPECT_FALSE(defaults.eliminate_exact_duplicates);
 
-  auto const tuned = parse_segmented_string_sort_config(
-    string_sort_algorithm::SEGMENTED, "8", "80", "0", "1", "128", "2", "64", "50", "25", "1");
-  EXPECT_EQ(tuned.bytes_per_pass, 8);
-  EXPECT_EQ(tuned.radix_percent, 80);
-  EXPECT_EQ(tuned.max_radix_passes, 0);
-  EXPECT_TRUE(tuned.known_prefix);
-  EXPECT_EQ(tuned.finish_threshold, 128);
-  EXPECT_EQ(tuned.rle_policy, segmented_rle_policy::ADAPTIVE);
-  EXPECT_EQ(tuned.rle_min_run_length, 64);
-  EXPECT_EQ(tuned.rle_min_coverage_percent, 50);
-  EXPECT_EQ(tuned.rle_min_equal_percent, 25);
+  auto const tuned =
+    parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED, "8", "128", "1");
+  EXPECT_EQ(tuned.lexic_precision, 8);
+  EXPECT_EQ(tuned.radix_run_min, 128);
+  EXPECT_FALSE(tuned.eliminate_exact_duplicates);
   EXPECT_TRUE(tuned.trace);
 
-  for (auto const* invalid : {"", "5", "7", "9", "invalid"}) {
-    EXPECT_THROW(
-      static_cast<void>(parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED,
-                                                           invalid,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr,
-                                                           nullptr)),
-      std::invalid_argument);
-  }
-
   auto const compatibility =
-    parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED_RLE,
-                                       "6",
-                                       "101",
-                                       "-1",
-                                       "2",
-                                       "1",
-                                       nullptr,
-                                       "1",
-                                       "101",
-                                       "-1",
-                                       "2");
-  EXPECT_EQ(compatibility.bytes_per_pass, 6);
-  EXPECT_EQ(compatibility.radix_percent, 100);
-  EXPECT_EQ(compatibility.max_radix_passes, 4);
-  EXPECT_FALSE(compatibility.known_prefix);
-  EXPECT_EQ(compatibility.finish_threshold, 32);
-  EXPECT_EQ(compatibility.rle_policy, segmented_rle_policy::ALWAYS);
-  EXPECT_EQ(compatibility.rle_min_run_length, 32);
-  EXPECT_EQ(compatibility.rle_min_coverage_percent, 25);
-  EXPECT_EQ(compatibility.rle_min_equal_percent, 10);
+    parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED_RLE, "0", "1048577", "2");
+  EXPECT_EQ(compatibility.lexic_precision, 1);
+  EXPECT_EQ(compatibility.radix_run_min, 512);
+  EXPECT_TRUE(compatibility.eliminate_exact_duplicates);
   EXPECT_FALSE(compatibility.trace);
 }
 

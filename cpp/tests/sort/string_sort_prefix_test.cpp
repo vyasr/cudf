@@ -14,18 +14,22 @@
 
 #include <cudf/column/column_factories.hpp>
 #include <cudf/copying.hpp>
+#include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/table/table_view.hpp>
+#include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <rmm/device_buffer.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
 
 #include <cuda/stream>
+#include <cuda_runtime_api.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <numeric>
 #include <string>
 #include <utility>
@@ -757,5 +761,47 @@ TEST_F(StringSort, ExplicitLargeOffsetsAndSlice)
       expected_rows.begin(), expected_rows.end());
     auto const result = cudf::stable_sorted_order(cudf::table_view{{slice}}, {direction});
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+  }
+}
+
+TEST_F(StringSort, SliceOffsetsBeyondInt32)
+{
+  auto const first_length = static_cast<std::int64_t>(std::numeric_limits<cudf::size_type>::max());
+  auto const slice_begin  = first_length + 18;
+  auto const values       = std::string(1, '\0') + "abcdefghcabcdefghaabcdefghb";
+  auto const chars_size   = static_cast<std::size_t>(slice_begin) + values.size() - 1;
+  std::size_t free_bytes{}, total_bytes{};
+  CUDF_CUDA_TRY(cudaMemGetInfo(&free_bytes, &total_bytes));
+  if (free_bytes < chars_size + (std::size_t{512} << 20)) {
+    GTEST_SKIP() << "Requires enough device memory to exercise offsets beyond INT32_MAX";
+  }
+
+  // The two excluded rows make the slice's actual byte addresses exceed INT32_MAX.
+  // An INT64 offsets column containing only small numbers cannot expose narrowing mistakes.
+  auto offsets      = cudf::test::fixed_width_column_wrapper<std::int64_t>{std::int64_t{0},
+                                                                           first_length,
+                                                                           slice_begin,
+                                                                           slice_begin + 9,
+                                                                           slice_begin + 18,
+                                                                           slice_begin + 27};
+  auto const stream = cudf::get_default_stream();
+  auto chars        = rmm::device_buffer(chars_size, stream);
+  // Include the alignment byte before the slice so the aligned extractor never reads
+  // uninitialized padding, even though it must not use that byte in a prefix key.
+  CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+    static_cast<char*>(chars.data()) + slice_begin - 1, values.data(), values.size(), stream));
+  auto const input =
+    cudf::make_strings_column(5, offsets.release(), std::move(chars), 0, rmm::device_buffer{});
+  auto const slice = cudf::slice(input->view(), {2, 5})[0];
+  for (auto const direction : {cudf::order::ASCENDING, cudf::order::DESCENDING}) {
+    auto const expected_rows = direction == cudf::order::ASCENDING
+                                 ? std::vector<cudf::size_type>{1, 2, 0}
+                                 : std::vector<cudf::size_type>{0, 2, 1};
+    auto const expected      = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+      expected_rows.begin(), expected_rows.end());
+    auto const stable = cudf::stable_sorted_order(cudf::table_view{{slice}}, {direction});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, stable->view());
+    auto const unstable = cudf::sorted_order(cudf::table_view{{slice}}, {direction});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, unstable->view());
   }
 }

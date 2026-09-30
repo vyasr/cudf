@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <utility>
 
 // CUDA's block pipeline state is intentionally initialized cooperatively in shared memory.
@@ -49,6 +50,7 @@ namespace segmented_string_sort {
 
 constexpr size_type block_sort_size         = 256;
 constexpr size_type comparison_chunk_size   = 512;
+constexpr size_type maximum_string_size     = std::numeric_limits<size_type>::max();
 constexpr size_type invalid_index           = -1;
 constexpr size_type shuffle_block_size      = 256;
 constexpr size_type strings_per_shuffle_cta = 2048;
@@ -84,7 +86,13 @@ struct refinement_counts {
   size_type continuing_runs{};
   size_type continuing_rows{};
   size_type completed_runs{};
+  size_type duplicate_rows{};
 };
+
+__device__ inline bool strings_equal_after(column_device_view strings,
+                                           size_type lhs,
+                                           size_type rhs,
+                                           size_type known_prefix_bytes);
 
 __device__ inline bool find_containing_run(size_type position,
                                            size_type const* run_begins,
@@ -155,8 +163,9 @@ CUDF_KERNEL void mark_tied_run_endpoints(std::uint64_t const* sorted_keys,
   }
 }
 
-template <typename Offset>
+template <typename Offset, bool eliminate_exact_duplicates>
 CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
+                                    column_device_view strings,
                                     size_type strings_offset,
                                     size_type const* indices,
                                     size_type const* candidate_begins,
@@ -178,7 +187,7 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   auto const begin = candidate_begins[run];
   auto const end   = candidate_ends[run];
 
-  auto minimum_remaining = size_type{-1};
+  auto minimum_remaining = maximum_string_size;
   auto maximum_remaining = size_type{0};
   for (auto position = begin + static_cast<size_type>(threadIdx.x); position < end;
        position += static_cast<size_type>(blockDim.x)) {
@@ -194,21 +203,48 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   minimum_remaining = block_reduce(reduction_storage).Reduce(minimum_remaining, cuda::minimum<>{});
   __syncthreads();
   maximum_remaining = block_reduce(reduction_storage).Reduce(maximum_remaining, cuda::maximum<>{});
-  if (threadIdx.x != 0) { return; }
+  __shared__ size_type minimum_bytes;
+  __shared__ size_type maximum_bytes;
+  if (threadIdx.x == 0) {
+    minimum_bytes = minimum_remaining;
+    maximum_bytes = maximum_remaining;
+  }
+  __syncthreads();
 
-  auto const full_chunk = minimum_remaining >= size_type{8};
-  if (!full_chunk && minimum_remaining == maximum_remaining) {
-    atomicAdd(&refinement->completed_runs, size_type{1});
+  auto const full_chunk = minimum_bytes >= size_type{8};
+  if (!full_chunk && minimum_bytes == maximum_bytes) {
+    if (threadIdx.x == 0) { atomicAdd(&refinement->completed_runs, size_type{1}); }
     return;
   }
 
   auto const proven_prefix = full_chunk ? byte_offset + size_type{8} : byte_offset;
   if (full_chunk && !last_pass && end - begin >= radix_run_min) {
+    if (threadIdx.x != 0) { return; }
     auto const slot         = atomicAdd(&refinement->continuing_runs, size_type{1});
     continuing_begins[slot] = begin;
     continuing_ends[slot]   = end;
     atomicAdd(&refinement->continuing_rows, end - begin);
     return;
+  }
+
+  if constexpr (eliminate_exact_duplicates) {
+    // Only terminal unresolved runs pay for exact verification. Comparing after the proven prefix
+    // avoids rereading radix bytes without confusing a short value with a zero-padded longer one.
+    auto mismatch = size_type{0};
+    for (auto position = begin + static_cast<size_type>(threadIdx.x); position < end;
+         position += static_cast<size_type>(blockDim.x)) {
+      mismatch |= !strings_equal_after(strings, indices[begin], indices[position], proven_prefix);
+    }
+    __syncthreads();
+    mismatch = block_reduce(reduction_storage).Reduce(mismatch, cuda::maximum<>{});
+    if (threadIdx.x != 0) { return; }
+    if (mismatch == 0) {
+      atomicAdd(&refinement->completed_runs, size_type{1});
+      atomicAdd(&refinement->duplicate_rows, end - begin);
+      return;
+    }
+  } else {
+    if (threadIdx.x != 0) { return; }
   }
 
   auto const slot          = atomicAdd(&finish->segments, size_type{1});
@@ -725,7 +761,8 @@ __device__ bool stable_string_less(size_type lhs,
                                 left_value.size_bytes() - known_prefix_bytes};
   auto const right       = string_view{right_value.data() + known_prefix_bytes,
                                  right_value.size_bytes() - known_prefix_bytes};
-  if (left != right) { return comparator.ascending ? left < right : right < left; }
+  auto const comparison  = left.compare(right);
+  if (comparison != 0) { return comparator.ascending ? comparison < 0 : comparison > 0; }
   return lhs < rhs;
 }
 
@@ -1302,9 +1339,10 @@ void sorted_order(column_view const& input,
       thrust::sort(exec, run_begins.begin(), run_begins.begin() + candidate_count);
       thrust::sort(exec, run_ends.begin(), run_ends.begin() + candidate_count);
       auto const last_pass             = pass + 1 == maximum_radix_passes;
-      auto const launch_classification = [&]<typename Offset>() {
-        classify_tied_runs<Offset>
+      auto const launch_classification = [&]<typename Offset, bool eliminate_duplicates>() {
+        classify_tied_runs<Offset, eliminate_duplicates>
           <<<candidate_count, 256, 0, stream.get()>>>(offsets.head<Offset>(),
+                                                      comparator.d_column,
                                                       input.offset(),
                                                       current_indices,
                                                       run_begins.data(),
@@ -1321,10 +1359,17 @@ void sorted_order(column_view const& input,
                                                       refinement.data(),
                                                       counts.data());
       };
+      auto const dispatch_classification = [&]<typename Offset>() {
+        if (tuning.eliminate_exact_duplicates) {
+          launch_classification.template operator()<Offset, true>();
+        } else {
+          launch_classification.template operator()<Offset, false>();
+        }
+      };
       if (offsets.type().id() == type_id::INT64) {
-        launch_classification.template operator()<int64_t>();
+        dispatch_classification.template operator()<int64_t>();
       } else {
-        launch_classification.template operator()<size_type>();
+        dispatch_classification.template operator()<size_type>();
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }
@@ -1343,13 +1388,14 @@ void sorted_order(column_view const& input,
     if (tuning.trace) {
       std::fprintf(stderr,
                    "segmented-string-sort pass=%d active-rows=%d tied-runs=%d "
-                   "continuing-runs=%d continuing-rows=%d completed-runs=%d\n",
+                   "continuing-runs=%d continuing-rows=%d completed-runs=%d duplicate-rows=%d\n",
                    pass,
                    active_rows,
                    candidate_count,
                    observed.continuing_runs,
                    observed.continuing_rows,
-                   observed.completed_runs);
+                   observed.completed_runs,
+                   observed.duplicate_rows);
     }
 
     std::swap(current_begins, next_begins);

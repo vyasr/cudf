@@ -268,6 +268,19 @@ struct group_argminmax_functor<
   }
 };
 
+template <typename T>
+struct group_argminmax_functor<T, std::enable_if_t<cudf::is_nested<T>()>> {
+  static std::unique_ptr<column> invoke(column_view const& values,
+                                        size_type num_groups,
+                                        cudf::device_span<size_type const> group_labels,
+                                        bool is_argmin,
+                                        cuda::stream_ref stream,
+                                        rmm::device_async_resource_ref mr)
+  {
+    return group_nested_argminmax(values, num_groups, group_labels, is_argmin, stream, mr);
+  }
+};
+
 struct group_argminmax_dispatcher {
   template <typename T>
   std::unique_ptr<column> operator()(column_view const& values,

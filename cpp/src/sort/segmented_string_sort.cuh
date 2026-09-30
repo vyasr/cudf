@@ -202,7 +202,7 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   __syncthreads();
 
   auto const full_chunk = minimum_bytes >= size_type{8};
-  if (!full_chunk && minimum_bytes == maximum_bytes) {
+  if (maximum_bytes <= radix_prefix_bytes && minimum_bytes == maximum_bytes) {
     if (threadIdx.x == 0) { atomicAdd(&refinement->completed_runs, size_type{1}); }
     return;
   }
@@ -282,20 +282,34 @@ CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset co
 
   auto const chars_begin = static_cast<Offset>(shared_offsets[0] & ~Offset{15});
   auto const chars_end   = shared_offsets[block_size];
-  auto const char_count  = static_cast<size_type>(chars_end - chars_begin);
-  auto const iterations =
-    max(size_type{1}, (char_count + shuffle_copy_bytes - 1) / shuffle_copy_bytes);
-  auto next_copy = size_type{0};
+  // A large-offset column can span more than INT32_MAX bytes within one CTA even when each
+  // individual string fits size_type. Keep window arithmetic in the offsets' representation.
+  auto const char_count = chars_end - chars_begin;
+  auto const iterations = max(size_type{1},
+                              static_cast<size_type>(char_count / shuffle_copy_bytes +
+                                                     (char_count % shuffle_copy_bytes != 0)));
+  auto next_copy        = size_type{0};
 
   auto issue_copy = [&](size_type stage) {
-    auto const copied = next_copy * shuffle_copy_bytes;
-    auto const bytes  = min(shuffle_copy_bytes, max(size_type{0}, char_count - copied));
+    auto const copied = Offset{next_copy} * shuffle_copy_bytes;
+    auto const bytes =
+      static_cast<size_type>(min(Offset{shuffle_copy_bytes}, max(Offset{0}, char_count - copied)));
     pipeline.producer_acquire();
-    cuda::memcpy_async(block,
-                       shared_chars + stage * shuffle_copy_bytes,
-                       chars + chars_begin + copied,
-                       static_cast<std::size_t>(bytes),
-                       pipeline);
+    if (bytes == shuffle_copy_bytes) {
+      // An explicit alignment proof enables the source's sixteen-byte vector copies for full
+      // stages. Tail copies cannot make the same guarantee.
+      cuda::memcpy_async(block,
+                         reinterpret_cast<int4*>(shared_chars + stage * shuffle_copy_bytes),
+                         reinterpret_cast<int4 const*>(chars + chars_begin + copied),
+                         cuda::aligned_size_t<16>{static_cast<std::size_t>(bytes)},
+                         pipeline);
+    } else {
+      cuda::memcpy_async(block,
+                         shared_chars + stage * shuffle_copy_bytes,
+                         chars + chars_begin + copied,
+                         static_cast<std::size_t>(bytes),
+                         pipeline);
+    }
     pipeline.producer_commit();
     ++next_copy;
   };
@@ -316,15 +330,28 @@ CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset co
     auto const current_stage = iteration % shuffle_pipeline_stages;
     if (next_copy < iterations) { issue_copy(next_copy % shuffle_pipeline_stages); }
     pipeline.consumer_wait();
-    auto const window_begin = iteration * shuffle_copy_bytes;
-    auto const window_end   = min(window_begin + shuffle_copy_bytes, char_count);
+    auto const window_begin = Offset{iteration} * shuffle_copy_bytes;
+    auto const window_end =
+      window_begin + min(Offset{shuffle_copy_bytes}, char_count - window_begin);
 
     while (local_row < block_size) {
-      auto const row_begin = static_cast<size_type>(shared_offsets[local_row] - chars_begin);
+      auto const row_begin = shared_offsets[local_row] - chars_begin;
       auto const row_size =
         static_cast<size_type>(shared_offsets[local_row + 1] - shared_offsets[local_row]);
       auto const key_size = min(size_type{8}, row_size);
       if (row_begin + byte >= window_end) { break; }
+      if (byte == 0 && key_size == radix_prefix_bytes && row_begin + key_size <= window_end) {
+        auto const aligned_begin = row_begin & ~(radix_prefix_bytes - 1);
+        auto const shift         = static_cast<unsigned int>((row_begin - aligned_begin) * 8);
+        if (window_end - aligned_begin >= radix_prefix_bytes * (shift == 0 ? 1 : 2)) {
+          auto const* words = reinterpret_cast<std::uint64_t const*>(
+            shared_chars + current_stage * shuffle_copy_bytes + aligned_begin - window_begin);
+          auto word = words[0] >> shift;
+          if (shift != 0) { word |= words[1] << (64 - shift); }
+          key  = byte_swap(word);
+          byte = key_size;
+        }
+      }
       while (byte < key_size && row_begin + byte < window_end) {
         key = (key << 8) |
               static_cast<unsigned char>(
@@ -376,7 +403,7 @@ CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
     if (shift != 0) {
       // Reading a complete aligned word is safe only inside the chars allocation. A final
       // misaligned string may require a few tail-byte loads instead of the reference's overread.
-      if (aligned_start + 2 * radix_prefix_bytes <= offsets[strings_offset + size]) {
+      if (offsets[strings_offset + size] - aligned_start >= 2 * radix_prefix_bytes) {
         native_word |= words[1] << (64 - shift);
       } else {
         auto const loaded_bytes = radix_prefix_bytes - shift / 8;

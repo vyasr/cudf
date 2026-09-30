@@ -244,31 +244,63 @@ struct rle_metrics {
   unsigned long long equal_pairs{};
 };
 
-template <int bytes_per_pass, typename IndexIterator>
-CUDF_KERNEL void collect_rle_metrics(column_device_view strings,
-                                     IndexIterator indices,
-                                     std::uint8_t const* active,
-                                     size_type const* inclusive_run_ids,
-                                     size_type const* run_begins,
-                                     size_type const* run_ends,
-                                     size_type size,
-                                     size_type minimum_run_length,
-                                     size_type sampling_stride,
-                                     size_type byte_offset,
-                                     size_type const* run_byte_state,
-                                     rle_metrics* metrics)
+CUDF_KERNEL void collect_rle_coverage(size_type const* run_begins,
+                                      size_type const* run_ends,
+                                      size_type num_slots,
+                                      size_type minimum_run_length,
+                                      size_type* eligible_pair_counts,
+                                      rle_metrics* metrics)
 {
-  auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || active[position] == 0) { return; }
-  auto const run    = inclusive_run_ids[position] - 1;
-  auto const begin  = run_begins[run];
-  auto const end    = run_ends[run];
-  auto const length = end - begin;
-  if (length < minimum_run_length) { return; }
-  if (position == begin) {
-    atomicAdd(&metrics->covered_rows, static_cast<unsigned long long>(length));
+  auto const run = cudf::detail::grid_1d::global_thread_id();
+  if (run >= num_slots) { return; }
+  auto const begin = run_begins[run];
+  auto const end   = run_ends[run];
+  if (begin == invalid_index) {
+    eligible_pair_counts[run] = 0;
+    return;
   }
-  if (position == begin || position % sampling_stride != 0) { return; }
+  auto const length = end - begin;
+  if (length >= minimum_run_length) {
+    eligible_pair_counts[run] = length - 1;
+    atomicAdd(&metrics->covered_rows, static_cast<unsigned long long>(length));
+  } else {
+    eligible_pair_counts[run] = 0;
+  }
+}
+
+template <int bytes_per_pass, typename IndexIterator>
+CUDF_KERNEL void sample_rle_pairs(column_device_view strings,
+                                  IndexIterator indices,
+                                  size_type const* run_begins,
+                                  size_type const* inclusive_pair_offsets,
+                                  size_type num_slots,
+                                  size_type byte_offset,
+                                  size_type const* run_byte_state,
+                                  rle_metrics* metrics)
+{
+  constexpr size_type maximum_samples = 4096;
+  auto const sample                   = cudf::detail::grid_1d::global_thread_id();
+  auto const total_pairs              = inclusive_pair_offsets[num_slots - 1];
+  auto const sample_count = total_pairs < maximum_samples ? total_pairs : maximum_samples;
+  if (sample >= sample_count) { return; }
+
+  // Midpoint sampling covers both ends of the logical pair space without depending on where runs
+  // happen to land in the full permutation.
+  auto const ordinal = static_cast<size_type>(((2ULL * sample + 1) * total_pairs) /
+                                              (2ULL * static_cast<unsigned>(sample_count)));
+  size_type low      = 0;
+  size_type high     = num_slots;
+  while (low < high) {
+    auto const middle = low + (high - low) / 2;
+    if (inclusive_pair_offsets[middle] <= ordinal) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  auto const run            = low;
+  auto const previous_pairs = run == 0 ? size_type{0} : inclusive_pair_offsets[run - 1];
+  auto const position       = run_begins[run] + 1 + ordinal - previous_pairs;
 
   auto const lhs      = indices[position - 1];
   auto const rhs      = indices[position];
@@ -812,18 +844,23 @@ void sorted_order(column_view const& input,
     if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
       auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
       ++allocation_count;
-      auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
-      collect_rle_metrics<bytes_per_pass>
-        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+      collect_rle_coverage<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+        run_begins.data(),
+        run_ends.data(),
+        valid_size,
+        tuning.rle_min_run_length,
+        run_starts_at.data(),
+        metrics.data());
+      thrust::inclusive_scan(
+        exec, run_starts_at.begin(), run_starts_at.end(), run_starts_at.begin());
+      auto const sample_config = cudf::detail::grid_1d{size_type{4096}, 256};
+      sample_rle_pairs<bytes_per_pass>
+        <<<sample_config.num_blocks, sample_config.num_threads_per_block, 0, stream.get()>>>(
           *strings,
           current_indices,
-          active,
-          run_ids.data(),
           run_begins.data(),
-          run_ends.data(),
+          run_starts_at.data(),
           valid_size,
-          tuning.rle_min_run_length,
-          sampling_stride,
           pass * bytes_per_pass,
           key_layout::uses_full_width ? run_byte_state.data() : nullptr,
           metrics.data());

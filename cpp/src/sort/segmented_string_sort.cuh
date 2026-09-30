@@ -696,10 +696,8 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
   if (active) { output[chunk_begins[run_offset] + rank] = value.row; }
 }
 
-inline void segmented_key_sort(std::uint64_t const* keys_in,
-                               std::uint64_t* keys_out,
-                               size_type const* values_in,
-                               size_type* values_out,
+inline void segmented_key_sort(cub::DoubleBuffer<std::uint64_t>& keys,
+                               cub::DoubleBuffer<size_type>& values,
                                size_type size,
                                size_type num_segments,
                                size_type const* segment_begins,
@@ -713,10 +711,8 @@ inline void segmented_key_sort(std::uint64_t const* keys_in,
     if (ascending) {
       return cub::DeviceSegmentedSort::StableSortPairs(temp_storage,
                                                        temp_storage_bytes,
-                                                       keys_in,
-                                                       keys_out,
-                                                       values_in,
-                                                       values_out,
+                                                       keys,
+                                                       values,
                                                        size,
                                                        num_segments,
                                                        segment_begins,
@@ -725,10 +721,8 @@ inline void segmented_key_sort(std::uint64_t const* keys_in,
     }
     return cub::DeviceSegmentedSort::StableSortPairsDescending(temp_storage,
                                                                temp_storage_bytes,
-                                                               keys_in,
-                                                               keys_out,
-                                                               values_in,
-                                                               values_out,
+                                                               keys,
+                                                               values,
                                                                size,
                                                                num_segments,
                                                                segment_begins,
@@ -921,6 +915,7 @@ void sorted_order(column_view const& input,
     }
     CUDF_CUDA_TRY(cudaGetLastError());
     auto const cub_storage_bytes_before = cub_temp_storage.size();
+    auto* sorted_keys                   = keys_out.data();
     if (pass == 0) {
       global_radix_sort(keys_in.data(),
                         keys_out.data(),
@@ -930,15 +925,16 @@ void sorted_order(column_view const& input,
                         ascending,
                         cub_temp_storage,
                         stream);
+      std::swap(current_indices, other_indices);
     } else {
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(
         other_indices, current_indices, sizeof(size_type) * valid_size, stream));
-      // The source's adaptive segmented sorter specializes work for segment size. Its stable
-      // entry point also keeps exact-terminal runs in original order when no finish is needed.
-      segmented_key_sort(keys_in.data(),
-                         keys_out.data(),
-                         current_indices,
-                         other_indices,
+      // The source lets CUB choose its result buffer, avoiding fixed-output copies and row-sized
+      // scratch. Both index buffers contain inactive rows because CUB only touches active runs.
+      auto key_buffers   = cub::DoubleBuffer<std::uint64_t>{keys_in.data(), keys_out.data()};
+      auto value_buffers = cub::DoubleBuffer<size_type>{current_indices, other_indices};
+      segmented_key_sort(key_buffers,
+                         value_buffers,
                          valid_size,
                          num_segments,
                          current_begins,
@@ -946,14 +942,15 @@ void sorted_order(column_view const& input,
                          ascending,
                          cub_temp_storage,
                          stream);
+      sorted_keys = key_buffers.Current();
+      if (value_buffers.Current() != current_indices) { std::swap(current_indices, other_indices); }
     }
     if (cub_temp_storage.size() > cub_storage_bytes_before) { ++allocation_count; }
-    std::swap(current_indices, other_indices);
 
     refinement.set_value_async(refinement_counts{}, stream);
     auto const previous_run_count = pass == 0 ? size_type{0} : num_segments;
     mark_tied_run_endpoints<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-      keys_out.data(),
+      sorted_keys,
       valid_size,
       current_begins,
       current_ends,

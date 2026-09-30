@@ -1027,9 +1027,12 @@ void sorted_order(column_view const& input,
       thrust::sort_by_key(exec, next_begins, next_begins + num_segments, next_ends);
     }
     if (tuning.trace) {
+      auto const singleton_rows =
+        active_rows - observed.continuing_rows - observed.finish_rows - observed.completed_rows;
       std::fprintf(stderr,
                    "segmented-string-sort pass=%d active-rows=%d tied-runs=%d "
                    "continuing-runs=%d continuing-rows=%d completed-runs=%d completed-rows=%d "
+                   "singleton-runs=%d "
                    "finish-runs=%d finish-rows=%d prefix-min=%d prefix-max=%d duplicate-rows=%d "
                    "allocations=%d sync-points=%d trace-readbacks=%d\n",
                    pass,
@@ -1037,8 +1040,9 @@ void sorted_order(column_view const& input,
                    candidate_count,
                    observed.continuing_runs,
                    observed.continuing_rows,
-                   observed.completed_runs,
-                   observed.completed_rows,
+                   observed.completed_runs + singleton_rows,
+                   observed.completed_rows + singleton_rows,
+                   singleton_rows,
                    observed.finish_runs,
                    observed.finish_rows,
                    candidate_count > 0 ? observed.minimum_prefix : 0,

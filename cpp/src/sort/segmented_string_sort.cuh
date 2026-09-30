@@ -915,7 +915,7 @@ void sorted_order(column_view const& input,
       launch_keys.template operator()<size_type>();
     }
     CUDF_CUDA_TRY(cudaGetLastError());
-    auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
+    auto const cub_storage_bytes_before = cub_temp_storage.size();
     if (pass == 0) {
       global_radix_sort(keys_in.data(),
                         keys_out.data(),
@@ -940,7 +940,7 @@ void sorted_order(column_view const& input,
                            cub_temp_storage,
                            stream);
     }
-    if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
+    if (cub_temp_storage.size() > cub_storage_bytes_before) { ++allocation_count; }
     std::swap(current_indices, other_indices);
 
     refinement.set_value_async(refinement_counts{}, stream);
@@ -1061,6 +1061,15 @@ void sorted_order(column_view const& input,
   ++synchronization_points;
   auto total_chunks = size_type{0};
   if (finish.segments > 0) {
+    if (finish.segments > 1) {
+      // Atomic append order need not follow row order. Ordering disjoint runs restores the source's
+      // descriptor layout and keeps neighboring chunk CTAs near neighboring string data.
+      thrust::sort_by_key(exec,
+                          final_begins.begin(),
+                          final_begins.begin() + finish.segments,
+                          final_prefix_bytes.begin());
+      thrust::sort(exec, final_ends.begin(), final_ends.begin() + finish.segments);
+    }
     // Refinement endpoints are dead here and have enough capacity for one count/offset per finish
     // run, so the scan needs no additional row-sized storage.
     auto* chunk_counts      = run_begins.data();

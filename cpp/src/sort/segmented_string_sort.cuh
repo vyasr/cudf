@@ -27,7 +27,6 @@
 #include <thrust/functional.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
-#include <thrust/transform.h>
 #include <thrust/transform_reduce.h>
 
 #include <algorithm>
@@ -410,95 +409,6 @@ CUDF_KERNEL void map_final_segments(size_type const* final_begins,
   }
 }
 
-CUDF_KERNEL void gather_compact_segments(size_type const* source,
-                                         size_type const* destination_begins,
-                                         size_type const* destination_ends,
-                                         size_type const* compact_begins,
-                                         size_type const* final_prefix_bytes,
-                                         size_type num_segments,
-                                         size_type* compact,
-                                         size_type* known_prefix_by_row)
-{
-  auto const segment = static_cast<size_type>(blockIdx.x);
-  if (segment >= num_segments) { return; }
-  auto const source_begin  = destination_begins[segment];
-  auto const length        = destination_ends[segment] - source_begin;
-  auto const compact_begin = compact_begins[segment];
-  for (auto offset = static_cast<size_type>(threadIdx.x); offset < length; offset += blockDim.x) {
-    auto const row                  = source[source_begin + offset];
-    compact[compact_begin + offset] = row;
-    if (known_prefix_by_row != nullptr) { known_prefix_by_row[row] = final_prefix_bytes[segment]; }
-  }
-}
-
-CUDF_KERNEL void make_compact_block_tasks(size_type const* compact_begins,
-                                          size_type const* compact_ends,
-                                          size_type num_segments,
-                                          size_type comparison_threshold,
-                                          size_type* task_count,
-                                          size_type* task_begins,
-                                          size_type* task_ends)
-{
-  auto const segment = cudf::detail::grid_1d::global_thread_id();
-  if (segment >= num_segments) { return; }
-  auto const begin = compact_begins[segment];
-  auto const end   = compact_ends[segment];
-  if (end - begin <= comparison_threshold) { return; }
-  for (auto task_begin = begin; task_begin < end; task_begin += block_sort_size) {
-    auto const slot   = atomicAdd(task_count, size_type{1});
-    task_begins[slot] = task_begin;
-    task_ends[slot]   = task_begin + block_sort_size < end ? task_begin + block_sort_size : end;
-  }
-}
-
-struct compact_merge_task {
-  size_type begin;
-  size_type middle;
-  size_type end;
-  size_type tile_begin;
-  size_type tile_end;
-  bool input_from_alternate;
-};
-
-template <int tile_items>
-CUDF_KERNEL void make_compact_merge_tasks(size_type const* compact_begins,
-                                          size_type const* compact_ends,
-                                          size_type num_segments,
-                                          std::int64_t run_width,
-                                          std::uint8_t* segment_parity,
-                                          size_type* task_count,
-                                          compact_merge_task* tasks)
-{
-  auto const segment = cudf::detail::grid_1d::global_thread_id();
-  if (segment >= num_segments) { return; }
-  auto const segment_begin = compact_begins[segment];
-  auto const segment_end   = compact_ends[segment];
-  if (static_cast<std::int64_t>(segment_end - segment_begin) <= run_width) { return; }
-
-  auto const input_from_alternate = segment_parity[segment] != 0;
-  segment_parity[segment]         = input_from_alternate ? 0 : 1;
-  for (auto pair_begin = static_cast<std::int64_t>(segment_begin);
-       pair_begin < static_cast<std::int64_t>(segment_end);
-       pair_begin += 2 * run_width) {
-    auto const segment_end_64 = static_cast<std::int64_t>(segment_end);
-    auto const middle =
-      pair_begin + run_width < segment_end_64 ? pair_begin + run_width : segment_end_64;
-    auto const pair_end =
-      pair_begin + 2 * run_width < segment_end_64 ? pair_begin + 2 * run_width : segment_end_64;
-    for (auto tile_begin = pair_begin; tile_begin < pair_end; tile_begin += tile_items) {
-      auto const slot = atomicAdd(task_count, size_type{1});
-      tasks[slot]     = compact_merge_task{
-        static_cast<size_type>(pair_begin),
-        static_cast<size_type>(middle),
-        static_cast<size_type>(pair_end),
-        static_cast<size_type>(tile_begin),
-        static_cast<size_type>(tile_begin + tile_items < pair_end ? tile_begin + tile_items
-                                                                  : pair_end),
-        input_from_alternate};
-    }
-  }
-}
-
 template <typename Comparator>
 __device__ bool stable_less(size_type lhs, size_type rhs, Comparator comparator)
 {
@@ -574,88 +484,6 @@ CUDF_KERNEL void block_sort_tasks(size_type* indices,
     }
   }
   if (lane < task_length) { indices[position] = values[lane]; }
-}
-
-template <typename Comparator>
-__device__ size_type merge_path_partition(size_type const* input,
-                                          size_type begin,
-                                          size_type middle,
-                                          size_type end,
-                                          size_type diagonal,
-                                          Comparator comparator)
-{
-  auto const left_size  = middle - begin;
-  auto const right_size = end - middle;
-  auto low              = diagonal > right_size ? diagonal - right_size : size_type{0};
-  auto high             = diagonal < left_size ? diagonal : left_size;
-  while (low < high) {
-    auto const left  = low + (high - low) / 2;
-    auto const right = diagonal - left;
-    if (right > 0 && left < left_size &&
-        !stable_less(input[middle + right - 1], input[begin + left], comparator)) {
-      low = left + 1;
-    } else {
-      high = left;
-    }
-  }
-  return low;
-}
-
-template <int tile_items, typename Comparator>
-CUDF_KERNEL void merge_compact_tiles(size_type const* primary,
-                                     size_type const* alternate,
-                                     size_type* primary_output,
-                                     size_type* alternate_output,
-                                     compact_merge_task const* tasks,
-                                     size_type const* task_count,
-                                     Comparator comparator)
-{
-  constexpr size_type threads_per_block = 256;
-  static_assert(tile_items % threads_per_block == 0);
-  constexpr size_type items_per_thread = tile_items / threads_per_block;
-  auto const task_index                = static_cast<size_type>(blockIdx.x);
-  if (task_index >= *task_count) { return; }
-  auto const task         = tasks[task_index];
-  auto const input        = task.input_from_alternate ? alternate : primary;
-  auto output             = task.input_from_alternate ? primary_output : alternate_output;
-  auto const offset       = static_cast<size_type>(threadIdx.x) * items_per_thread;
-  auto const output_begin = task.tile_begin + offset;
-  if (output_begin >= task.tile_end) { return; }
-  auto const output_end = output_begin + items_per_thread < task.tile_end
-                            ? output_begin + items_per_thread
-                            : task.tile_end;
-  auto const diagonal   = output_begin - task.begin;
-  auto left  = merge_path_partition(input, task.begin, task.middle, task.end, diagonal, comparator);
-  auto right = diagonal - left;
-  auto const left_size  = task.middle - task.begin;
-  auto const right_size = task.end - task.middle;
-  for (auto position = output_begin; position < output_end; ++position) {
-    auto const take_right =
-      right < right_size &&
-      (left == left_size ||
-       stable_less(input[task.middle + right], input[task.begin + left], comparator));
-    output[position] = take_right ? input[task.middle + right++] : input[task.begin + left++];
-  }
-}
-
-CUDF_KERNEL void scatter_compact_segments(size_type const* primary,
-                                          size_type const* alternate,
-                                          size_type const* compact_begins,
-                                          size_type const* compact_ends,
-                                          size_type const* destination_begins,
-                                          std::uint8_t const* segment_parity,
-                                          size_type num_segments,
-                                          size_type* destination)
-{
-  auto const segment = static_cast<size_type>(blockIdx.x);
-  if (segment >= num_segments) { return; }
-  auto const compact_begin = compact_begins[segment];
-  auto const length        = compact_ends[segment] - compact_begin;
-  auto const source        = segment_parity[segment] == 0 ? primary : alternate;
-  auto const output_begin  = destination_begins[segment];
-  for (auto offset = static_cast<size_type>(threadIdx.x); offset < length; offset += blockDim.x) {
-    destination[output_begin + offset] = source[compact_begin + offset];
-  }
 }
 
 template <typename Comparator>
@@ -831,16 +659,13 @@ void sorted_order(column_view const& input,
   if (tuning.trace) {
     std::fprintf(stderr,
                  "segmented-string-sort bytes=%d percent=%d passes=%d known-prefix=%d "
-                 "finish-threshold=%d rle-policy=%d compact-finish=%d merge-tile=%d valid=%d "
-                 "nulls=%d max-length=%d\n",
+                 "finish-threshold=%d rle-policy=%d valid=%d nulls=%d max-length=%d\n",
                  bytes_per_pass,
                  tuning.radix_percent,
                  maximum_radix_passes,
                  tuning.known_prefix,
                  tuning.finish_threshold,
                  static_cast<int>(tuning.rle_policy),
-                 tuning.compact_finish,
-                 tuning.merge_tile_items,
                  valid_size,
                  null_size,
                  max_length);
@@ -1109,146 +934,47 @@ void sorted_order(column_view const& input,
     }
   }
   if (finish.segments > 0) {
-    auto const finish_config = cudf::detail::grid_1d{finish.segments, 128};
-    if (tuning.compact_finish) {
-      auto compact_begins = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
-      auto compact_ends   = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
-      auto compact_a      = rmm::device_uvector<size_type>(finish.rows, stream, temp_mr);
-      auto compact_b      = rmm::device_uvector<size_type>(finish.rows, stream, temp_mr);
-      auto segment_parity = rmm::device_uvector<std::uint8_t>(finish.segments, stream, temp_mr);
-      allocation_count += 5;
-      thrust::transform(exec,
-                        final_ends.begin(),
-                        final_ends.begin() + finish.segments,
-                        final_begins.begin(),
-                        compact_ends.begin(),
-                        thrust::minus<size_type>{});
-      thrust::exclusive_scan(
-        exec, compact_ends.begin(), compact_ends.end(), compact_begins.begin());
-      thrust::transform(exec,
-                        compact_begins.begin(),
-                        compact_begins.end(),
-                        compact_ends.begin(),
-                        compact_ends.begin(),
-                        thrust::plus<size_type>{});
-      thrust::fill(exec, segment_parity.begin(), segment_parity.end(), std::uint8_t{0});
-      gather_compact_segments<<<finish.segments, 256, 0, stream.get()>>>(
-        current_indices,
-        final_begins.data(),
-        final_ends.data(),
-        compact_begins.data(),
-        known_prefix ? final_prefix_bytes.data() : nullptr,
-        finish.segments,
-        compact_a.data(),
-        known_prefix ? known_prefix_by_row.data() : nullptr);
-      finish_small_segments<<<finish_config.num_blocks,
-                              finish_config.num_threads_per_block,
-                              0,
-                              stream.get()>>>(compact_a.data(),
-                                              compact_begins.data(),
-                                              compact_ends.data(),
-                                              finish.segments,
-                                              comparison_threshold,
-                                              comparator);
-      if (finish.block_tasks > 0) {
-        thrust::fill_n(exec, run_ids.begin(), 1, size_type{0});
-        make_compact_block_tasks<<<finish_config.num_blocks,
-                                   finish_config.num_threads_per_block,
-                                   0,
-                                   stream.get()>>>(compact_begins.data(),
-                                                   compact_ends.data(),
-                                                   finish.segments,
-                                                   comparison_threshold,
-                                                   run_ids.data(),
-                                                   task_begins.data(),
-                                                   task_ends.data());
-        block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
-          compact_a.data(), task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
+    auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+    auto final_end_for_position   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+    allocation_count += 2;
+    thrust::fill(
+      exec, final_begin_for_position.begin(), final_begin_for_position.end(), invalid_index);
+    thrust::fill(exec, final_end_for_position.begin(), final_end_for_position.end(), invalid_index);
+    map_final_segments<<<finish.segments, 256, 0, stream.get()>>>(
+      final_begins.data(),
+      final_ends.data(),
+      known_prefix ? final_prefix_bytes.data() : nullptr,
+      finish.segments,
+      current_indices,
+      final_begin_for_position.data(),
+      final_end_for_position.data(),
+      known_prefix_by_row.data());
 
-        auto run_tiled_merges = [&]<int tile_items>() {
-          auto merge_tasks =
-            rmm::device_uvector<compact_merge_task>(finish.block_tasks, stream, temp_mr);
-          ++allocation_count;
-          for (std::int64_t width = block_sort_size; width < finish.maximum_segment_size;
-               width *= 2) {
-            ++merge_levels;
-            thrust::fill_n(exec, run_ids.begin(), 1, size_type{0});
-            make_compact_merge_tasks<tile_items>
-              <<<finish_config.num_blocks, finish_config.num_threads_per_block, 0, stream.get()>>>(
-                compact_begins.data(),
-                compact_ends.data(),
-                finish.segments,
-                width,
-                segment_parity.data(),
-                run_ids.data(),
-                merge_tasks.data());
-            merge_compact_tiles<tile_items>
-              <<<finish.block_tasks, 256, 0, stream.get()>>>(compact_a.data(),
-                                                             compact_b.data(),
-                                                             compact_a.data(),
-                                                             compact_b.data(),
-                                                             merge_tasks.data(),
-                                                             run_ids.data(),
-                                                             comparator);
-          }
-        };
-        switch (tuning.merge_tile_items) {
-          case 1024: run_tiled_merges.template operator()<1024>(); break;
-          case 4096: run_tiled_merges.template operator()<4096>(); break;
-          default: run_tiled_merges.template operator()<2048>(); break;
-        }
-      }
-      scatter_compact_segments<<<finish.segments, 256, 0, stream.get()>>>(compact_a.data(),
-                                                                          compact_b.data(),
-                                                                          compact_begins.data(),
-                                                                          compact_ends.data(),
-                                                                          final_begins.data(),
-                                                                          segment_parity.data(),
-                                                                          finish.segments,
-                                                                          current_indices);
-    } else {
-      auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-      auto final_end_for_position   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-      allocation_count += 2;
-      thrust::fill(
-        exec, final_begin_for_position.begin(), final_begin_for_position.end(), invalid_index);
-      thrust::fill(
-        exec, final_end_for_position.begin(), final_end_for_position.end(), invalid_index);
-      map_final_segments<<<finish.segments, 256, 0, stream.get()>>>(
-        final_begins.data(),
-        final_ends.data(),
-        known_prefix ? final_prefix_bytes.data() : nullptr,
-        finish.segments,
-        current_indices,
-        final_begin_for_position.data(),
-        final_end_for_position.data(),
-        known_prefix_by_row.data());
-      finish_small_segments<<<finish_config.num_blocks,
-                              finish_config.num_threads_per_block,
-                              0,
-                              stream.get()>>>(current_indices,
-                                              final_begins.data(),
-                                              final_ends.data(),
-                                              finish.segments,
-                                              comparison_threshold,
-                                              comparator);
-      if (finish.block_tasks > 0) {
-        block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
-          current_indices, task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
-        for (std::int64_t width = block_sort_size; width < finish.maximum_segment_size;
-             width *= 2) {
-          ++merge_levels;
-          merge_sorted_blocks<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-            current_indices,
-            other_indices,
-            final_begin_for_position.data(),
-            final_end_for_position.data(),
-            valid_size,
-            width,
-            comparison_threshold,
-            comparator);
-          std::swap(current_indices, other_indices);
-        }
+    auto const finish_config = cudf::detail::grid_1d{finish.segments, 128};
+    finish_small_segments<<<finish_config.num_blocks,
+                            finish_config.num_threads_per_block,
+                            0,
+                            stream.get()>>>(current_indices,
+                                            final_begins.data(),
+                                            final_ends.data(),
+                                            finish.segments,
+                                            comparison_threshold,
+                                            comparator);
+    if (finish.block_tasks > 0) {
+      block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
+        current_indices, task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
+      for (std::int64_t width = block_sort_size; width < finish.maximum_segment_size; width *= 2) {
+        ++merge_levels;
+        merge_sorted_blocks<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+          current_indices,
+          other_indices,
+          final_begin_for_position.data(),
+          final_end_for_position.data(),
+          valid_size,
+          width,
+          comparison_threshold,
+          comparator);
+        std::swap(current_indices, other_indices);
       }
     }
     CUDF_CUDA_TRY(cudaGetLastError());

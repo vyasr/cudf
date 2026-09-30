@@ -583,6 +583,31 @@ TEST_F(StringSort, SegmentedFinishThreshold32And33)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
 }
 
+TEST_F(StringSort, SegmentedRadixRunCutoffBoundaries)
+{
+  std::vector<std::string> strings;
+  for (auto const run_size : {511, 512, 513}) {
+    auto const run_prefix = std::string(8, static_cast<char>('a' + run_size - 511));
+    for (auto suffix = run_size; suffix > 0; --suffix) {
+      auto value = run_prefix;
+      value.push_back(static_cast<char>((suffix >> 8) & 0xff));
+      value.push_back(static_cast<char>(suffix & 0xff));
+      strings.push_back(std::move(value));
+    }
+  }
+
+  auto expected_indices = std::vector<cudf::size_type>(strings.size());
+  std::iota(expected_indices.begin(), expected_indices.end(), cudf::size_type{0});
+  std::stable_sort(expected_indices.begin(), expected_indices.end(), [&](auto lhs, auto rhs) {
+    return bytewise_less(strings[lhs], strings[rhs]);
+  });
+  auto const input    = cudf::test::strings_column_wrapper(strings.begin(), strings.end());
+  auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+    expected_indices.begin(), expected_indices.end());
+  auto const result = cudf::stable_sorted_order(cudf::table_view{{input}});
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+}
+
 TEST_F(StringSort, MultipleLargeEqualPrefixSegments)
 {
   std::vector<std::string> strings;

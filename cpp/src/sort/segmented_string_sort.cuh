@@ -26,7 +26,7 @@
 #include <cub/block/block_reduce.cuh>
 #include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_scan.cuh>
-#include <cub/device/device_segmented_radix_sort.cuh>
+#include <cub/device/device_segmented_sort.cuh>
 #include <cuda/pipeline>
 #include <thrust/copy.h>
 #include <thrust/count.h>
@@ -696,48 +696,44 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
   if (active) { output[chunk_begins[run_offset] + rank] = value.row; }
 }
 
-inline void segmented_radix_sort(std::uint64_t const* keys_in,
-                                 std::uint64_t* keys_out,
-                                 size_type const* values_in,
-                                 size_type* values_out,
-                                 size_type size,
-                                 size_type num_segments,
-                                 size_type const* segment_begins,
-                                 size_type const* segment_ends,
-                                 bool ascending,
-                                 rmm::device_buffer& temp_storage,
-                                 cuda::stream_ref stream)
+inline void segmented_key_sort(std::uint64_t const* keys_in,
+                               std::uint64_t* keys_out,
+                               size_type const* values_in,
+                               size_type* values_out,
+                               size_type size,
+                               size_type num_segments,
+                               size_type const* segment_begins,
+                               size_type const* segment_ends,
+                               bool ascending,
+                               rmm::device_buffer& temp_storage,
+                               cuda::stream_ref stream)
 {
   std::size_t temp_storage_bytes = 0;
   auto invoke                    = [&](void* temp_storage) {
     if (ascending) {
-      return cub::DeviceSegmentedRadixSort::SortPairs(temp_storage,
-                                                      temp_storage_bytes,
-                                                      keys_in,
-                                                      keys_out,
-                                                      values_in,
-                                                      values_out,
-                                                      size,
-                                                      num_segments,
-                                                      segment_begins,
-                                                      segment_ends,
-                                                      0,
-                                                      64,
-                                                      stream.get());
+      return cub::DeviceSegmentedSort::StableSortPairs(temp_storage,
+                                                       temp_storage_bytes,
+                                                       keys_in,
+                                                       keys_out,
+                                                       values_in,
+                                                       values_out,
+                                                       size,
+                                                       num_segments,
+                                                       segment_begins,
+                                                       segment_ends,
+                                                       stream.get());
     }
-    return cub::DeviceSegmentedRadixSort::SortPairsDescending(temp_storage,
-                                                              temp_storage_bytes,
-                                                              keys_in,
-                                                              keys_out,
-                                                              values_in,
-                                                              values_out,
-                                                              size,
-                                                              num_segments,
-                                                              segment_begins,
-                                                              segment_ends,
-                                                              0,
-                                                              64,
-                                                              stream.get());
+    return cub::DeviceSegmentedSort::StableSortPairsDescending(temp_storage,
+                                                               temp_storage_bytes,
+                                                               keys_in,
+                                                               keys_out,
+                                                               values_in,
+                                                               values_out,
+                                                               size,
+                                                               num_segments,
+                                                               segment_begins,
+                                                               segment_ends,
+                                                               stream.get());
   };
   CUDF_CUDA_TRY(invoke(nullptr));
   if (temp_storage_bytes > temp_storage.size()) {
@@ -928,17 +924,19 @@ void sorted_order(column_view const& input,
     } else {
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(
         other_indices, current_indices, sizeof(size_type) * valid_size, stream));
-      segmented_radix_sort(keys_in.data(),
-                           keys_out.data(),
-                           current_indices,
-                           other_indices,
-                           valid_size,
-                           num_segments,
-                           current_begins,
-                           current_ends,
-                           ascending,
-                           cub_temp_storage,
-                           stream);
+      // The source's adaptive segmented sorter specializes work for segment size. Its stable
+      // entry point also keeps exact-terminal runs in original order when no finish is needed.
+      segmented_key_sort(keys_in.data(),
+                         keys_out.data(),
+                         current_indices,
+                         other_indices,
+                         valid_size,
+                         num_segments,
+                         current_begins,
+                         current_ends,
+                         ascending,
+                         cub_temp_storage,
+                         stream);
     }
     if (cub_temp_storage.size() > cub_storage_bytes_before) { ++allocation_count; }
     std::swap(current_indices, other_indices);

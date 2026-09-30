@@ -31,8 +31,6 @@ struct segmented_string_sort_config {
   int rle_min_coverage_percent{25};
   int rle_min_equal_percent{10};
   bool trace{false};
-  bool compact_finish{false};
-  int merge_tile_items{2048};
 };
 
 [[nodiscard]] inline int parse_integer_setting(char const* value,
@@ -60,12 +58,6 @@ struct segmented_string_sort_config {
   throw std::invalid_argument{"LIBCUDF_SEGMENTED_STRING_SORT_BYTES_PER_PASS must be either 6 or 8"};
 }
 
-[[nodiscard]] inline int parse_merge_tile_items(char const* value)
-{
-  auto const setting = parse_integer_setting(value, 1024, 4096, 2048);
-  return setting == 1024 || setting == 2048 || setting == 4096 ? setting : 2048;
-}
-
 [[nodiscard]] inline segmented_string_sort_config parse_segmented_string_sort_config(
   string_sort_algorithm algorithm,
   char const* bytes_per_pass,
@@ -77,9 +69,7 @@ struct segmented_string_sort_config {
   char const* rle_min_run_length,
   char const* rle_min_coverage_percent,
   char const* rle_min_equal_percent,
-  char const* trace,
-  char const* compact_finish   = nullptr,
-  char const* merge_tile_items = nullptr)
+  char const* trace)
 {
   auto config               = segmented_string_sort_config{};
   config.bytes_per_pass     = parse_bytes_per_pass(bytes_per_pass);
@@ -95,8 +85,6 @@ struct segmented_string_sort_config {
   config.rle_min_coverage_percent = parse_integer_setting(rle_min_coverage_percent, 0, 100, 25);
   config.rle_min_equal_percent    = parse_integer_setting(rle_min_equal_percent, 0, 100, 10);
   config.trace                    = parse_integer_setting(trace, 0, 1, 0) != 0;
-  config.compact_finish           = parse_integer_setting(compact_finish, 0, 1, 0) != 0;
-  config.merge_tile_items         = parse_merge_tile_items(merge_tile_items);
   return config;
 }
 
@@ -139,9 +127,7 @@ struct segmented_string_sort_config {
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_RUN_LENGTH"),
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_COVERAGE_PERCENT"),
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_EQUAL_PERCENT"),
-    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_TRACE"),
-    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_COMPACT_FINISH"),
-    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_MERGE_TILE_ITEMS"));
+    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_TRACE"));
   return config;
 }
 

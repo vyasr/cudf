@@ -55,11 +55,6 @@ struct finish_counts {
   size_type maximum_segment_size{};
 };
 
-struct dense_refinement_counts {
-  size_type segments{};
-  size_type rows{};
-};
-
 __device__ inline bool strings_equal_after(column_device_view strings,
                                            size_type lhs,
                                            size_type rhs,
@@ -85,7 +80,7 @@ CUDF_KERNEL void make_keys(column_device_view strings,
 {
   using key_layout    = radix_key_layout<bytes_per_pass>;
   auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || (active != nullptr && active[position] == 0)) { return; }
+  if (position >= size || active[position] == 0) { return; }
 
   auto const row = indices[position];
   if constexpr (key_layout::stores_metadata) {
@@ -160,14 +155,12 @@ CUDF_KERNEL void mark_run_boundaries(std::uint8_t const* active,
                                      std::uint8_t* run_ends_at)
 {
   auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || (active != nullptr && active[position] == 0)) { return; }
+  if (position >= size || active[position] == 0) { return; }
 
-  auto const previous_inactive = active != nullptr && position > 0 && active[position - 1] == 0;
-  auto const next_inactive = active != nullptr && position + 1 < size && active[position + 1] == 0;
-  auto const is_start      = segment_starts[position] != 0 || position == 0 || previous_inactive ||
-                        keys[position - 1] != keys[position];
-  auto const is_end = segment_ends_at[position] != 0 || position + 1 == size || next_inactive ||
-                      keys[position + 1] != keys[position];
+  auto const is_start = segment_starts[position] != 0 || position == 0 ||
+                        active[position - 1] == 0 || keys[position - 1] != keys[position];
+  auto const is_end = segment_ends_at[position] != 0 || position + 1 == size ||
+                      active[position + 1] == 0 || keys[position + 1] != keys[position];
   run_starts_at[position] = is_start ? 1 : 0;
   run_ends_at[position]   = is_end ? 1 : 0;
 }
@@ -187,7 +180,7 @@ CUDF_KERNEL void scatter_run_endpoints(column_device_view strings,
 {
   using key_layout    = radix_key_layout<bytes_per_pass>;
   auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || (active != nullptr && active[position] == 0)) { return; }
+  if (position >= size || active[position] == 0) { return; }
   auto const run = inclusive_run_ids[position] - 1;
   if (run_starts_at[position] != 0) { run_begins[run] = position; }
   if (run_ends_at[position] != 0) { run_ends[run] = position + 1; }
@@ -228,7 +221,7 @@ CUDF_KERNEL void mark_nonduplicate_runs(column_device_view strings,
                                         size_type* run_has_mismatch)
 {
   auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || (active != nullptr && active[position] == 0)) { return; }
+  if (position >= size || active[position] == 0) { return; }
 
   auto const run   = inclusive_run_ids[position] - 1;
   auto const begin = run_begins[run];
@@ -266,7 +259,7 @@ CUDF_KERNEL void collect_rle_metrics(column_device_view strings,
                                      rle_metrics* metrics)
 {
   auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size || (active != nullptr && active[position] == 0)) { return; }
+  if (position >= size || active[position] == 0) { return; }
   auto const run    = inclusive_run_ids[position] - 1;
   auto const begin  = run_begins[run];
   auto const end    = run_ends[run];
@@ -362,122 +355,6 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
       task_begin           = task_end;
     }
   }
-}
-
-CUDF_KERNEL void map_dense_destinations(size_type const* dense_begins,
-                                        size_type const* dense_ends,
-                                        size_type const* destination_begins,
-                                        size_type num_segments,
-                                        size_type* destination_for_position)
-{
-  auto const segment = static_cast<size_type>(blockIdx.x);
-  if (segment >= num_segments) { return; }
-  auto const dense_begin       = dense_begins[segment];
-  auto const length            = dense_ends[segment] - dense_begin;
-  auto const destination_begin = destination_begins[segment];
-  for (auto offset = static_cast<size_type>(threadIdx.x); offset < length; offset += blockDim.x) {
-    destination_for_position[dense_begin + offset] = destination_begin + offset;
-  }
-}
-
-CUDF_KERNEL void scatter_dense_rows(size_type const* indices,
-                                    size_type const* destination_for_position,
-                                    size_type size,
-                                    size_type* permutation)
-{
-  auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position < size) { permutation[destination_for_position[position]] = indices[position]; }
-}
-
-template <int bytes_per_pass, typename IndexIterator>
-CUDF_KERNEL void classify_dense_runs(column_device_view strings,
-                                     IndexIterator indices,
-                                     std::uint64_t const* sorted_keys,
-                                     size_type const* run_begins,
-                                     size_type const* run_ends,
-                                     size_type const* run_byte_state,
-                                     size_type const* destination_for_position,
-                                     size_type num_slots,
-                                     size_type byte_offset,
-                                     bool last_pass,
-                                     bool detect_duplicates,
-                                     size_type const* run_has_mismatch,
-                                     size_type comparison_threshold,
-                                     size_type* next_dense_begin_by_run,
-                                     size_type* next_begins,
-                                     size_type* next_ends,
-                                     size_type* next_destination_begins,
-                                     dense_refinement_counts* refinement_counts,
-                                     size_type* final_begins,
-                                     size_type* final_ends,
-                                     size_type* final_prefix_bytes,
-                                     size_type* task_begins,
-                                     size_type* task_ends,
-                                     finish_counts* counts)
-{
-  using key_layout = radix_key_layout<bytes_per_pass>;
-  auto const run   = cudf::detail::grid_1d::global_thread_id();
-  if (run >= num_slots) { return; }
-  auto const begin = run_begins[run];
-  auto const end   = run_ends[run];
-  if (begin == invalid_index || end - begin <= 1) { return; }
-
-  auto const row       = indices[begin];
-  auto const is_null   = strings.is_null(row);
-  auto const key_bytes = key_layout::stores_metadata
-                           ? static_cast<size_type>(sorted_keys[begin] & 0x7)
-                           : bytes_per_pass - (run_byte_state[run] & 0xff);
-  if (is_null || (key_layout::stores_metadata && key_bytes != bytes_per_pass)) { return; }
-  auto const terminal_collision  = key_layout::uses_full_width && key_bytes != bytes_per_pass;
-  auto const exact_duplicate_run = detect_duplicates && last_pass && run_has_mismatch[run] == 0;
-  if (exact_duplicate_run) { return; }
-
-  auto const length            = end - begin;
-  auto const destination_begin = destination_for_position[begin];
-  if (!terminal_collision && !last_pass && length > comparison_threshold) {
-    auto const dense_begin        = atomicAdd(&refinement_counts->rows, length);
-    auto const slot               = atomicAdd(&refinement_counts->segments, size_type{1});
-    next_dense_begin_by_run[run]  = dense_begin;
-    next_begins[slot]             = dense_begin;
-    next_ends[slot]               = dense_begin + length;
-    next_destination_begins[slot] = destination_begin;
-    return;
-  }
-
-  auto const final_slot = atomicAdd(&counts->segments, size_type{1});
-  atomicAdd(&counts->rows, length);
-  final_begins[final_slot] = destination_begin;
-  final_ends[final_slot]   = destination_begin + length;
-  if (final_prefix_bytes != nullptr) {
-    final_prefix_bytes[final_slot] =
-      proven_prefix_bytes<bytes_per_pass>(run, byte_offset, run_byte_state);
-  }
-  if (length > comparison_threshold) {
-    atomicMax(&counts->maximum_segment_size, length);
-    for (auto task_begin = destination_begin; task_begin < destination_begin + length;
-         task_begin += block_sort_size) {
-      auto const task_slot   = atomicAdd(&counts->block_tasks, size_type{1});
-      task_begins[task_slot] = task_begin;
-      task_ends[task_slot]   = task_begin + block_sort_size < destination_begin + length
-                                 ? task_begin + block_sort_size
-                                 : destination_begin + length;
-    }
-  }
-}
-
-CUDF_KERNEL void compact_dense_rows(size_type const* source,
-                                    size_type const* inclusive_run_ids,
-                                    size_type const* run_begins,
-                                    size_type const* next_dense_begin_by_run,
-                                    size_type size,
-                                    size_type* destination)
-{
-  auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size) { return; }
-  auto const run         = inclusive_run_ids[position] - 1;
-  auto const dense_begin = next_dense_begin_by_run[run];
-  if (dense_begin == invalid_index) { return; }
-  destination[dense_begin + position - run_begins[run]] = source[position];
 }
 
 CUDF_KERNEL void compact_next_segments(size_type const* run_begins,
@@ -741,8 +618,6 @@ void sorted_order(column_view const& input,
   auto const null_size  = size - valid_size;
   auto indices_a        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
   auto indices_b        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto permutation      = rmm::device_uvector<size_type>(
-    tuning.compact_radix ? valid_size : size_type{0}, stream, temp_mr);
   auto null_indices =
     rmm::device_uvector<size_type>(key_layout::uses_full_width ? null_size : 0, stream, temp_mr);
   auto const rows = cuda::counting_iterator<size_type>{0};
@@ -755,10 +630,6 @@ void sorted_order(column_view const& input,
     }
   } else {
     thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
-  }
-  if (tuning.compact_radix) {
-    CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-      permutation.data(), indices_a.data(), sizeof(size_type) * valid_size, stream));
   }
 
   auto max_length             = size_type{-1};
@@ -788,15 +659,13 @@ void sorted_order(column_view const& input,
   if (tuning.trace) {
     std::fprintf(stderr,
                  "segmented-string-sort bytes=%d percent=%d passes=%d known-prefix=%d "
-                 "finish-threshold=%d rle-policy=%d compact-radix=%d valid=%d nulls=%d "
-                 "max-length=%d\n",
+                 "finish-threshold=%d rle-policy=%d valid=%d nulls=%d max-length=%d\n",
                  bytes_per_pass,
                  tuning.radix_percent,
                  maximum_radix_passes,
                  tuning.known_prefix,
                  tuning.finish_threshold,
                  static_cast<int>(tuning.rle_policy),
-                 tuning.compact_radix,
                  valid_size,
                  null_size,
                  max_length);
@@ -805,21 +674,13 @@ void sorted_order(column_view const& input,
   auto keys_in  = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
   auto keys_out = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
 
-  auto begins_a             = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto ends_a               = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto begins_b             = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto ends_b               = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto destination_begins_a = rmm::device_uvector<size_type>(
-    tuning.compact_radix ? valid_size : size_type{0}, stream, temp_mr);
-  auto destination_begins_b = rmm::device_uvector<size_type>(
-    tuning.compact_radix ? valid_size : size_type{0}, stream, temp_mr);
-  auto destination_for_position = rmm::device_uvector<size_type>(
-    tuning.compact_radix ? valid_size : size_type{0}, stream, temp_mr);
+  auto begins_a = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto ends_a   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto begins_b = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto ends_b   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
 
-  auto active_a = rmm::device_uvector<std::uint8_t>(
-    tuning.compact_radix ? size_type{0} : valid_size, stream, temp_mr);
-  auto active_b = rmm::device_uvector<std::uint8_t>(
-    tuning.compact_radix ? size_type{0} : valid_size, stream, temp_mr);
+  auto active_a        = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
+  auto active_b        = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
   auto segment_starts  = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
   auto segment_ends_at = rmm::device_uvector<std::uint8_t>(valid_size, stream, temp_mr);
   auto run_starts_at   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
@@ -846,422 +707,217 @@ void sorted_order(column_view const& input,
   thrust::fill(exec, ends_a.begin(), ends_a.end(), valid_size);
   thrust::fill_n(exec, begins_a.begin(), 1, size_type{0});
   thrust::fill_n(exec, ends_a.begin(), 1, valid_size);
-  if (tuning.compact_radix) {
-    thrust::fill_n(exec, destination_begins_a.begin(), 1, size_type{0});
-  } else {
-    thrust::fill(exec, active_a.begin(), active_a.end(), std::uint8_t{1});
-  }
+  thrust::fill(exec, active_a.begin(), active_a.end(), std::uint8_t{1});
   if constexpr (key_layout::uses_full_width) {
     thrust::fill(exec, run_byte_state.begin(), run_byte_state.end(), size_type{0});
   }
 
-  auto* current_indices            = indices_a.data();
-  auto* other_indices              = indices_b.data();
-  auto* current_begins             = begins_a.data();
-  auto* current_ends               = ends_a.data();
-  auto* next_begins                = begins_b.data();
-  auto* next_ends                  = ends_b.data();
-  auto* current_destination_begins = destination_begins_a.data();
-  auto* next_destination_begins    = destination_begins_b.data();
-  auto* active                     = active_a.data();
-  auto* next_active                = active_b.data();
-  auto const config                = cudf::detail::grid_1d{valid_size, 256};
-  auto cub_temp_storage            = rmm::device_buffer{};
+  auto* current_indices = indices_a.data();
+  auto* other_indices   = indices_b.data();
+  auto* current_begins  = begins_a.data();
+  auto* current_ends    = ends_a.data();
+  auto* next_begins     = begins_b.data();
+  auto* next_ends       = ends_b.data();
+  auto* active          = active_a.data();
+  auto* next_active     = active_b.data();
+  auto const config     = cudf::detail::grid_1d{valid_size, 256};
+  auto cub_temp_storage = rmm::device_buffer{};
   size_type num_segments{1};
   // This counts algorithm-visible workspace allocations rather than upstream pool growth. It makes
   // stage-to-stage buffer lifetime changes observable without replacing the caller's memory
   // resource.
-  auto allocation_count =
-    size_type{24 + (tuning.compact_radix ? 2 : 0) + (key_layout::uses_full_width ? 1 : 0) +
-              (known_prefix ? 1 : 0) + (null_indices.size() > 0 ? 1 : 0)};
+  auto allocation_count = size_type{24 + (key_layout::uses_full_width ? 1 : 0) +
+                                    (known_prefix ? 1 : 0) + (null_indices.size() > 0 ? 1 : 0)};
 
-  if (!tuning.compact_radix) {
-    for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
-      auto active_rows = size_type{-1};
-      if (tuning.trace) {
-        active_rows =
-          static_cast<size_type>(thrust::count(exec, active, active + valid_size, std::uint8_t{1}));
-        ++trace_readbacks;
-      }
-      thrust::fill(exec, segment_starts.begin(), segment_starts.end(), std::uint8_t{0});
-      thrust::fill(exec, segment_ends_at.begin(), segment_ends_at.end(), std::uint8_t{0});
-      thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
-      thrust::fill(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{0});
-      thrust::fill(exec, run_begins.begin(), run_begins.end(), invalid_index);
-      thrust::fill(exec, run_ends.begin(), run_ends.end(), invalid_index);
-      thrust::fill(exec, next_begins, next_begins + valid_size, valid_size);
-      thrust::fill(exec, next_ends, next_ends + valid_size, valid_size);
+  for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
+    auto active_rows = size_type{-1};
+    if (tuning.trace) {
+      active_rows =
+        static_cast<size_type>(thrust::count(exec, active, active + valid_size, std::uint8_t{1}));
+      ++trace_readbacks;
+    }
+    thrust::fill(exec, segment_starts.begin(), segment_starts.end(), std::uint8_t{0});
+    thrust::fill(exec, segment_ends_at.begin(), segment_ends_at.end(), std::uint8_t{0});
+    thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
+    thrust::fill(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{0});
+    thrust::fill(exec, run_begins.begin(), run_begins.end(), invalid_index);
+    thrust::fill(exec, run_ends.begin(), run_ends.end(), invalid_index);
+    thrust::fill(exec, next_begins, next_begins + valid_size, valid_size);
+    thrust::fill(exec, next_ends, next_ends + valid_size, valid_size);
 
-      make_keys<bytes_per_pass>
-        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-          *strings,
-          current_indices,
-          active,
-          keys_in.data(),
-          valid_size,
-          pass * bytes_per_pass,
-          null_precedence);
-      CUDF_CUDA_TRY(cudaGetLastError());
-      CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-        other_indices, current_indices, sizeof(size_type) * valid_size, stream));
-      auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
-      segmented_radix_sort(keys_in.data(),
-                           keys_out.data(),
-                           current_indices,
-                           other_indices,
-                           valid_size,
-                           num_segments,
-                           current_begins,
-                           current_ends,
-                           ascending,
-                           cub_temp_storage,
-                           stream);
-      if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
-      std::swap(current_indices, other_indices);
+    make_keys<bytes_per_pass>
+      <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(*strings,
+                                                                             current_indices,
+                                                                             active,
+                                                                             keys_in.data(),
+                                                                             valid_size,
+                                                                             pass * bytes_per_pass,
+                                                                             null_precedence);
+    CUDF_CUDA_TRY(cudaGetLastError());
+    CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+      other_indices, current_indices, sizeof(size_type) * valid_size, stream));
+    auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
+    segmented_radix_sort(keys_in.data(),
+                         keys_out.data(),
+                         current_indices,
+                         other_indices,
+                         valid_size,
+                         num_segments,
+                         current_begins,
+                         current_ends,
+                         ascending,
+                         cub_temp_storage,
+                         stream);
+    if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
+    std::swap(current_indices, other_indices);
 
-      auto const segment_config = cudf::detail::grid_1d{num_segments, 256};
-      mark_segment_endpoints<<<segment_config.num_blocks,
-                               segment_config.num_threads_per_block,
-                               0,
-                               stream.get()>>>(
-        current_begins, current_ends, num_segments, segment_starts.data(), segment_ends_at.data());
-      mark_run_boundaries<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+    auto const segment_config = cudf::detail::grid_1d{num_segments, 256};
+    mark_segment_endpoints<<<segment_config.num_blocks,
+                             segment_config.num_threads_per_block,
+                             0,
+                             stream.get()>>>(
+      current_begins, current_ends, num_segments, segment_starts.data(), segment_ends_at.data());
+    mark_run_boundaries<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+      active,
+      segment_starts.data(),
+      segment_ends_at.data(),
+      keys_out.data(),
+      valid_size,
+      run_starts_at.data(),
+      run_ends_at.data());
+    CUDF_CUDA_TRY(cudaGetLastError());
+
+    thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
+    scatter_run_endpoints<bytes_per_pass>
+      <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+        *strings,
+        current_indices,
         active,
-        segment_starts.data(),
-        segment_ends_at.data(),
-        keys_out.data(),
-        valid_size,
         run_starts_at.data(),
-        run_ends_at.data());
-      CUDF_CUDA_TRY(cudaGetLastError());
-
-      thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
-      scatter_run_endpoints<bytes_per_pass>
-        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-          *strings,
-          current_indices,
-          active,
-          run_starts_at.data(),
-          run_ends_at.data(),
-          run_ids.data(),
-          valid_size,
-          pass * bytes_per_pass,
-          run_begins.data(),
-          run_ends.data(),
-          key_layout::uses_full_width ? run_byte_state.data() : nullptr);
-      auto run_count = size_type{-1};
-      if (tuning.trace) {
-        run_count = static_cast<size_type>(
-          thrust::count(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{1}));
-        ++trace_readbacks;
-      }
-      auto const last_pass   = pass + 1 == maximum_radix_passes;
-      auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
-      if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
-        auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
-        ++allocation_count;
-        auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
-        collect_rle_metrics<bytes_per_pass>
-          <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-            *strings,
-            current_indices,
-            active,
-            run_ids.data(),
-            run_begins.data(),
-            run_ends.data(),
-            valid_size,
-            tuning.rle_min_run_length,
-            sampling_stride,
-            pass * bytes_per_pass,
-            key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-            metrics.data());
-        auto const observed = metrics.value(stream);
-        ++synchronization_points;
-        auto const coverage = valid_size == 0 ? 0ULL : observed.covered_rows * 100 / valid_size;
-        auto const equality =
-          observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
-        detect_duplicates = coverage >= static_cast<unsigned>(tuning.rle_min_coverage_percent) &&
-                            equality >= static_cast<unsigned>(tuning.rle_min_equal_percent);
-        if (tuning.trace) {
-          std::fprintf(
-            stderr,
-            "segmented-string-sort adaptive-rle coverage=%llu equality=%llu samples=%llu "
-            "enabled=%d\n",
-            coverage,
-            equality,
-            observed.sampled_pairs,
-            detect_duplicates);
-        }
-      }
-      thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
-      if (detect_duplicates) {
-        mark_nonduplicate_runs<bytes_per_pass>
-          <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-            *strings,
-            current_indices,
-            active,
-            run_ids.data(),
-            run_begins.data(),
-            valid_size,
-            pass * bytes_per_pass,
-            key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-            run_starts_at.data());
-      }
-      // The positional start flags are no longer needed. Reuse their storage for mismatch markers,
-      // per-run next flags, and later compacted next-segment IDs.
-      classify_runs<bytes_per_pass>
-        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-          *strings,
-          current_indices,
-          keys_out.data(),
-          run_begins.data(),
-          run_ends.data(),
-          key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-          valid_size,
-          pass * bytes_per_pass,
-          last_pass,
-          detect_duplicates,
-          detect_duplicates ? run_starts_at.data() : nullptr,
-          comparison_threshold,
-          run_starts_at.data(),
-          final_begins.data(),
-          final_ends.data(),
-          known_prefix ? final_prefix_bytes.data() : nullptr,
-          task_begins.data(),
-          task_ends.data(),
-          counts.data());
-      update_active_runs<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-        active, run_ids.data(), run_starts_at.data(), valid_size, next_active);
-      thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
-      compact_next_segments<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-        run_begins.data(),
-        run_ends.data(),
-        run_starts_at.data(),
+        run_ends_at.data(),
         run_ids.data(),
         valid_size,
-        next_begins,
-        next_ends);
-      CUDF_CUDA_TRY(cudaGetLastError());
-
-      auto const needs_next_segment_count = pass + 1 < maximum_radix_passes;
-      if (needs_next_segment_count || tuning.trace) {
-        CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-          next_segment_count.data(), run_ids.data() + valid_size - 1, sizeof(size_type), stream));
-        auto const next_segments = next_segment_count.value(stream);
-        if (needs_next_segment_count) {
-          num_segments = next_segments;
-          ++synchronization_points;
-        } else {
-          ++trace_readbacks;
-        }
-        if (tuning.trace) {
-          std::fprintf(stderr,
-                       "segmented-string-sort pass=%d active-rows=%d runs=%d next-runs=%d\n",
-                       pass,
-                       active_rows,
-                       run_count,
-                       next_segments);
-        }
-      }
-
-      std::swap(current_begins, next_begins);
-      std::swap(current_ends, next_ends);
-      std::swap(active, next_active);
+        pass * bytes_per_pass,
+        run_begins.data(),
+        run_ends.data(),
+        key_layout::uses_full_width ? run_byte_state.data() : nullptr);
+    auto run_count = size_type{-1};
+    if (tuning.trace) {
+      run_count = static_cast<size_type>(
+        thrust::count(exec, run_ends_at.begin(), run_ends_at.end(), std::uint8_t{1}));
+      ++trace_readbacks;
     }
-  } else {
-    auto active_size       = valid_size;
-    auto refinement_counts = cudf::detail::device_scalar<dense_refinement_counts>(
-      dense_refinement_counts{}, stream, temp_mr);
-    ++allocation_count;
-    for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
-      auto const pass_active_size = active_size;
-      auto const dense_config     = cudf::detail::grid_1d{pass_active_size, 256};
-      thrust::fill_n(exec, segment_starts.begin(), active_size, std::uint8_t{0});
-      thrust::fill_n(exec, segment_ends_at.begin(), active_size, std::uint8_t{0});
-      thrust::fill_n(exec, run_starts_at.begin(), active_size, size_type{0});
-      thrust::fill_n(exec, run_ends_at.begin(), active_size, std::uint8_t{0});
-      thrust::fill_n(exec, run_begins.begin(), active_size, invalid_index);
-      thrust::fill_n(exec, run_ends.begin(), active_size, invalid_index);
-
-      make_keys<bytes_per_pass>
-        <<<dense_config.num_blocks, dense_config.num_threads_per_block, 0, stream.get()>>>(
+    auto const last_pass   = pass + 1 == maximum_radix_passes;
+    auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
+    if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
+      auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
+      ++allocation_count;
+      auto const sampling_stride = std::max<size_type>(1, (valid_size + 4095) / 4096);
+      collect_rle_metrics<bytes_per_pass>
+        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
           *strings,
           current_indices,
-          nullptr,
-          keys_in.data(),
-          active_size,
-          pass * bytes_per_pass,
-          null_precedence);
-      auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
-      segmented_radix_sort(keys_in.data(),
-                           keys_out.data(),
-                           current_indices,
-                           other_indices,
-                           active_size,
-                           num_segments,
-                           current_begins,
-                           current_ends,
-                           ascending,
-                           cub_temp_storage,
-                           stream);
-      if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
-      std::swap(current_indices, other_indices);
-
-      auto const segment_config = cudf::detail::grid_1d{num_segments, 256};
-      mark_segment_endpoints<<<segment_config.num_blocks,
-                               segment_config.num_threads_per_block,
-                               0,
-                               stream.get()>>>(
-        current_begins, current_ends, num_segments, segment_starts.data(), segment_ends_at.data());
-      mark_run_boundaries<<<dense_config.num_blocks,
-                            dense_config.num_threads_per_block,
-                            0,
-                            stream.get()>>>(nullptr,
-                                            segment_starts.data(),
-                                            segment_ends_at.data(),
-                                            keys_out.data(),
-                                            active_size,
-                                            run_starts_at.data(),
-                                            run_ends_at.data());
-      thrust::inclusive_scan(
-        exec, run_starts_at.begin(), run_starts_at.begin() + active_size, run_ids.begin());
-      scatter_run_endpoints<bytes_per_pass>
-        <<<dense_config.num_blocks, dense_config.num_threads_per_block, 0, stream.get()>>>(
-          *strings,
-          current_indices,
-          nullptr,
-          run_starts_at.data(),
-          run_ends_at.data(),
+          active,
           run_ids.data(),
-          active_size,
-          pass * bytes_per_pass,
           run_begins.data(),
           run_ends.data(),
-          key_layout::uses_full_width ? run_byte_state.data() : nullptr);
-
-      auto const last_pass   = pass + 1 == maximum_radix_passes;
-      auto detect_duplicates = last_pass && tuning.rle_policy == segmented_rle_policy::ALWAYS;
-      if (last_pass && tuning.rle_policy == segmented_rle_policy::ADAPTIVE) {
-        auto metrics = cudf::detail::device_scalar<rle_metrics>(rle_metrics{}, stream, temp_mr);
-        ++allocation_count;
-        auto const sampling_stride = std::max<size_type>(1, (active_size + 4095) / 4096);
-        collect_rle_metrics<bytes_per_pass>
-          <<<dense_config.num_blocks, dense_config.num_threads_per_block, 0, stream.get()>>>(
-            *strings,
-            current_indices,
-            nullptr,
-            run_ids.data(),
-            run_begins.data(),
-            run_ends.data(),
-            active_size,
-            tuning.rle_min_run_length,
-            sampling_stride,
-            pass * bytes_per_pass,
-            key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-            metrics.data());
-        auto const observed = metrics.value(stream);
-        ++synchronization_points;
-        auto const coverage = active_size == 0 ? 0ULL : observed.covered_rows * 100 / active_size;
-        auto const equality =
-          observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
-        detect_duplicates = coverage >= static_cast<unsigned>(tuning.rle_min_coverage_percent) &&
-                            equality >= static_cast<unsigned>(tuning.rle_min_equal_percent);
+          valid_size,
+          tuning.rle_min_run_length,
+          sampling_stride,
+          pass * bytes_per_pass,
+          key_layout::uses_full_width ? run_byte_state.data() : nullptr,
+          metrics.data());
+      auto const observed = metrics.value(stream);
+      ++synchronization_points;
+      auto const coverage = valid_size == 0 ? 0ULL : observed.covered_rows * 100 / valid_size;
+      auto const equality =
+        observed.sampled_pairs == 0 ? 0ULL : observed.equal_pairs * 100 / observed.sampled_pairs;
+      detect_duplicates = coverage >= static_cast<unsigned>(tuning.rle_min_coverage_percent) &&
+                          equality >= static_cast<unsigned>(tuning.rle_min_equal_percent);
+      if (tuning.trace) {
+        std::fprintf(stderr,
+                     "segmented-string-sort adaptive-rle coverage=%llu equality=%llu samples=%llu "
+                     "enabled=%d\n",
+                     coverage,
+                     equality,
+                     observed.sampled_pairs,
+                     detect_duplicates);
       }
-
-      auto run_has_mismatch = rmm::device_uvector<size_type>(
-        detect_duplicates ? active_size : size_type{0}, stream, temp_mr);
-      if (detect_duplicates) {
-        ++allocation_count;
-        thrust::fill(exec, run_has_mismatch.begin(), run_has_mismatch.end(), size_type{0});
-        mark_nonduplicate_runs<bytes_per_pass>
-          <<<dense_config.num_blocks, dense_config.num_threads_per_block, 0, stream.get()>>>(
-            *strings,
-            current_indices,
-            nullptr,
-            run_ids.data(),
-            run_begins.data(),
-            active_size,
-            pass * bytes_per_pass,
-            key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-            run_has_mismatch.data());
-      }
-
-      map_dense_destinations<<<num_segments, 256, 0, stream.get()>>>(
-        current_begins,
-        current_ends,
-        current_destination_begins,
-        num_segments,
-        destination_for_position.data());
-      scatter_dense_rows<<<dense_config.num_blocks,
-                           dense_config.num_threads_per_block,
-                           0,
-                           stream.get()>>>(
-        current_indices, destination_for_position.data(), active_size, permutation.data());
-      thrust::fill_n(exec, run_starts_at.begin(), active_size, invalid_index);
-      refinement_counts.set_value_to_zero_async(stream);
-      classify_dense_runs<bytes_per_pass>
-        <<<dense_config.num_blocks, dense_config.num_threads_per_block, 0, stream.get()>>>(
+    }
+    thrust::fill(exec, run_starts_at.begin(), run_starts_at.end(), size_type{0});
+    if (detect_duplicates) {
+      mark_nonduplicate_runs<bytes_per_pass>
+        <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
           *strings,
           current_indices,
-          keys_out.data(),
+          active,
+          run_ids.data(),
           run_begins.data(),
-          run_ends.data(),
-          key_layout::uses_full_width ? run_byte_state.data() : nullptr,
-          destination_for_position.data(),
-          active_size,
+          valid_size,
           pass * bytes_per_pass,
-          last_pass,
-          detect_duplicates,
-          detect_duplicates ? run_has_mismatch.data() : nullptr,
-          comparison_threshold,
-          run_starts_at.data(),
-          next_begins,
-          next_ends,
-          next_destination_begins,
-          refinement_counts.data(),
-          final_begins.data(),
-          final_ends.data(),
-          known_prefix ? final_prefix_bytes.data() : nullptr,
-          task_begins.data(),
-          task_ends.data(),
-          counts.data());
-      compact_dense_rows<<<dense_config.num_blocks,
-                           dense_config.num_threads_per_block,
-                           0,
-                           stream.get()>>>(current_indices,
-                                           run_ids.data(),
-                                           run_begins.data(),
-                                           run_starts_at.data(),
-                                           active_size,
-                                           other_indices);
-      CUDF_CUDA_TRY(cudaGetLastError());
-
-      auto const needs_next_segment_count = pass + 1 < maximum_radix_passes;
-      if (needs_next_segment_count || tuning.trace) {
-        auto const next = refinement_counts.value(stream);
-        if (needs_next_segment_count) {
-          num_segments = next.segments;
-          active_size  = next.rows;
-          ++synchronization_points;
-        } else {
-          ++trace_readbacks;
-        }
-        if (tuning.trace) {
-          std::fprintf(stderr,
-                       "segmented-string-sort pass=%d active-rows=%d next-rows=%d next-runs=%d\n",
-                       pass,
-                       pass_active_size,
-                       next.rows,
-                       next.segments);
-        }
-      }
-
-      std::swap(current_indices, other_indices);
-      std::swap(current_begins, next_begins);
-      std::swap(current_ends, next_ends);
-      std::swap(current_destination_begins, next_destination_begins);
+          key_layout::uses_full_width ? run_byte_state.data() : nullptr,
+          run_starts_at.data());
     }
-    current_indices = permutation.data();
+    // The positional start flags are no longer needed. Reuse their storage for mismatch markers,
+    // per-run next flags, and later compacted next-segment IDs.
+    classify_runs<bytes_per_pass>
+      <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+        *strings,
+        current_indices,
+        keys_out.data(),
+        run_begins.data(),
+        run_ends.data(),
+        key_layout::uses_full_width ? run_byte_state.data() : nullptr,
+        valid_size,
+        pass * bytes_per_pass,
+        last_pass,
+        detect_duplicates,
+        detect_duplicates ? run_starts_at.data() : nullptr,
+        comparison_threshold,
+        run_starts_at.data(),
+        final_begins.data(),
+        final_ends.data(),
+        known_prefix ? final_prefix_bytes.data() : nullptr,
+        task_begins.data(),
+        task_ends.data(),
+        counts.data());
+    update_active_runs<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+      active, run_ids.data(), run_starts_at.data(), valid_size, next_active);
+    thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
+    compact_next_segments<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+      run_begins.data(),
+      run_ends.data(),
+      run_starts_at.data(),
+      run_ids.data(),
+      valid_size,
+      next_begins,
+      next_ends);
+    CUDF_CUDA_TRY(cudaGetLastError());
+
+    auto const needs_next_segment_count = pass + 1 < maximum_radix_passes;
+    if (needs_next_segment_count || tuning.trace) {
+      CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+        next_segment_count.data(), run_ids.data() + valid_size - 1, sizeof(size_type), stream));
+      auto const next_segments = next_segment_count.value(stream);
+      if (needs_next_segment_count) {
+        num_segments = next_segments;
+        ++synchronization_points;
+      } else {
+        ++trace_readbacks;
+      }
+      if (tuning.trace) {
+        std::fprintf(stderr,
+                     "segmented-string-sort pass=%d active-rows=%d runs=%d next-runs=%d\n",
+                     pass,
+                     active_rows,
+                     run_count,
+                     next_segments);
+      }
+    }
+
+    std::swap(current_begins, next_begins);
+    std::swap(current_ends, next_ends);
+    std::swap(active, next_active);
   }
 
   // Transfer the finish launch metadata together after refinement.

@@ -48,6 +48,7 @@ namespace cudf::detail {
 namespace segmented_string_sort {
 
 constexpr size_type block_sort_size         = 256;
+constexpr size_type comparison_chunk_size   = 512;
 constexpr size_type invalid_index           = -1;
 constexpr size_type shuffle_block_size      = 256;
 constexpr size_type strings_per_shuffle_cta = 2048;
@@ -72,6 +73,7 @@ struct radix_key_layout {
 struct finish_counts {
   size_type segments{};
   size_type rows{};
+  // Retained until the obsolete derivative finishing kernels are removed in the cleanup stage.
   size_type block_tasks{};
   size_type maximum_segment_size{};
 };
@@ -168,8 +170,6 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
                                     size_type* final_begins,
                                     size_type* final_ends,
                                     size_type* final_prefix_bytes,
-                                    size_type* task_begins,
-                                    size_type* task_ends,
                                     refinement_counts* refinement,
                                     finish_counts* finish)
 {
@@ -216,14 +216,6 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   final_ends[slot]         = end;
   final_prefix_bytes[slot] = proven_prefix;
   atomicAdd(&finish->rows, end - begin);
-  atomicMax(&finish->maximum_segment_size, end - begin);
-  if (end - begin > radix_run_min) {
-    for (auto task_begin = begin; task_begin < end; task_begin += block_sort_size) {
-      auto const task_slot   = atomicAdd(&finish->block_tasks, size_type{1});
-      task_begins[task_slot] = task_begin;
-      task_ends[task_slot]   = min(task_begin + block_sort_size, end);
-    }
-  }
 }
 
 CUDF_KERNEL void mark_active_segments(size_type const* begins,
@@ -720,6 +712,191 @@ __device__ bool stable_less(size_type lhs, size_type rhs, Comparator comparator)
 }
 
 template <typename Comparator>
+__device__ bool stable_string_less(size_type lhs,
+                                   size_type rhs,
+                                   size_type known_prefix_bytes,
+                                   Comparator comparator)
+{
+  if (lhs == invalid_index) { return false; }
+  if (rhs == invalid_index) { return true; }
+  auto const left_value  = comparator.d_column.template element<string_view>(lhs);
+  auto const right_value = comparator.d_column.template element<string_view>(rhs);
+  auto const left        = string_view{left_value.data() + known_prefix_bytes,
+                                left_value.size_bytes() - known_prefix_bytes};
+  auto const right       = string_view{right_value.data() + known_prefix_bytes,
+                                 right_value.size_bytes() - known_prefix_bytes};
+  if (left != right) { return comparator.ascending ? left < right : right < left; }
+  return lhs < rhs;
+}
+
+CUDF_KERNEL void compute_finish_chunk_counts(size_type const* final_begins,
+                                             size_type const* final_ends,
+                                             size_type num_segments,
+                                             size_type* chunk_counts)
+{
+  auto const segment = cudf::detail::grid_1d::global_thread_id();
+  if (segment >= num_segments) { return; }
+  auto const length     = final_ends[segment] - final_begins[segment];
+  chunk_counts[segment] = (length + comparison_chunk_size - 1) / comparison_chunk_size;
+}
+
+CUDF_KERNEL void compute_total_finish_chunks(size_type const* chunk_offsets,
+                                             size_type const* chunk_counts,
+                                             size_type num_segments,
+                                             size_type* total_chunks)
+{
+  if (blockIdx.x == 0 && threadIdx.x == 0) {
+    *total_chunks = chunk_offsets[num_segments - 1] + chunk_counts[num_segments - 1];
+  }
+}
+
+CUDF_KERNEL void expand_finish_chunks(size_type const* final_begins,
+                                      size_type const* final_ends,
+                                      size_type const* final_prefix_bytes,
+                                      size_type const* chunk_offsets,
+                                      size_type num_segments,
+                                      size_type* chunk_begins,
+                                      size_type* chunk_sizes,
+                                      size_type* chunk_run_offsets,
+                                      size_type* chunk_run_counts,
+                                      size_type* chunk_prefix_bytes)
+{
+  auto const segment = cudf::detail::grid_1d::global_thread_id();
+  if (segment >= num_segments) { return; }
+  auto const run_begin   = final_begins[segment];
+  auto const run_length  = final_ends[segment] - run_begin;
+  auto const run_offset  = chunk_offsets[segment];
+  auto const chunk_count = (run_length + comparison_chunk_size - 1) / comparison_chunk_size;
+  for (size_type chunk = 0; chunk < chunk_count; ++chunk) {
+    auto const slot          = run_offset + chunk;
+    auto const begin         = run_begin + chunk * comparison_chunk_size;
+    chunk_begins[slot]       = begin;
+    chunk_sizes[slot]        = min(comparison_chunk_size, final_ends[segment] - begin);
+    chunk_run_offsets[slot]  = run_offset;
+    chunk_run_counts[slot]   = chunk_count;
+    chunk_prefix_bytes[slot] = final_prefix_bytes[segment];
+  }
+}
+
+CUDF_KERNEL void map_final_prefixes(size_type const* final_begins,
+                                    size_type const* final_ends,
+                                    size_type const* final_prefix_bytes,
+                                    size_type num_segments,
+                                    size_type const* indices,
+                                    size_type* known_prefix_by_row)
+{
+  auto const segment = static_cast<size_type>(blockIdx.x);
+  if (segment >= num_segments) { return; }
+  for (auto position = final_begins[segment] + static_cast<size_type>(threadIdx.x);
+       position < final_ends[segment];
+       position += static_cast<size_type>(blockDim.x)) {
+    known_prefix_by_row[indices[position]] = final_prefix_bytes[segment];
+  }
+}
+
+template <typename Comparator>
+CUDF_KERNEL __launch_bounds__(comparison_chunk_size, 1) void bitonic_sort_finish_chunks(
+  size_type const* input,
+  size_type* sorted_chunks,
+  size_type const* chunk_begins,
+  size_type const* chunk_sizes,
+  size_type const* chunk_prefix_bytes,
+  Comparator comparator)
+{
+  __shared__ size_type values[comparison_chunk_size];
+  auto const chunk              = static_cast<size_type>(blockIdx.x);
+  auto const lane               = static_cast<size_type>(threadIdx.x);
+  auto const begin              = chunk_begins[chunk];
+  auto const length             = chunk_sizes[chunk];
+  auto const known_prefix_bytes = chunk_prefix_bytes[chunk];
+  values[lane]                  = lane < length ? input[begin + lane] : invalid_index;
+  __syncthreads();
+
+  auto sort_size = comparison_chunk_size;
+  if (length < comparison_chunk_size) {
+    sort_size = length - 1;
+    sort_size |= sort_size >> 1;
+    sort_size |= sort_size >> 2;
+    sort_size |= sort_size >> 4;
+    sort_size |= sort_size >> 8;
+    sort_size |= sort_size >> 16;
+    ++sort_size;
+  }
+  for (size_type sequence = 2; sequence <= sort_size; sequence <<= 1) {
+    for (size_type stride = sequence >> 1; stride > 0; stride >>= 1) {
+      auto const peer = lane ^ stride;
+      if (lane < sort_size && peer > lane) {
+        auto const ascending_network = (lane & sequence) == 0;
+        auto const should_swap =
+          ascending_network
+            ? stable_string_less(values[peer], values[lane], known_prefix_bytes, comparator)
+            : stable_string_less(values[lane], values[peer], known_prefix_bytes, comparator);
+        if (should_swap) {
+          auto const temporary = values[lane];
+          values[lane]         = values[peer];
+          values[peer]         = temporary;
+        }
+      }
+      __syncthreads();
+    }
+  }
+  if (lane < length) { sorted_chunks[begin + lane] = values[lane]; }
+}
+
+template <typename Comparator>
+CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
+                              1) void merge_all_sibling_chunks(size_type* output,
+                                                               size_type const* sorted_chunks,
+                                                               size_type const* chunk_begins,
+                                                               size_type const* chunk_sizes,
+                                                               size_type const* chunk_run_offsets,
+                                                               size_type const* chunk_run_counts,
+                                                               size_type const* chunk_prefix_bytes,
+                                                               Comparator comparator)
+{
+  __shared__ size_type sibling_values[comparison_chunk_size];
+  auto const chunk              = static_cast<size_type>(blockIdx.x);
+  auto const lane               = static_cast<size_type>(threadIdx.x);
+  auto const begin              = chunk_begins[chunk];
+  auto const length             = chunk_sizes[chunk];
+  auto const run_offset         = chunk_run_offsets[chunk];
+  auto const chunk_count        = chunk_run_counts[chunk];
+  auto const known_prefix_bytes = chunk_prefix_bytes[chunk];
+  auto const local_chunk        = chunk - run_offset;
+  auto const active             = lane < length;
+  auto const value              = active ? sorted_chunks[begin + lane] : invalid_index;
+  auto rank                     = lane;
+
+  for (size_type sibling = 0; sibling < chunk_count; ++sibling) {
+    if (sibling == local_chunk) { continue; }
+    __syncthreads();
+    auto const sibling_slot   = run_offset + sibling;
+    auto const sibling_begin  = chunk_begins[sibling_slot];
+    auto const sibling_length = chunk_sizes[sibling_slot];
+    sibling_values[lane] =
+      lane < sibling_length ? sorted_chunks[sibling_begin + lane] : invalid_index;
+    __syncthreads();
+    if (!active) { continue; }
+
+    // The original row index makes the comparison a strict total order. The resulting lower-bound
+    // rank is equivalent to the source's earlier-chunk upper/later-chunk lower bounds while also
+    // preserving stability if radix refinement has rearranged equal rows across chunk boundaries.
+    auto lower = size_type{0};
+    auto upper = sibling_length;
+    while (lower < upper) {
+      auto const middle = lower + (upper - lower) / 2;
+      if (stable_string_less(sibling_values[middle], value, known_prefix_bytes, comparator)) {
+        lower = middle + 1;
+      } else {
+        upper = middle;
+      }
+    }
+    rank += lower;
+  }
+  if (active) { output[chunk_begins[run_offset] + rank] = value; }
+}
+
+template <typename Comparator>
 CUDF_KERNEL void finish_small_segments(size_type* indices,
                                        size_type const* final_begins,
                                        size_type const* final_ends,
@@ -977,11 +1154,10 @@ void sorted_order(column_view const& input,
     thrust::sequence(exec, indices_a.begin(), indices_a.end(), 0);
   }
 
-  auto const maximum_radix_passes     = static_cast<size_type>(tuning.lexic_precision);
-  auto synchronization_points         = size_type{0};
-  auto trace_readbacks                = size_type{0};
-  auto const radix_run_min            = static_cast<size_type>(tuning.radix_run_min);
-  constexpr auto comparison_threshold = size_type{512};
+  auto const maximum_radix_passes = static_cast<size_type>(tuning.lexic_precision);
+  auto synchronization_points     = size_type{0};
+  auto trace_readbacks            = size_type{0};
+  auto const radix_run_min        = static_cast<size_type>(tuning.radix_run_min);
   if (tuning.trace) {
     std::fprintf(stderr,
                  "segmented-string-sort bytes=%d precision=%d radix-run-min=%d "
@@ -1007,16 +1183,14 @@ void sorted_order(column_view const& input,
   auto run_begins = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
   auto run_ends   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
 
-  // Every recorded final segment and block task contains at least two rows, so half the row count
-  // is a tight upper bound for each collection.
+  // Every recorded final segment contains at least two rows, so half the row count is a tight
+  // upper bound.
   auto const maximum_finish_items = (valid_size + 1) / 2;
   auto final_begins       = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
   auto final_ends         = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
   auto final_prefix_bytes = rmm::device_uvector<size_type>(
     known_prefix ? maximum_finish_items : size_type{0}, stream, temp_mr);
-  auto task_begins = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto task_ends   = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto counts      = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
+  auto counts = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
   auto refinement =
     cudf::detail::device_scalar<refinement_counts>(refinement_counts{}, stream, temp_mr);
 
@@ -1144,8 +1318,6 @@ void sorted_order(column_view const& input,
                                                       final_begins.data(),
                                                       final_ends.data(),
                                                       final_prefix_bytes.data(),
-                                                      task_begins.data(),
-                                                      task_ends.data(),
                                                       refinement.data(),
                                                       counts.data());
       };
@@ -1188,71 +1360,70 @@ void sorted_order(column_view const& input,
   // Transfer the finish launch metadata together after refinement.
   auto const finish = counts.value(stream);
   ++synchronization_points;
-  auto known_prefix_by_row = rmm::device_uvector<size_type>(
-    known_prefix && finish.segments > 0 ? size : size_type{0}, stream, temp_mr);
-  allocation_count += known_prefix_by_row.size() > 0 ? 1 : 0;
-  auto merge_levels = size_type{0};
-  if (known_prefix_by_row.size() != 0) {
-    thrust::fill(exec, known_prefix_by_row.begin(), known_prefix_by_row.end(), size_type{0});
-    if constexpr (known_prefix) {
-      comparator.transform.known_prefix_bytes = known_prefix_by_row.data();
-    }
-  }
+  auto total_chunks = size_type{0};
   if (finish.segments > 0) {
-    auto final_begin_for_position = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-    auto final_end_for_position   = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-    allocation_count += 2;
-    thrust::fill(
-      exec, final_begin_for_position.begin(), final_begin_for_position.end(), invalid_index);
-    thrust::fill(exec, final_end_for_position.begin(), final_end_for_position.end(), invalid_index);
-    map_final_segments<<<finish.segments, 256, 0, stream.get()>>>(
-      final_begins.data(),
-      final_ends.data(),
-      known_prefix ? final_prefix_bytes.data() : nullptr,
-      finish.segments,
-      current_indices,
-      final_begin_for_position.data(),
-      final_end_for_position.data(),
-      known_prefix_by_row.data());
+    auto chunk_counts       = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
+    auto chunk_offsets      = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
+    auto const chunk_config = cudf::detail::grid_1d{finish.segments, 256};
+    compute_finish_chunk_counts<<<chunk_config.num_blocks,
+                                  chunk_config.num_threads_per_block,
+                                  0,
+                                  stream.get()>>>(
+      final_begins.data(), final_ends.data(), finish.segments, chunk_counts.data());
+    thrust::exclusive_scan(
+      exec, chunk_counts.begin(), chunk_counts.end(), chunk_offsets.begin(), size_type{0});
+    auto device_total_chunks =
+      cudf::detail::device_scalar<size_type>(size_type{0}, stream, temp_mr);
+    compute_total_finish_chunks<<<1, 1, 0, stream.get()>>>(
+      chunk_offsets.data(), chunk_counts.data(), finish.segments, device_total_chunks.data());
+    total_chunks = device_total_chunks.value(stream);
+    ++synchronization_points;
 
-    auto const finish_config = cudf::detail::grid_1d{finish.segments, 128};
-    finish_small_segments<<<finish_config.num_blocks,
-                            finish_config.num_threads_per_block,
-                            0,
-                            stream.get()>>>(current_indices,
-                                            final_begins.data(),
-                                            final_ends.data(),
-                                            finish.segments,
-                                            comparison_threshold,
-                                            comparator);
-    if (finish.block_tasks > 0) {
-      block_sort_tasks<<<finish.block_tasks, block_sort_size, 0, stream.get()>>>(
-        current_indices, task_begins.data(), task_ends.data(), finish.block_tasks, comparator);
-      for (std::int64_t width = block_sort_size; width < finish.maximum_segment_size; width *= 2) {
-        ++merge_levels;
-        merge_sorted_blocks<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-          current_indices,
-          other_indices,
-          final_begin_for_position.data(),
-          final_end_for_position.data(),
-          valid_size,
-          width,
-          comparison_threshold,
-          comparator);
-        std::swap(current_indices, other_indices);
-      }
-    }
+    auto chunk_begins       = rmm::device_uvector<size_type>(total_chunks, stream, temp_mr);
+    auto chunk_sizes        = rmm::device_uvector<size_type>(total_chunks, stream, temp_mr);
+    auto chunk_run_offsets  = rmm::device_uvector<size_type>(total_chunks, stream, temp_mr);
+    auto chunk_run_counts   = rmm::device_uvector<size_type>(total_chunks, stream, temp_mr);
+    auto chunk_prefix_bytes = rmm::device_uvector<size_type>(total_chunks, stream, temp_mr);
+    allocation_count += 8;
+    expand_finish_chunks<<<chunk_config.num_blocks,
+                           chunk_config.num_threads_per_block,
+                           0,
+                           stream.get()>>>(final_begins.data(),
+                                           final_ends.data(),
+                                           final_prefix_bytes.data(),
+                                           chunk_offsets.data(),
+                                           finish.segments,
+                                           chunk_begins.data(),
+                                           chunk_sizes.data(),
+                                           chunk_run_offsets.data(),
+                                           chunk_run_counts.data(),
+                                           chunk_prefix_bytes.data());
+    bitonic_sort_finish_chunks<<<total_chunks, comparison_chunk_size, 0, stream.get()>>>(
+      current_indices,
+      other_indices,
+      chunk_begins.data(),
+      chunk_sizes.data(),
+      chunk_prefix_bytes.data(),
+      comparator);
+    merge_all_sibling_chunks<<<total_chunks, comparison_chunk_size, 0, stream.get()>>>(
+      current_indices,
+      other_indices,
+      chunk_begins.data(),
+      chunk_sizes.data(),
+      chunk_run_offsets.data(),
+      chunk_run_counts.data(),
+      chunk_prefix_bytes.data(),
+      comparator);
     CUDF_CUDA_TRY(cudaGetLastError());
   }
 
   if (tuning.trace) {
     std::fprintf(stderr,
-                 "segmented-string-sort finish-segments=%d finish-rows=%d block-tasks=%d "
-                 "merge-levels=%d allocations=%d sync-points=%d trace-readbacks=%d\n",
+                 "segmented-string-sort finish-segments=%d finish-rows=%d chunks=%d "
+                 "allocations=%d sync-points=%d trace-readbacks=%d\n",
                  finish.segments,
                  finish.rows,
-                 finish.block_tasks,
-                 merge_levels,
+                 total_chunks,
                  allocation_count,
                  synchronization_points,
                  trace_readbacks);

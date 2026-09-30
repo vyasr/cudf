@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -281,8 +282,34 @@ std::unique_ptr<cudf::column> make_diagnostic_input(cudf::size_type num_rows,
 std::unique_ptr<cudf::column> make_source_parity_input(cudf::size_type num_rows,
                                                        std::string const& profile_name)
 {
+  auto strings                 = std::vector<std::string>(static_cast<std::size_t>(num_rows));
+  auto const raw_duplicates    = profile_name == "raw_duplicates_40";
+  auto const raw_shared_prefix = profile_name == "raw_shared_prefix_24_width_40";
+  if (raw_duplicates || raw_shared_prefix || profile_name == "raw_unique_40") {
+    constexpr cudf::size_type width = 40;
+    std::mt19937 random(seed);
+    auto dictionary = std::vector<std::string>(64, std::string(width, '\0'));
+    // Matching the harness's RNG consumption makes these inputs byte-identical to its corpora,
+    // rather than replacing prefix collisions with a different nominally equivalent distribution.
+    for (auto& value : dictionary) {
+      for (auto& byte : value) {
+        byte = static_cast<char>(1 + random() % 255);
+      }
+    }
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      auto& value = strings[static_cast<std::size_t>(row)];
+      if (raw_duplicates) {
+        value = dictionary[static_cast<std::size_t>(row) % dictionary.size()];
+      } else {
+        value = std::string(width, 'p');
+        for (cudf::size_type byte = raw_shared_prefix ? 24 : 0; byte < width; ++byte) {
+          value[static_cast<std::size_t>(byte)] = static_cast<char>(1 + random() % 255);
+        }
+      }
+    }
+    return cudf::test::strings_column_wrapper(strings.begin(), strings.end()).release();
+  }
   constexpr cudf::size_type width = 32;
-  auto strings                    = std::vector<std::string>(static_cast<std::size_t>(num_rows));
   for (cudf::size_type row = 0; row < num_rows; ++row) {
     auto const token = fixed_width_token(static_cast<std::uint64_t>(row), width);
     if (profile_name == "unique_32") {
@@ -517,4 +544,10 @@ static void bench_sorted_order_strings_source_parity(nvbench::state& state)
 NVBENCH_BENCH(bench_sorted_order_strings_source_parity)
   .set_name("sorted_order_strings_source_parity")
   .add_int64_axis("num_rows", {262144, 2097152})
-  .add_string_axis("profile", {"unique_32", "duplicates_32", "shared_prefix_24"});
+  .add_string_axis("profile",
+                   {"unique_32",
+                    "duplicates_32",
+                    "shared_prefix_24",
+                    "raw_unique_40",
+                    "raw_duplicates_40",
+                    "raw_shared_prefix_24_width_40"});

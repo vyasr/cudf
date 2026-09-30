@@ -97,17 +97,12 @@ struct combine_remaining_bounds {
   }
 };
 
-template <typename Offset>
 struct remaining_length {
-  Offset const* offsets;
-  size_type strings_offset;
-  size_type byte_offset;
+  std::uint8_t const* byte_counts;
 
   __device__ remaining_bounds operator()(size_type row) const
   {
-    auto const length =
-      static_cast<size_type>(offsets[strings_offset + row + 1] - offsets[strings_offset + row]);
-    auto const remaining = length > byte_offset ? length - byte_offset : size_type{0};
+    auto const remaining = static_cast<size_type>(byte_counts[row]);
     return {remaining, remaining};
   }
 };
@@ -155,8 +150,7 @@ __device__ inline bool find_containing_run(size_type position,
   return true;
 }
 
-template <typename Offset>
-CUDF_KERNEL void reduce_run_remaining_lengths(remaining_length<Offset> get_remaining,
+CUDF_KERNEL void reduce_run_remaining_lengths(remaining_length get_remaining,
                                               size_type const* indices,
                                               size_type size,
                                               size_type const* begins,
@@ -342,7 +336,8 @@ template <typename Offset>
 CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset const* offsets,
                                                                        char const* chars,
                                                                        size_type size,
-                                                                       std::uint64_t* keys)
+                                                                       std::uint64_t* keys,
+                                                                       std::uint8_t* byte_counts)
 {
   __shared__ __align__(16) Offset shared_offsets[strings_per_shuffle_cta + 1];
   __shared__ __align__(16) char shared_chars[shuffle_copy_bytes * shuffle_pipeline_stages];
@@ -400,7 +395,8 @@ CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset co
   auto key        = std::uint64_t{0};
   auto skip_empty = [&] {
     while (local_row < block_size && shared_offsets[local_row] == shared_offsets[local_row + 1]) {
-      keys[block_begin + local_row] = 0;
+      keys[block_begin + local_row]        = 0;
+      byte_counts[block_begin + local_row] = 0;
       local_row += static_cast<size_type>(blockDim.x);
     }
   };
@@ -440,6 +436,8 @@ CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset co
       }
       if (byte != key_size) { break; }
       keys[block_begin + local_row] = key << (8 * (8 - key_size));
+      byte_counts[block_begin + local_row] =
+        static_cast<std::uint8_t>(min(row_size, radix_prefix_bytes + 1));
       local_row += static_cast<size_type>(blockDim.x);
       byte = 0;
       key  = 0;
@@ -458,6 +456,7 @@ CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
                                       size_type const* run_ends,
                                       size_type num_runs,
                                       std::uint64_t* keys,
+                                      std::uint8_t* byte_counts,
                                       size_type size,
                                       size_type byte_offset)
 {
@@ -472,6 +471,7 @@ CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
   auto const row_begin = offsets[strings_offset + row];
   auto const row_end   = offsets[strings_offset + row + 1];
   auto const remaining = row_end - row_begin > byte_offset ? row_end - row_begin - byte_offset : 0;
+  byte_counts[row]     = static_cast<std::uint8_t>(min(Offset{radix_prefix_bytes + 1}, remaining));
   auto const key_size  = min(Offset{8}, remaining);
   auto key             = std::uint64_t{0};
   if (key_size == radix_prefix_bytes) {
@@ -838,8 +838,15 @@ void sorted_order(column_view const& input,
                  null_size);
   }
 
-  auto keys_in  = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
-  auto keys_out = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
+  // Extraction already knows each length. A clipped byte-count sidecar avoids random offset
+  // gathers after sorting; nine distinguishes a full nonterminal chunk from terminal lengths
+  // zero through eight. The unused tail of the key allocation survives radix and bounds reuse.
+  auto const sidecar_words =
+    (static_cast<std::size_t>(size) + sizeof(std::uint64_t) - 1) / sizeof(std::uint64_t);
+  auto keys_in = rmm::device_uvector<std::uint64_t>(
+    static_cast<std::size_t>(valid_size) + sidecar_words, stream, temp_mr);
+  auto keys_out     = rmm::device_uvector<std::uint64_t>(valid_size, stream, temp_mr);
+  auto* byte_counts = reinterpret_cast<std::uint8_t*>(keys_in.data() + valid_size);
 
   // Continuing runs contain at least radix_run_min rows; cutoff runs never enter these arrays.
   // Reserve one slot for the virtual first-pass run even on smaller inputs.
@@ -886,10 +893,11 @@ void sorted_order(column_view const& input,
     auto const launch_keys = [&]<typename Offset>() {
       auto const* typed_offsets = offsets.head<Offset>() + input.offset();
       if (pass == 0 && null_size == 0) {
-        make_first_keys<Offset><<<first_pass_config.num_blocks,
-                                  first_pass_config.num_threads_per_block,
-                                  0,
-                                  stream.get()>>>(typed_offsets, chars, valid_size, keys_in.data());
+        make_first_keys<Offset>
+          <<<first_pass_config.num_blocks,
+             first_pass_config.num_threads_per_block,
+             0,
+             stream.get()>>>(typed_offsets, chars, valid_size, keys_in.data(), byte_counts);
       } else {
         make_subsequent_keys<Offset>
           <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
@@ -901,6 +909,7 @@ void sorted_order(column_view const& input,
             current_ends,
             pass == 0 ? size_type{0} : num_segments,
             keys_in.data(),
+            byte_counts,
             valid_size,
             pass * radix_prefix_bytes);
       }
@@ -968,24 +977,17 @@ void sorted_order(column_view const& input,
       static_assert(sizeof(remaining_bounds) == sizeof(std::uint64_t));
       auto* bounds = reinterpret_cast<remaining_bounds*>(keys_in.data());
       thrust::fill_n(exec, bounds, candidate_count, remaining_bounds{});
-      auto const bounds_config  = cudf::detail::grid_1d{valid_size, 256, 4};
-      auto const reduce_lengths = [&]<typename Offset>() {
-        reduce_run_remaining_lengths<Offset>
-          <<<bounds_config.num_blocks, bounds_config.num_threads_per_block, 0, stream.get()>>>(
-            remaining_length<Offset>{
-              offsets.head<Offset>(), input.offset(), pass * radix_prefix_bytes},
-            current_indices,
-            valid_size,
-            run_begins.data(),
-            run_ends.data(),
-            candidate_count,
-            bounds);
-      };
-      if (offsets.type().id() == type_id::INT64) {
-        reduce_lengths.template operator()<int64_t>();
-      } else {
-        reduce_lengths.template operator()<size_type>();
-      }
+      auto const bounds_config = cudf::detail::grid_1d{valid_size, 256, 4};
+      reduce_run_remaining_lengths<<<bounds_config.num_blocks,
+                                     bounds_config.num_threads_per_block,
+                                     0,
+                                     stream.get()>>>(remaining_length{byte_counts},
+                                                     current_indices,
+                                                     valid_size,
+                                                     run_begins.data(),
+                                                     run_ends.data(),
+                                                     candidate_count,
+                                                     bounds);
       auto const last_pass             = pass + 1 == maximum_radix_passes;
       auto const launch_classification = [&]<bool eliminate_duplicates>() {
         classify_tied_runs<eliminate_duplicates>

@@ -9,6 +9,7 @@
 #include <cudf_test/testing_main.hpp>
 #include <cudf_test/type_lists.hpp>
 
+#include <cudf/copying.hpp>
 #include <cudf/hashing.hpp>
 
 #ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
@@ -16,6 +17,7 @@
 #endif
 
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <string>
@@ -616,6 +618,50 @@ TEST_F(MurmurHashTest, RTCXOptInFallsBackForUnsupportedSchemas)
   verify_fallback(cudf::table_view{{dictionary}});
   verify_fallback(cudf::table_view{{floats, strings}});
   verify_fallback(empty);
+}
+
+TEST_F(MurmurHashTest, ABOutputFingerprint)
+{
+  if (std::getenv("LIBCUDF_MURMURHASH_AB_FINGERPRINT") == nullptr) { GTEST_SKIP(); }
+  // A cross-build oracle is necessary because toggling an opt-in cannot compare implementations
+  // when either measured binary contains only one implementation.
+  cudf::test::fixed_width_column_wrapper<int32_t> const ints{
+    {0, -1, 11, 42, std::numeric_limits<int32_t>::min(), std::numeric_limits<int32_t>::max()},
+    {true, false, true, true, true, true}};
+  cudf::test::strings_column_wrapper const strings{
+    {"", "a", "abc", "abcd", "é水", std::string(257, 'x')}, {true, false, true, true, true, true}};
+  cudf::test::dictionary_column_wrapper<std::string> const dictionary{
+    {"", "a", "abc", "abcd", "é水", std::string(257, 'x')}, {true, false, true, true, true, true}};
+  cudf::test::fixed_width_column_wrapper<float> const floats{0, 1, -1, 1.5, 2, 3};
+  cudf::test::lists_column_wrapper<int32_t> const lists{{}, {1}, {2, 3}, {4}, {5}, {6}};
+  cudf::test::structs_column_wrapper const structs{{ints, strings}};
+  std::vector<cudf::table_view> const inputs{{{ints}},
+                                             {{strings}},
+                                             {{dictionary}},
+                                             {{ints, ints}},
+                                             {{strings, strings}},
+                                             {{dictionary, dictionary}},
+                                             {{floats}},
+                                             {{lists}},
+                                             {{structs}},
+                                             {{ints, strings}}};
+  for (std::size_t schema = 0; schema < inputs.size(); ++schema) {
+    for (auto const seed : {0U, 12345U}) {
+      for (auto const& input : cudf::slice(inputs[schema], {0, 6, 1, 5})) {
+        auto const hashes = cudf::hashing::murmurhash3_x86_32(input, seed);
+        std::vector<uint32_t> host(hashes->size());
+        CUDF_CUDA_TRY(cudaMemcpy(host.data(),
+                                 hashes->view().data<uint32_t>(),
+                                 host.size() * sizeof(uint32_t),
+                                 cudaMemcpyDefault));
+        std::cout << "AB_HASH " << schema << ' ' << seed << ' ' << host.size();
+        for (auto const value : host) {
+          std::cout << ' ' << value;
+        }
+        std::cout << '\n';
+      }
+    }
+  }
 }
 
 CUDF_TEST_PROGRAM_MAIN()

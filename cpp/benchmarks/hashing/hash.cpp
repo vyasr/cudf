@@ -30,10 +30,11 @@
 
 namespace {
 
-enum class column_type { UNKNOWN, MIXED, INT64, DOUBLE, DECIMAL128, STRING, LIST, STRUCT };
+enum class column_type { UNKNOWN, MIXED, INT32, INT64, DOUBLE, DECIMAL128, STRING, LIST, STRUCT };
 
 constexpr auto column_types = std::to_array<std::pair<column_type, std::string_view>>({
   {column_type::MIXED, "mixed"},
+  {column_type::INT32, "int32"},
   {column_type::INT64, "int64"},
   {column_type::DOUBLE, "double"},
   {column_type::DECIMAL128, "decimal128"},
@@ -98,6 +99,7 @@ static void bench_hash(nvbench::state& state)
       case column_type::MIXED:
         return cycle_dtypes({cudf::type_id::INT64, cudf::type_id::STRING}, num_cols);
       case column_type::INT64: return cycle_dtypes({cudf::type_id::INT64}, num_cols);
+      case column_type::INT32: return cycle_dtypes({cudf::type_id::INT32}, num_cols);
       case column_type::DOUBLE: return cycle_dtypes({cudf::type_id::FLOAT64}, num_cols);
       case column_type::DECIMAL128: return cycle_dtypes({cudf::type_id::DECIMAL128}, num_cols);
       case column_type::STRING: return cycle_dtypes({cudf::type_id::STRING}, num_cols);
@@ -205,9 +207,23 @@ NVBENCH_BENCH(bench_hash)
   .add_float64_axis("nulls", {0.0, 0.1})
   .add_string_axis("hash_name", {"spark_murmurhash3_x86_32"});
 
+NVBENCH_BENCH(bench_hash)
+  .set_name("murmurhash_int32")
+  .add_int64_axis("num_rows", {65536, 16777216})
+  .add_string_axis("data_type", {"int32"})
+  .add_int64_axis("num_cols", {1, 8})
+  .add_float64_axis("nulls", {0.0, 0.1})
+  .add_string_axis("hash_name", {"murmurhash3_x86_32"});
+
 static void bench_string_murmurhash3(nvbench::state& state)
 {
   auto const use_rtcx = state.get_string("implementation") == "rtcx";
+#ifdef CUDF_MURMURHASH3_RTCX_ONLY
+  if (!use_rtcx) {
+    state.skip("CUB implementation is absent from this measurement build");
+    return;
+  }
+#endif
 #ifndef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
   if (use_rtcx) {
     state.skip("RTCX build option is disabled");

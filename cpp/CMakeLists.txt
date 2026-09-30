@@ -201,7 +201,10 @@ if(NOT CUDF_LTO_ARCHITECTURE MATCHES "^[0-9]+$")
 endif()
 message(VERBOSE "CUDF: Using ${CUDF_LTO_ARCHITECTURE} as the common LTO architecture")
 
-option(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT "Build the internal RTCX MurmurHash3 prototype" OFF)
+option(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT "Build the RTCX-only MurmurHash3 implementation" ON)
+if(NOT CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+  message(FATAL_ERROR "This measurement commit requires the RTCX-only implementation")
+endif()
 
 # For now, disable CMake's automatic module scanning for C++ files. There is an sccache bug in the
 # version RAPIDS uses in CI that causes it to handle the resulting -M* flags incorrectly with
@@ -673,6 +676,23 @@ if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
   generate_jit_lto_kernels(
     cudf_murmurhash3_rtcx_sources
     NAME_FORMAT
+    "murmurhash3_rtcx_generic_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"generic\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_generic.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_entry_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/generic"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
     "murmurhash3_rtcx_entry_@kind@"
     MATRIX_JSON_STRING
     "{\"kind\":[\"int32\"]}"
@@ -920,7 +940,8 @@ add_library(
   src/groupby/streaming_groupby/insert_subsequent_nested.cu
   src/groupby/streaming_groupby/merge.cu
   src/hash/md5_hash.cu
-  src/hash/murmurhash3_x86_32.cu
+  src/hash/murmurhash3_x86_32.cpp
+  src/hash/murmurhash3_x86_32_rtcx_generic.cu
   $<$<BOOL:${CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT}>:src/hash/murmurhash3_x86_32_rtcx.cpp>
   ${cudf_murmurhash3_rtcx_sources}
   src/hash/murmurhash3_x64_128.cu

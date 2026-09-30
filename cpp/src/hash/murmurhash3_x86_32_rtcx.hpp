@@ -17,7 +17,19 @@
 #include <cstdint>
 #include <memory>
 
+namespace cudf::detail::row::equality {
+struct preprocessed_table;
+}
+
 namespace cudf::hashing::detail {
+
+std::unique_ptr<column> murmurhash3_x86_32_rtcx_generic(
+  std::shared_ptr<cudf::detail::row::equality::preprocessed_table> const& input,
+  size_type num_rows,
+  uint32_t seed,
+  bool nullable,
+  cuda::stream_ref stream,
+  rmm::device_async_resource_ref mr);
 
 [[nodiscard]] CUDF_EXPORT bool murmurhash3_x86_32_rtcx_enabled(table_view const& input);
 

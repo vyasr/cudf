@@ -56,8 +56,7 @@ rtcx_murmurhash_schema get_rtcx_murmurhash_schema(table_view const& input)
 
 bool murmurhash3_x86_32_rtcx_enabled(table_view const& input)
 {
-  return cudf::detail::get_bool_env_or("LIBCUDF_MURMURHASH3_RTCX_ENABLED", false) &&
-         get_rtcx_murmurhash_schema(input) != rtcx_murmurhash_schema::NONE;
+  return get_rtcx_murmurhash_schema(input) != rtcx_murmurhash_schema::NONE;
 }
 
 std::unique_ptr<column> murmurhash3_x86_32_rtcx(table_view const& input,
@@ -66,8 +65,12 @@ std::unique_ptr<column> murmurhash3_x86_32_rtcx(table_view const& input,
                                                 rmm::device_async_resource_ref mr)
 {
   auto const schema = get_rtcx_murmurhash_schema(input);
-  CUDF_EXPECTS(schema != rtcx_murmurhash_schema::NONE,
-               "MurmurHash3 RTCX does not support this input schema");
+  if (schema == rtcx_murmurhash_schema::NONE) {
+    auto const preprocessed = cudf::detail::row::hash::preprocessed_table::create(
+      input, stream, cudf::get_current_device_resource_ref());
+    return murmurhash3_x86_32_rtcx_generic(
+      preprocessed, input.num_rows(), seed, has_nulls(input), stream, mr);
+  }
   auto output             = make_numeric_column(data_type(type_to_id<hash_value_type>()),
                                     input.num_rows(),
                                     mask_state::UNALLOCATED,

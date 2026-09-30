@@ -8,6 +8,7 @@
 namespace cudf::hashing::detail::rtcx_murmur {
 
 struct fragment_tag_entry_int32 {};
+struct fragment_tag_entry_generic {};
 struct fragment_tag_hasher_int32 {};
 struct fragment_tag_entry_string {};
 struct fragment_tag_hasher_string {};

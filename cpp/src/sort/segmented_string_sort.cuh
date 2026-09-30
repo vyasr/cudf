@@ -84,10 +84,56 @@ struct refinement_counts {
   size_type maximum_prefix{};
 };
 
+struct remaining_bounds {
+  size_type minimum{maximum_string_size};
+  size_type maximum{};
+};
+
+struct combine_remaining_bounds {
+  __host__ __device__ remaining_bounds operator()(remaining_bounds lhs, remaining_bounds rhs) const
+  {
+    return {lhs.minimum < rhs.minimum ? lhs.minimum : rhs.minimum,
+            lhs.maximum > rhs.maximum ? lhs.maximum : rhs.maximum};
+  }
+};
+
+template <typename Offset>
+struct remaining_length {
+  Offset const* offsets;
+  size_type strings_offset;
+  size_type byte_offset;
+
+  __device__ remaining_bounds operator()(size_type row) const
+  {
+    auto const length =
+      static_cast<size_type>(offsets[strings_offset + row + 1] - offsets[strings_offset + row]);
+    auto const remaining = length > byte_offset ? length - byte_offset : size_type{0};
+    return {remaining, remaining};
+  }
+};
+
 __device__ inline bool strings_equal_after(column_device_view strings,
                                            size_type lhs,
                                            size_type rhs,
                                            size_type known_prefix_bytes);
+
+__device__ inline size_type find_run_slot(size_type position,
+                                          size_type const* run_begins,
+                                          size_type const* run_ends,
+                                          size_type num_runs)
+{
+  auto low  = size_type{0};
+  auto high = num_runs;
+  while (low < high) {
+    auto const middle = low + (high - low) / 2;
+    if (run_ends[middle] <= position) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low < num_runs && run_begins[low] <= position ? low : invalid_index;
+}
 
 __device__ inline bool find_containing_run(size_type position,
                                            size_type const* run_begins,
@@ -102,20 +148,56 @@ __device__ inline bool find_containing_run(size_type position,
     end   = size;
     return position < size;
   }
-  auto low  = size_type{0};
-  auto high = num_runs;
-  while (low < high) {
-    auto const middle = low + (high - low) / 2;
-    if (run_ends[middle] <= position) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
-  if (low == num_runs || run_begins[low] > position) { return false; }
+  auto const low = find_run_slot(position, run_begins, run_ends, num_runs);
+  if (low == invalid_index) { return false; }
   begin = run_begins[low];
   end   = run_ends[low];
   return true;
+}
+
+template <typename Offset>
+CUDF_KERNEL void reduce_run_remaining_lengths(remaining_length<Offset> get_remaining,
+                                              size_type const* indices,
+                                              size_type size,
+                                              size_type const* begins,
+                                              size_type const* ends,
+                                              size_type run_count,
+                                              remaining_bounds* bounds)
+{
+  constexpr size_type tile_items = 1024;
+  auto const tile_begin          = static_cast<size_type>(blockIdx.x) * tile_items;
+  auto const tile_end            = tile_begin + min(size - tile_begin, tile_items);
+  __shared__ size_type tile_run;
+  if (threadIdx.x == 0) {
+    auto const slot = find_run_slot(tile_begin, begins, ends, run_count);
+    tile_run        = slot != invalid_index && ends[slot] >= tile_end ? slot : invalid_index;
+  }
+  __syncthreads();
+  if (tile_run != invalid_index) {
+    remaining_bounds local;
+    for (auto position = int64_t{tile_begin} + threadIdx.x; position < tile_end;
+         position += blockDim.x) {
+      local = combine_remaining_bounds{}(local, get_remaining(indices[position]));
+    }
+    using block_reduce = cub::BlockReduce<remaining_bounds, 256>;
+    __shared__ typename block_reduce::TempStorage scratch;
+    auto const reduced = block_reduce(scratch).Reduce(local, combine_remaining_bounds{});
+    if (threadIdx.x == 0) {
+      atomicMin(&bounds[tile_run].minimum, reduced.minimum);
+      atomicMax(&bounds[tile_run].maximum, reduced.maximum);
+    }
+  } else {
+    // Only tiles crossing run boundaries need per-row atomics. Large runs otherwise contribute
+    // one pair of bounds per tile, avoiding both serial walks and a contended atomic per row.
+    for (auto position = int64_t{tile_begin} + threadIdx.x; position < tile_end;
+         position += blockDim.x) {
+      auto const slot = find_run_slot(static_cast<size_type>(position), begins, ends, run_count);
+      if (slot == invalid_index) { continue; }
+      auto const remaining = get_remaining(indices[position]);
+      atomicMin(&bounds[slot].minimum, remaining.minimum);
+      atomicMax(&bounds[slot].maximum, remaining.maximum);
+    }
+  }
 }
 
 CUDF_KERNEL void mark_tied_run_endpoints(std::uint64_t const* sorted_keys,
@@ -158,10 +240,9 @@ CUDF_KERNEL void mark_tied_run_endpoints(std::uint64_t const* sorted_keys,
   }
 }
 
-template <typename Offset, bool eliminate_exact_duplicates>
-CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
+template <bool eliminate_exact_duplicates>
+CUDF_KERNEL void classify_tied_runs(remaining_bounds const* bounds,
                                     column_device_view strings,
-                                    size_type strings_offset,
                                     size_type const* indices,
                                     size_type const* candidate_begins,
                                     size_type const* candidate_ends,
@@ -183,29 +264,10 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   auto const begin = candidate_begins[run];
   auto const end   = candidate_ends[run];
 
-  auto minimum_remaining = maximum_string_size;
-  auto maximum_remaining = size_type{0};
-  for (auto position = begin + static_cast<size_type>(threadIdx.x); position < end;
-       position += static_cast<size_type>(blockDim.x)) {
-    auto const row = indices[position];
-    auto const row_size =
-      static_cast<size_type>(offsets[strings_offset + row + 1] - offsets[strings_offset + row]);
-    auto const remaining = row_size > byte_offset ? row_size - byte_offset : size_type{0};
-    minimum_remaining    = min(minimum_remaining, remaining);
-    maximum_remaining    = max(maximum_remaining, remaining);
-  }
-  using block_reduce = cub::BlockReduce<size_type, 256>;
+  auto const minimum_bytes = bounds[run].minimum;
+  auto const maximum_bytes = bounds[run].maximum;
+  using block_reduce       = cub::BlockReduce<size_type, 256>;
   __shared__ typename block_reduce::TempStorage reduction_storage;
-  minimum_remaining = block_reduce(reduction_storage).Reduce(minimum_remaining, cuda::minimum<>{});
-  __syncthreads();
-  maximum_remaining = block_reduce(reduction_storage).Reduce(maximum_remaining, cuda::maximum<>{});
-  __shared__ size_type minimum_bytes;
-  __shared__ size_type maximum_bytes;
-  if (threadIdx.x == 0) {
-    minimum_bytes = minimum_remaining;
-    maximum_bytes = maximum_remaining;
-  }
-  __syncthreads();
 
   auto const full_chunk    = minimum_bytes >= radix_prefix_bytes;
   auto const proven_prefix = full_chunk ? byte_offset + radix_prefix_bytes : byte_offset;
@@ -902,12 +964,35 @@ void sorted_order(column_view const& input,
     if (candidate_count > 0) {
       thrust::sort(exec, run_begins.begin(), run_begins.begin() + candidate_count);
       thrust::sort(exec, run_ends.begin(), run_ends.begin() + candidate_count);
+      // A run can span the entire column. Tiling distributes its length proof across blocks instead
+      // of making one classification block walk millions of rows. Unsorted radix keys are dead
+      // until the next extraction, so their storage holds these two-word bounds without allocation.
+      static_assert(sizeof(remaining_bounds) == sizeof(std::uint64_t));
+      auto* bounds = reinterpret_cast<remaining_bounds*>(keys_in.data());
+      thrust::fill_n(exec, bounds, candidate_count, remaining_bounds{});
+      auto const bounds_config  = cudf::detail::grid_1d{valid_size, 256, 4};
+      auto const reduce_lengths = [&]<typename Offset>() {
+        reduce_run_remaining_lengths<Offset>
+          <<<bounds_config.num_blocks, bounds_config.num_threads_per_block, 0, stream.get()>>>(
+            remaining_length<Offset>{
+              offsets.head<Offset>(), input.offset(), pass * radix_prefix_bytes},
+            current_indices,
+            valid_size,
+            run_begins.data(),
+            run_ends.data(),
+            candidate_count,
+            bounds);
+      };
+      if (offsets.type().id() == type_id::INT64) {
+        reduce_lengths.template operator()<int64_t>();
+      } else {
+        reduce_lengths.template operator()<size_type>();
+      }
       auto const last_pass             = pass + 1 == maximum_radix_passes;
-      auto const launch_classification = [&]<typename Offset, bool eliminate_duplicates>() {
-        classify_tied_runs<Offset, eliminate_duplicates>
-          <<<candidate_count, 256, 0, stream.get()>>>(offsets.head<Offset>(),
+      auto const launch_classification = [&]<bool eliminate_duplicates>() {
+        classify_tied_runs<eliminate_duplicates>
+          <<<candidate_count, 256, 0, stream.get()>>>(bounds,
                                                       comparator.d_column,
-                                                      input.offset(),
                                                       current_indices,
                                                       run_begins.data(),
                                                       run_ends.data(),
@@ -924,17 +1009,10 @@ void sorted_order(column_view const& input,
                                                       refinement.data(),
                                                       counts.data());
       };
-      auto const dispatch_classification = [&]<typename Offset>() {
-        if (tuning.eliminate_exact_duplicates) {
-          launch_classification.template operator()<Offset, true>();
-        } else {
-          launch_classification.template operator()<Offset, false>();
-        }
-      };
-      if (offsets.type().id() == type_id::INT64) {
-        dispatch_classification.template operator()<int64_t>();
+      if (tuning.eliminate_exact_duplicates) {
+        launch_classification.template operator()<true>();
       } else {
-        dispatch_classification.template operator()<size_type>();
+        launch_classification.template operator()<false>();
       }
       CUDF_CUDA_TRY(cudaGetLastError());
     }

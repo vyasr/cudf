@@ -37,8 +37,10 @@
 namespace cudf::detail {
 namespace segmented_string_sort {
 
-constexpr size_type block_sort_size = 256;
-constexpr size_type invalid_index   = -1;
+constexpr size_type block_sort_size              = 256;
+constexpr size_type invalid_index                = -1;
+constexpr std::uint16_t final_segment_end_marker = std::uint16_t{1} << 15;
+static_assert(8 * 255 < final_segment_end_marker);
 
 template <int bytes_per_pass>
 struct radix_key_layout {
@@ -296,11 +298,7 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
                                size_type const* run_has_mismatch,
                                size_type comparison_threshold,
                                size_type* next_run_flags,
-                               size_type* final_begins,
-                               size_type* final_ends,
-                               size_type* final_prefix_bytes,
-                               size_type* task_begins,
-                               size_type* task_ends,
+                               std::uint16_t* final_markers,
                                finish_counts* counts)
 {
   using key_layout = radix_key_layout<bytes_per_pass>;
@@ -332,28 +330,81 @@ CUDF_KERNEL void classify_runs(column_device_view strings,
     return;
   }
 
-  auto const final_slot = atomicAdd(&counts->segments, size_type{1});
+  atomicAdd(&counts->segments, size_type{1});
   atomicAdd(&counts->rows, end - begin);
-  final_begins[final_slot] = begin;
-  final_ends[final_slot]   = end;
-  if (final_prefix_bytes != nullptr) {
-    final_prefix_bytes[final_slot] =
-      proven_prefix_bytes<bytes_per_pass>(run, byte_offset, run_byte_state);
-  }
+  auto const prefix_bytes = proven_prefix_bytes<bytes_per_pass>(run, byte_offset, run_byte_state);
+  final_markers[begin]    = static_cast<std::uint16_t>(prefix_bytes + 1);
+  final_markers[end - 1]  = final_segment_end_marker;
   if (end - begin > comparison_threshold) {
     atomicMax(&counts->maximum_segment_size, end - begin);
-    auto task_begin = begin;
-    while (task_begin < end) {
-      auto const task_slot   = atomicAdd(&counts->block_tasks, size_type{1});
-      task_begins[task_slot] = task_begin;
-      auto const remaining   = end - task_begin;
-      auto const task_end =
-        remaining > block_sort_size
-          ? static_cast<size_type>(static_cast<std::int64_t>(task_begin) + block_sort_size)
-          : end;
-      task_ends[task_slot] = task_end;
-      task_begin           = task_end;
-    }
+    atomicAdd(&counts->block_tasks, (end - begin + block_sort_size - 1) / block_sort_size);
+  }
+}
+
+CUDF_KERNEL void mark_final_segment_starts(std::uint16_t const* final_markers,
+                                           size_type size,
+                                           size_type* final_start_flags)
+{
+  auto const position = cudf::detail::grid_1d::global_thread_id();
+  if (position >= size) { return; }
+  auto const marker           = final_markers[position];
+  final_start_flags[position] = marker != 0 && marker != final_segment_end_marker ? 1 : 0;
+}
+
+CUDF_KERNEL void materialize_final_segments(std::uint16_t const* final_markers,
+                                            size_type const* inclusive_final_ids,
+                                            size_type size,
+                                            size_type* final_begins,
+                                            size_type* final_ends,
+                                            size_type* final_prefix_bytes)
+{
+  auto const position = cudf::detail::grid_1d::global_thread_id();
+  if (position >= size) { return; }
+  auto const marker = final_markers[position];
+  if (marker == 0) { return; }
+  auto const slot = inclusive_final_ids[position] - 1;
+  if (marker == final_segment_end_marker) {
+    final_ends[slot] = position + 1;
+  } else {
+    final_begins[slot] = position;
+    if (final_prefix_bytes != nullptr) { final_prefix_bytes[slot] = marker - 1; }
+  }
+}
+
+CUDF_KERNEL void count_block_tasks(size_type const* final_begins,
+                                   size_type const* final_ends,
+                                   size_type num_segments,
+                                   size_type comparison_threshold,
+                                   size_type* inclusive_task_offsets)
+{
+  auto const segment = cudf::detail::grid_1d::global_thread_id();
+  if (segment >= num_segments) { return; }
+  auto const length = final_ends[segment] - final_begins[segment];
+  inclusive_task_offsets[segment] =
+    length > comparison_threshold ? (length + block_sort_size - 1) / block_sort_size : 0;
+}
+
+CUDF_KERNEL void materialize_block_tasks(size_type const* final_begins,
+                                         size_type const* final_ends,
+                                         size_type const* inclusive_task_offsets,
+                                         size_type num_segments,
+                                         size_type comparison_threshold,
+                                         size_type* task_begins,
+                                         size_type* task_ends)
+{
+  auto const segment = cudf::detail::grid_1d::global_thread_id();
+  if (segment >= num_segments) { return; }
+  auto const begin  = final_begins[segment];
+  auto const end    = final_ends[segment];
+  auto const length = end - begin;
+  if (length <= comparison_threshold) { return; }
+  auto const first_task = segment == 0 ? 0 : inclusive_task_offsets[segment - 1];
+  auto const num_tasks  = (length + block_sort_size - 1) / block_sort_size;
+  for (auto task = size_type{0}; task < num_tasks; ++task) {
+    auto const task_begin          = begin + task * block_sort_size;
+    task_begins[first_task + task] = task_begin;
+    task_ends[first_task + task] =
+      task_begin + block_sort_size < end ? task_begin + block_sort_size : end;
   }
 }
 
@@ -691,16 +742,10 @@ void sorted_order(column_view const& input,
   auto run_byte_state  = rmm::device_uvector<size_type>(
     key_layout::uses_full_width ? valid_size : size_type{0}, stream, temp_mr);
 
-  // Every recorded final segment and block task contains at least two rows, so half the row count
-  // is a tight upper bound for each collection.
-  auto const maximum_finish_items = (valid_size + 1) / 2;
-  auto final_begins       = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto final_ends         = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto final_prefix_bytes = rmm::device_uvector<size_type>(
-    known_prefix ? maximum_finish_items : size_type{0}, stream, temp_mr);
-  auto task_begins = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto task_ends   = rmm::device_uvector<size_type>(maximum_finish_items, stream, temp_mr);
-  auto counts      = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
+  // Finish segments are disjoint, so their start (prefix + 1) and end markers share one positional
+  // sidecar. Exact descriptors are materialized only after refinement reveals their counts.
+  auto final_markers = rmm::device_uvector<std::uint16_t>(valid_size, stream, temp_mr);
+  auto counts        = cudf::detail::device_scalar<finish_counts>(finish_counts{}, stream, temp_mr);
   auto next_segment_count = cudf::detail::device_scalar<size_type>(size_type{0}, stream, temp_mr);
 
   thrust::fill(exec, begins_a.begin(), begins_a.end(), valid_size);
@@ -708,6 +753,7 @@ void sorted_order(column_view const& input,
   thrust::fill_n(exec, begins_a.begin(), 1, size_type{0});
   thrust::fill_n(exec, ends_a.begin(), 1, valid_size);
   thrust::fill(exec, active_a.begin(), active_a.end(), std::uint8_t{1});
+  thrust::fill(exec, final_markers.begin(), final_markers.end(), std::uint16_t{0});
   if constexpr (key_layout::uses_full_width) {
     thrust::fill(exec, run_byte_state.begin(), run_byte_state.end(), size_type{0});
   }
@@ -726,8 +772,8 @@ void sorted_order(column_view const& input,
   // This counts algorithm-visible workspace allocations rather than upstream pool growth. It makes
   // stage-to-stage buffer lifetime changes observable without replacing the caller's memory
   // resource.
-  auto allocation_count = size_type{24 + (key_layout::uses_full_width ? 1 : 0) +
-                                    (known_prefix ? 1 : 0) + (null_indices.size() > 0 ? 1 : 0)};
+  auto allocation_count =
+    size_type{20 + (key_layout::uses_full_width ? 1 : 0) + (null_indices.size() > 0 ? 1 : 0)};
 
   for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
     auto active_rows = size_type{-1};
@@ -875,11 +921,7 @@ void sorted_order(column_view const& input,
         detect_duplicates ? run_starts_at.data() : nullptr,
         comparison_threshold,
         run_starts_at.data(),
-        final_begins.data(),
-        final_ends.data(),
-        known_prefix ? final_prefix_bytes.data() : nullptr,
-        task_begins.data(),
-        task_ends.data(),
+        final_markers.data(),
         counts.data());
     update_active_runs<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
       active, run_ids.data(), run_starts_at.data(), valid_size, next_active);
@@ -923,6 +965,73 @@ void sorted_order(column_view const& input,
   // Transfer the finish launch metadata together after refinement.
   auto const finish = counts.value(stream);
   ++synchronization_points;
+  // The finish descriptors no longer depend on radix keys or active-segment state. Releasing that
+  // storage before exact allocations prevents the two phases from contributing to the same peak.
+  keys_in           = rmm::device_uvector<std::uint64_t>(0, stream, temp_mr);
+  keys_out          = rmm::device_uvector<std::uint64_t>(0, stream, temp_mr);
+  begins_a          = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  ends_a            = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  begins_b          = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  ends_b            = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  active_a          = rmm::device_uvector<std::uint8_t>(0, stream, temp_mr);
+  active_b          = rmm::device_uvector<std::uint8_t>(0, stream, temp_mr);
+  segment_starts    = rmm::device_uvector<std::uint8_t>(0, stream, temp_mr);
+  segment_ends_at   = rmm::device_uvector<std::uint8_t>(0, stream, temp_mr);
+  run_ends_at       = rmm::device_uvector<std::uint8_t>(0, stream, temp_mr);
+  run_ends          = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  run_byte_state    = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  cub_temp_storage  = rmm::device_buffer{};
+  auto final_begins = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
+  auto final_ends   = rmm::device_uvector<size_type>(finish.segments, stream, temp_mr);
+  auto final_prefix_bytes =
+    rmm::device_uvector<size_type>(known_prefix ? finish.segments : size_type{0}, stream, temp_mr);
+  auto task_begins = rmm::device_uvector<size_type>(finish.block_tasks, stream, temp_mr);
+  auto task_ends   = rmm::device_uvector<size_type>(finish.block_tasks, stream, temp_mr);
+  allocation_count += finish.segments > 0 ? 2 + (known_prefix ? 1 : 0) : 0;
+  allocation_count += finish.block_tasks > 0 ? 2 : 0;
+  if (finish.segments > 0) {
+    mark_final_segment_starts<<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+      final_markers.data(), valid_size, run_starts_at.data());
+    thrust::inclusive_scan(exec, run_starts_at.begin(), run_starts_at.end(), run_ids.begin());
+    materialize_final_segments<<<config.num_blocks,
+                                 config.num_threads_per_block,
+                                 0,
+                                 stream.get()>>>(
+      final_markers.data(),
+      run_ids.data(),
+      valid_size,
+      final_begins.data(),
+      final_ends.data(),
+      known_prefix ? final_prefix_bytes.data() : nullptr);
+    if (finish.block_tasks > 0) {
+      auto const finish_config = cudf::detail::grid_1d{finish.segments, 128};
+      count_block_tasks<<<finish_config.num_blocks,
+                          finish_config.num_threads_per_block,
+                          0,
+                          stream.get()>>>(final_begins.data(),
+                                          final_ends.data(),
+                                          finish.segments,
+                                          comparison_threshold,
+                                          run_begins.data());
+      thrust::inclusive_scan(
+        exec, run_begins.begin(), run_begins.begin() + finish.segments, run_begins.begin());
+      materialize_block_tasks<<<finish_config.num_blocks,
+                                finish_config.num_threads_per_block,
+                                0,
+                                stream.get()>>>(final_begins.data(),
+                                                final_ends.data(),
+                                                run_begins.data(),
+                                                finish.segments,
+                                                comparison_threshold,
+                                                task_begins.data(),
+                                                task_ends.data());
+    }
+    CUDF_CUDA_TRY(cudaGetLastError());
+  }
+  final_markers            = rmm::device_uvector<std::uint16_t>(0, stream, temp_mr);
+  run_starts_at            = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  run_ids                  = rmm::device_uvector<size_type>(0, stream, temp_mr);
+  run_begins               = rmm::device_uvector<size_type>(0, stream, temp_mr);
   auto known_prefix_by_row = rmm::device_uvector<size_type>(
     known_prefix && finish.segments > 0 ? size : size_type{0}, stream, temp_mr);
   allocation_count += known_prefix_by_row.size() > 0 ? 1 : 0;

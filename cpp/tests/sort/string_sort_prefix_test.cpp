@@ -381,9 +381,22 @@ TEST_F(StringSort, SegmentedTuningSelectorParsing)
   EXPECT_FALSE(defaults.known_prefix);
   EXPECT_EQ(defaults.finish_threshold, 32);
   EXPECT_EQ(defaults.rle_policy, segmented_rle_policy::NEVER);
+  EXPECT_FALSE(defaults.compact_finish);
+  EXPECT_EQ(defaults.merge_tile_items, 2048);
 
-  auto const tuned = parse_segmented_string_sort_config(
-    string_sort_algorithm::SEGMENTED, "8", "80", "0", "1", "128", "2", "64", "50", "25", "1");
+  auto const tuned = parse_segmented_string_sort_config(string_sort_algorithm::SEGMENTED,
+                                                        "8",
+                                                        "80",
+                                                        "0",
+                                                        "1",
+                                                        "128",
+                                                        "2",
+                                                        "64",
+                                                        "50",
+                                                        "25",
+                                                        "1",
+                                                        "1",
+                                                        "4096");
   EXPECT_EQ(tuned.bytes_per_pass, 8);
   EXPECT_EQ(tuned.radix_percent, 80);
   EXPECT_EQ(tuned.max_radix_passes, 0);
@@ -394,6 +407,8 @@ TEST_F(StringSort, SegmentedTuningSelectorParsing)
   EXPECT_EQ(tuned.rle_min_coverage_percent, 50);
   EXPECT_EQ(tuned.rle_min_equal_percent, 25);
   EXPECT_TRUE(tuned.trace);
+  EXPECT_TRUE(tuned.compact_finish);
+  EXPECT_EQ(tuned.merge_tile_items, 4096);
 
   for (auto const* invalid : {"", "5", "7", "9", "invalid"}) {
     EXPECT_THROW(
@@ -433,6 +448,8 @@ TEST_F(StringSort, SegmentedTuningSelectorParsing)
   EXPECT_EQ(compatibility.rle_min_coverage_percent, 25);
   EXPECT_EQ(compatibility.rle_min_equal_percent, 10);
   EXPECT_FALSE(compatibility.trace);
+  EXPECT_FALSE(compatibility.compact_finish);
+  EXPECT_EQ(compatibility.merge_tile_items, 2048);
 }
 
 TEST_F(StringSort, IterativeSegmentedRefinementAndArbitraryBytes)

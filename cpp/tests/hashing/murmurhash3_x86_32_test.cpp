@@ -11,6 +11,10 @@
 
 #include <cudf/hashing.hpp>
 
+#ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+#include "hash/murmurhash3_x86_32_rtcx.hpp"
+#endif
+
 #include <cstdlib>
 #include <memory>
 #include <optional>
@@ -522,6 +526,70 @@ TEST_F(MurmurHashTest, RTCXInt32MatchesCUBAndReusesPlan)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), rtcx_result->view());
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(rtcx_result->view(), rtcx_warm_result->view());
 }
+#ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+TEST_F(MurmurHashTest, RTCXStringNonNullMatchesCUB)
+{
+  cudf::test::strings_column_wrapper const strings{
+    "", "a", "ab", "abc", "abcd", "abcde", "abcdef", "abcdefg", "é水", std::string(257, 'x')};
+  auto const input = cudf::table_view{{strings}};
+  for (auto const seed : {0U, 12345U}) {
+    scoped_rtcx_murmurhash_opt_in disabled{false};
+    auto const cub_result = cudf::hashing::murmurhash3_x86_32(input, seed);
+    scoped_rtcx_murmurhash_opt_in enabled{true};
+    ASSERT_TRUE(cudf::hashing::detail::murmurhash3_x86_32_rtcx_enabled(input));
+    auto const rtcx_result = cudf::hashing::murmurhash3_x86_32(input, seed);
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), rtcx_result->view());
+  }
+}
+#endif
+
+TEST_F(MurmurHashTest, RTCXDictionaryStringMatchesCUBAndReusesPlan)
+{
+  cudf::test::dictionary_column_wrapper<std::string> const first{
+    {"red", "blue", "green", "blue", "red"}, {true, false, true, true, true}};
+  cudf::test::dictionary_column_wrapper<std::string> const second{
+    {"circle", "square", "triangle", "square", "circle"}, {true, true, true, false, true}};
+  auto const input = cudf::table_view{{first, second}};
+
+  std::unique_ptr<cudf::column> cub_result;
+  {
+    scoped_rtcx_murmurhash_opt_in opt_in{false};
+    cub_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  }
+  scoped_rtcx_murmurhash_opt_in opt_in{true};
+  auto const rtcx_result      = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  auto const rtcx_warm_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), rtcx_result->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(rtcx_result->view(), rtcx_warm_result->view());
+}
+
+#ifdef CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
+TEST_F(MurmurHashTest, RTCXStringMatchesCUBAndReusesPlan)
+{
+  cudf::test::strings_column_wrapper const first{{"red", "blue", "green", "blue", "red"},
+                                                 {true, false, true, true, true}};
+  cudf::test::strings_column_wrapper const second{
+    {"circle", "square", "triangle", "square", "circle"}, {true, true, true, false, true}};
+  auto const input = cudf::table_view{{first, second}};
+
+  std::unique_ptr<cudf::column> cub_result;
+  {
+    scoped_rtcx_murmurhash_opt_in opt_in{false};
+    cub_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  }
+  scoped_rtcx_murmurhash_opt_in opt_in{true};
+  ASSERT_TRUE(cudf::hashing::detail::murmurhash3_x86_32_rtcx_enabled(input));
+  auto const rtcx_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  auto const cache_size  = cudf::hashing::detail::murmurhash3_x86_32_rtcx_cache_size();
+  ASSERT_GT(cache_size, 0);
+  auto const rtcx_warm_result = cudf::hashing::murmurhash3_x86_32(input, 12345);
+  EXPECT_EQ(cache_size, cudf::hashing::detail::murmurhash3_x86_32_rtcx_cache_size());
+
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(cub_result->view(), rtcx_result->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(rtcx_result->view(), rtcx_warm_result->view());
+}
+#endif
 
 TEST_F(MurmurHashTest, RTCXOptInFallsBackForUnsupportedSchemas)
 {
@@ -543,7 +611,6 @@ TEST_F(MurmurHashTest, RTCXOptInFallsBackForUnsupportedSchemas)
   };
 
   verify_fallback(cudf::table_view{{floats}});
-  verify_fallback(cudf::table_view{{strings}});
   verify_fallback(cudf::table_view{{nested}});
   verify_fallback(cudf::table_view{{structs}});
   verify_fallback(cudf::table_view{{dictionary}});

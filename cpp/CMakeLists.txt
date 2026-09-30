@@ -201,9 +201,7 @@ if(NOT CUDF_LTO_ARCHITECTURE MATCHES "^[0-9]+$")
 endif()
 message(VERBOSE "CUDF: Using ${CUDF_LTO_ARCHITECTURE} as the common LTO architecture")
 
-option(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT
-       "Build the internal RTCX MurmurHash3 INT32 prototype" OFF
-)
+option(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT "Build the internal RTCX MurmurHash3 prototype" OFF)
 
 # For now, disable CMake's automatic module scanning for C++ files. There is an sccache bug in the
 # version RAPIDS uses in CI that causes it to handle the resulting -M* flags incorrectly with
@@ -692,6 +690,40 @@ if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
   generate_jit_lto_kernels(
     cudf_murmurhash3_rtcx_sources
     NAME_FORMAT
+    "murmurhash3_rtcx_string_entry_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"string\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_string_entry.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_entry_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/string_entry"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
+    "murmurhash3_rtcx_string_hasher_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"string\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_string.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_hasher_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/string_hasher"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
     "murmurhash3_rtcx_hasher_@kind@"
     MATRIX_JSON_STRING
     "{\"kind\":[\"int32\"]}"
@@ -703,6 +735,40 @@ if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
     "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
     OUTPUT_DIRECTORY
     "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/hasher"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
+    "murmurhash3_rtcx_dictionary_string_entry_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"dictionary_string\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_dictionary_string_entry.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_dictionary_string_entry_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/dictionary_string_entry"
+    KERNEL_LINK_LIBRARIES
+    cudf_murmurhash3_rtcx_kernel_requirements
+  )
+  generate_jit_lto_kernels(
+    cudf_murmurhash3_rtcx_sources
+    NAME_FORMAT
+    "murmurhash3_rtcx_dictionary_string_hasher_@kind@"
+    MATRIX_JSON_STRING
+    "{\"kind\":[\"dictionary_string\"]}"
+    KERNEL_INPUT_FILE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/hash/rtcx/murmurhash3_x86_32_dictionary_string.cu.in"
+    FRAGMENT_TAG_FORMAT
+    "cudf::hashing::detail::rtcx_murmur::fragment_tag_dictionary_string_hasher_@kind@"
+    FRAGMENT_TAG_HEADER_FILES
+    "<cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>"
+    OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_BINARY_DIR}/generated_rtcx/murmurhash3/dictionary_string_hasher"
     KERNEL_LINK_LIBRARIES
     cudf_murmurhash3_rtcx_kernel_requirements
   )

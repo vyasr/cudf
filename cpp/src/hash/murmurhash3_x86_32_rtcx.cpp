@@ -9,6 +9,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/row_operator/preprocessed_table.cuh>
 #include <cudf/detail/utilities/getenv_or.hpp>
+#include <cudf/dictionary/dictionary_column_view.hpp>
 #include <cudf/hashing/detail/hashing.hpp>
 #include <cudf/hashing/detail/murmurhash3_x86_32_rtcx_tags.hpp>
 #include <cudf/table/table_device_view.cuh>
@@ -26,14 +27,29 @@ rtcx::launcher_jit_cache& murmurhash3_x86_32_rtcx_cache()
   return cache;
 }
 
-bool is_flat_int32_table(table_view const& input)
+enum class rtcx_murmurhash_schema { NONE, INT32, STRING, DICTIONARY_STRING };
+
+rtcx_murmurhash_schema get_rtcx_murmurhash_schema(table_view const& input)
 {
-  if (input.num_rows() == 0 || input.num_columns() == 0) { return false; }
+  if (input.num_rows() == 0 || input.num_columns() == 0) { return rtcx_murmurhash_schema::NONE; }
+
+  auto all_int32             = true;
+  auto all_strings           = true;
+  auto all_dictionary_string = true;
   for (size_type column_index = 0; column_index < input.num_columns(); ++column_index) {
     auto const column = input.column(column_index);
-    if (column.type().id() != type_id::INT32 || column.num_children() != 0) { return false; }
+    all_int32 = all_int32 && column.type().id() == type_id::INT32 && column.num_children() == 0;
+    // STRING is a scalar type even though its offsets live in a child column.
+    all_strings = all_strings && column.type().id() == type_id::STRING;
+    all_dictionary_string =
+      all_dictionary_string && column.type().id() == type_id::DICTIONARY32 &&
+      column.num_children() == 2 &&
+      column.child(dictionary_column_view::keys_column_index).type().id() == type_id::STRING;
   }
-  return true;
+  if (all_int32) { return rtcx_murmurhash_schema::INT32; }
+  if (all_strings) { return rtcx_murmurhash_schema::STRING; }
+  if (all_dictionary_string) { return rtcx_murmurhash_schema::DICTIONARY_STRING; }
+  return rtcx_murmurhash_schema::NONE;
 }
 
 }  // namespace
@@ -41,7 +57,7 @@ bool is_flat_int32_table(table_view const& input)
 bool murmurhash3_x86_32_rtcx_enabled(table_view const& input)
 {
   return cudf::detail::get_bool_env_or("LIBCUDF_MURMURHASH3_RTCX_ENABLED", false) &&
-         is_flat_int32_table(input);
+         get_rtcx_murmurhash_schema(input) != rtcx_murmurhash_schema::NONE;
 }
 
 std::unique_ptr<column> murmurhash3_x86_32_rtcx(table_view const& input,
@@ -49,6 +65,9 @@ std::unique_ptr<column> murmurhash3_x86_32_rtcx(table_view const& input,
                                                 cuda::stream_ref stream,
                                                 rmm::device_async_resource_ref mr)
 {
+  auto const schema = get_rtcx_murmurhash_schema(input);
+  CUDF_EXPECTS(schema != rtcx_murmurhash_schema::NONE,
+               "MurmurHash3 RTCX does not support this input schema");
   auto output             = make_numeric_column(data_type(type_to_id<hash_value_type>()),
                                     input.num_rows(),
                                     mask_state::UNALLOCATED,
@@ -59,10 +78,24 @@ std::unique_ptr<column> murmurhash3_x86_32_rtcx(table_view const& input,
   table_device_view const input_device_view{*preprocessed};
   auto output_device_view = mutable_column_device_view::create(output->mutable_view(), stream);
 
-  rtcx::algorithm_planner planner{"cudf_murmurhash3_x86_32_rtcx_entry",
-                                  murmurhash3_x86_32_rtcx_cache()};
-  planner.add_static_fragment<rtcx_murmur::fragment_tag_entry_int32>();
-  planner.add_static_fragment<rtcx_murmur::fragment_tag_hasher_int32>();
+  auto const entrypoint = schema == rtcx_murmurhash_schema::INT32
+                            ? "cudf_murmurhash3_x86_32_rtcx_entry"
+                          : schema == rtcx_murmurhash_schema::STRING
+                            ? "cudf_murmurhash3_x86_32_rtcx_string_entry"
+                            : "cudf_murmurhash3_x86_32_rtcx_dictionary_string_entry";
+  rtcx::algorithm_planner planner{entrypoint, murmurhash3_x86_32_rtcx_cache()};
+  if (schema == rtcx_murmurhash_schema::INT32) {
+    planner.add_static_fragment<rtcx_murmur::fragment_tag_entry_int32>();
+    planner.add_static_fragment<rtcx_murmur::fragment_tag_hasher_int32>();
+  } else if (schema == rtcx_murmurhash_schema::STRING) {
+    planner.add_static_fragment<rtcx_murmur::fragment_tag_entry_string>();
+    planner.add_static_fragment<rtcx_murmur::fragment_tag_hasher_string>();
+  } else {
+    planner
+      .add_static_fragment<rtcx_murmur::fragment_tag_dictionary_string_entry_dictionary_string>();
+    planner
+      .add_static_fragment<rtcx_murmur::fragment_tag_dictionary_string_hasher_dictionary_string>();
+  }
   auto const cache_size_before = murmurhash3_x86_32_rtcx_cache().size();
   auto const lookup_start      = std::chrono::steady_clock::now();
   auto const launcher          = planner.get_launcher();

@@ -254,6 +254,9 @@ ConfigureNVBench(
 # ##################################################################################################
 # * hashing benchmark -----------------------------------------------------------------------------
 ConfigureNVBench(HASHING_NVBENCH hashing/hash.cpp hashing/partition.cpp)
+if(CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+  target_compile_definitions(HASHING_NVBENCH PRIVATE CUDF_ENABLE_MURMURHASH3_RTCX_EXPERIMENT)
+endif()
 
 # ##################################################################################################
 # * hybrid scan filters benchmark

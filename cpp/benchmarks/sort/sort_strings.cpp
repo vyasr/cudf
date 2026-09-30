@@ -260,10 +260,10 @@ std::unique_ptr<cudf::column> make_diagnostic_input(cudf::size_type num_rows,
     for (cudf::size_type row = 0; row < num_rows; ++row) {
       auto const block  = row / stride;
       auto const offset = row % stride;
-      auto value        = std::string(24, 'q') + fixed_width_token(block, 6);
+      auto value        = std::string(40, 'q') + fixed_width_token(block, 6);
       if (offset == 0) {
         value += "a" + fixed_width_token(row, 6);
-      } else if (offset <= std::min<cudf::size_type>(32, stride - 1)) {
+      } else if (offset <= std::min<cudf::size_type>(33, stride - 1)) {
         // Placing every eligible run immediately after a global stride boundary makes the old
         // position-based sampler systematically miss it.
         value += "b-repeat";

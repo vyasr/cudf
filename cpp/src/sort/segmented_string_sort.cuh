@@ -77,6 +77,11 @@ struct refinement_counts {
   size_type continuing_rows{};
   size_type completed_runs{};
   size_type duplicate_rows{};
+  size_type completed_rows{};
+  size_type finish_runs{};
+  size_type finish_rows{};
+  size_type minimum_prefix{maximum_string_size};
+  size_type maximum_prefix{};
 };
 
 __device__ inline bool strings_equal_after(column_device_view strings,
@@ -164,6 +169,7 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
                                     size_type byte_offset,
                                     size_type radix_run_min,
                                     bool last_pass,
+                                    bool trace,
                                     size_type* continuing_begins,
                                     size_type* continuing_ends,
                                     size_type* final_begins,
@@ -201,13 +207,20 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   }
   __syncthreads();
 
-  auto const full_chunk = minimum_bytes >= size_type{8};
+  auto const full_chunk    = minimum_bytes >= radix_prefix_bytes;
+  auto const proven_prefix = full_chunk ? byte_offset + radix_prefix_bytes : byte_offset;
+  if (trace && threadIdx.x == 0) {
+    atomicMin(&refinement->minimum_prefix, proven_prefix);
+    atomicMax(&refinement->maximum_prefix, proven_prefix);
+  }
   if (maximum_bytes <= radix_prefix_bytes && minimum_bytes == maximum_bytes) {
-    if (threadIdx.x == 0) { atomicAdd(&refinement->completed_runs, size_type{1}); }
+    if (threadIdx.x == 0) {
+      atomicAdd(&refinement->completed_runs, size_type{1});
+      if (trace) { atomicAdd(&refinement->completed_rows, end - begin); }
+    }
     return;
   }
 
-  auto const proven_prefix = full_chunk ? byte_offset + size_type{8} : byte_offset;
   if (full_chunk && !last_pass && end - begin >= radix_run_min) {
     if (threadIdx.x != 0) { return; }
     auto const slot         = atomicAdd(&refinement->continuing_runs, size_type{1});
@@ -231,6 +244,7 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
     if (mismatch == 0) {
       atomicAdd(&refinement->completed_runs, size_type{1});
       atomicAdd(&refinement->duplicate_rows, end - begin);
+      if (trace) { atomicAdd(&refinement->completed_rows, end - begin); }
       return;
     }
   } else {
@@ -242,6 +256,10 @@ CUDF_KERNEL void classify_tied_runs(Offset const* offsets,
   final_ends[slot]         = end;
   final_prefix_bytes[slot] = proven_prefix;
   atomicAdd(&finish->rows, end - begin);
+  if (trace) {
+    atomicAdd(&refinement->finish_runs, size_type{1});
+    atomicAdd(&refinement->finish_rows, end - begin);
+  }
 }
 
 __device__ inline bool strings_equal_after(column_device_view strings,
@@ -897,6 +915,7 @@ void sorted_order(column_view const& input,
                                                       pass * radix_prefix_bytes,
                                                       radix_run_min,
                                                       last_pass,
+                                                      tuning.trace,
                                                       next_begins,
                                                       next_ends,
                                                       final_begins.data(),
@@ -920,8 +939,13 @@ void sorted_order(column_view const& input,
       CUDF_CUDA_TRY(cudaGetLastError());
     }
 
-    observed = refinement.value(stream);
-    ++synchronization_points;
+    // No next-pass count is needed after the final pass or when no tied run was found.
+    // Trace alone may request classification counters that ordinary sorting never reads back.
+    if (candidate_count > 0 && (pass + 1 < maximum_radix_passes || tuning.trace)) {
+      observed = refinement.value(stream);
+      ++synchronization_points;
+      if (pass + 1 == maximum_radix_passes && tuning.trace) { ++trace_readbacks; }
+    }
     num_segments = observed.continuing_runs;
     if (num_segments > 0) {
       thrust::sort_by_key(exec, next_begins, next_begins + num_segments, next_ends);
@@ -929,14 +953,24 @@ void sorted_order(column_view const& input,
     if (tuning.trace) {
       std::fprintf(stderr,
                    "segmented-string-sort pass=%d active-rows=%d tied-runs=%d "
-                   "continuing-runs=%d continuing-rows=%d completed-runs=%d duplicate-rows=%d\n",
+                   "continuing-runs=%d continuing-rows=%d completed-runs=%d completed-rows=%d "
+                   "finish-runs=%d finish-rows=%d prefix-min=%d prefix-max=%d duplicate-rows=%d "
+                   "allocations=%d sync-points=%d trace-readbacks=%d\n",
                    pass,
                    active_rows,
                    candidate_count,
                    observed.continuing_runs,
                    observed.continuing_rows,
                    observed.completed_runs,
-                   observed.duplicate_rows);
+                   observed.completed_rows,
+                   observed.finish_runs,
+                   observed.finish_rows,
+                   candidate_count > 0 ? observed.minimum_prefix : 0,
+                   observed.maximum_prefix,
+                   observed.duplicate_rows,
+                   allocation_count,
+                   synchronization_points,
+                   trace_readbacks);
     }
 
     std::swap(current_begins, next_begins);

@@ -139,19 +139,6 @@ struct identity_element_transform {
 };
 
 /**
- * @brief Removes a prefix already proven equal by segmented radix refinement.
- */
-struct string_suffix_transform {
-  __device__ string_view operator()(string_view value, size_type row) const
-  {
-    auto const skip = known_prefix_bytes == nullptr ? size_type{0} : known_prefix_bytes[row];
-    return skip == 0 ? value : string_view{value.data() + skip, value.size_bytes() - skip};
-  }
-
-  size_type const* known_prefix_bytes{};
-};
-
-/**
  * @brief Comparator functor needed for single column sort.
  *
  * @tparam Column element type.
@@ -268,10 +255,9 @@ struct column_sorted_order_fn {
                                      cuda::stream_ref stream)
   {
     using nullability = std::conditional_t<has_nulls, nullate::YES, nullate::NO>;
-    using transform   = string_suffix_transform;
-    auto const comp   = simple_comparator<string_view, nullability, transform>{
-      keys, nullability{}, ascending, null_precedence, transform{}};
-    segmented_string_sort::sorted_order<8, true>(
+    auto const comp =
+      simple_comparator<string_view, nullability>{keys, nullability{}, ascending, null_precedence};
+    segmented_string_sort::sorted_order(
       input, indices, ascending, null_precedence, comp, config, stream);
   }
 

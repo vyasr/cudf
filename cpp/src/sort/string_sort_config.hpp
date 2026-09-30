@@ -31,7 +31,6 @@ struct segmented_string_sort_config {
   int rle_min_coverage_percent{25};
   int rle_min_equal_percent{10};
   bool trace{false};
-  bool logical_rle_sampling{false};
 };
 
 [[nodiscard]] inline int parse_integer_setting(char const* value,
@@ -70,8 +69,7 @@ struct segmented_string_sort_config {
   char const* rle_min_run_length,
   char const* rle_min_coverage_percent,
   char const* rle_min_equal_percent,
-  char const* trace,
-  char const* logical_rle_sampling = nullptr)
+  char const* trace)
 {
   auto config               = segmented_string_sort_config{};
   config.bytes_per_pass     = parse_bytes_per_pass(bytes_per_pass);
@@ -87,7 +85,6 @@ struct segmented_string_sort_config {
   config.rle_min_coverage_percent = parse_integer_setting(rle_min_coverage_percent, 0, 100, 25);
   config.rle_min_equal_percent    = parse_integer_setting(rle_min_equal_percent, 0, 100, 10);
   config.trace                    = parse_integer_setting(trace, 0, 1, 0) != 0;
-  config.logical_rle_sampling     = parse_integer_setting(logical_rle_sampling, 0, 1, 0) != 0;
   return config;
 }
 
@@ -130,8 +127,7 @@ struct segmented_string_sort_config {
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_RUN_LENGTH"),
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_COVERAGE_PERCENT"),
     std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_RLE_MIN_EQUAL_PERCENT"),
-    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_TRACE"),
-    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_LOGICAL_RLE_SAMPLING"));
+    std::getenv("LIBCUDF_SEGMENTED_STRING_SORT_TRACE"));
   return config;
 }
 

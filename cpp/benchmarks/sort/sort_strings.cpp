@@ -252,6 +252,23 @@ std::unique_ptr<cudf::column> make_diagnostic_input(cudf::size_type num_rows,
     for (cudf::size_type row = 0; row < num_rows; ++row) {
       strings[static_cast<std::size_t>(row)] = row % 2 == 0 ? long_value : short_value;
     }
+  } else if (profile_name == "rle_misaligned") {
+    auto const stride = std::max<cudf::size_type>(1, (num_rows + 4095) / 4096);
+    for (cudf::size_type row = 0; row < num_rows; ++row) {
+      auto const block  = row / stride;
+      auto const offset = row % stride;
+      auto value        = std::string(24, 'q') + fixed_width_token(block, 6);
+      if (offset == 0) {
+        value += "a" + fixed_width_token(row, 6);
+      } else if (offset <= std::min<cudf::size_type>(32, stride - 1)) {
+        // Placing every eligible run immediately after a global stride boundary makes the old
+        // position-based sampler systematically miss it.
+        value += "b-repeat";
+      } else {
+        value += "c" + fixed_width_token(offset, 6);
+      }
+      strings[static_cast<std::size_t>(row)] = std::move(value);
+    }
   } else {
     CUDF_FAIL("Unknown segmented string diagnostic profile: " + profile_name);
   }
@@ -495,4 +512,5 @@ NVBENCH_BENCH(bench_sorted_order_strings_segmented_diagnostics)
                     "duplicates_24",
                     "duplicates_32",
                     "zero_collision_pass1",
-                    "zero_collision_pass2"});
+                    "zero_collision_pass2",
+                    "rle_misaligned"});

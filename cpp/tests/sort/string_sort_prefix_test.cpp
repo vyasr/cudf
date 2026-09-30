@@ -18,6 +18,7 @@
 #include <cudf/table/table_view.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <rmm/device_buffer.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
 
 #include <cuda/stream>
@@ -690,4 +691,71 @@ TEST_F(StringSort, StableParallelMergeAcrossBlockBoundaries)
     expected_data.begin(), expected_data.end());
   auto const result = cudf::stable_sorted_order(cudf::table_view{{input}});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+}
+
+TEST_F(StringSort, ExactRadixTerminationAndChunkBoundaries)
+{
+  std::vector<std::string> strings;
+  for (auto const length : {7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65}) {
+    auto const value = std::string(length, static_cast<char>('a' + length % 20));
+    for (int row = 0; row < 513; ++row) {
+      strings.push_back(value);
+    }
+    strings.push_back(value + std::string(8, '\0'));
+    strings.push_back(value + "z");
+  }
+  std::reverse(strings.begin(), strings.end());
+  auto const input = cudf::test::strings_column_wrapper(strings.begin(), strings.end());
+  for (auto const direction : {cudf::order::ASCENDING, cudf::order::DESCENDING}) {
+    std::vector<cudf::size_type> expected_rows(strings.size());
+    std::iota(expected_rows.begin(), expected_rows.end(), cudf::size_type{0});
+    std::stable_sort(expected_rows.begin(), expected_rows.end(), [&](auto lhs, auto rhs) {
+      return direction == cudf::order::ASCENDING ? bytewise_less(strings[lhs], strings[rhs])
+                                                 : bytewise_less(strings[rhs], strings[lhs]);
+    });
+    auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+      expected_rows.begin(), expected_rows.end());
+    auto const stable = cudf::stable_sorted_order(cudf::table_view{{input}}, {direction});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, stable->view());
+    auto const unstable        = cudf::sorted_order(cudf::table_view{{input}}, {direction});
+    auto const gathered        = cudf::gather(cudf::table_view{{input}}, unstable->view());
+    auto const stable_gathered = cudf::gather(cudf::table_view{{input}}, stable->view());
+    CUDF_TEST_EXPECT_TABLES_EQUAL(stable_gathered->view(), gathered->view());
+  }
+}
+
+TEST_F(StringSort, ExplicitLargeOffsetsAndSlice)
+{
+  auto strings = edge_case_strings();
+  strings.insert(strings.end(), 513, std::string(40, 'q'));
+  std::vector<std::int64_t> offsets{0};
+  std::vector<char> chars;
+  for (auto const& value : strings) {
+    chars.insert(chars.end(), value.begin(), value.end());
+    offsets.push_back(static_cast<std::int64_t>(chars.size()));
+  }
+  auto offsets_column =
+    cudf::test::fixed_width_column_wrapper<std::int64_t>(offsets.begin(), offsets.end()).release();
+  auto const stream = cudf::get_default_stream();
+  auto input        = cudf::make_strings_column(static_cast<cudf::size_type>(strings.size()),
+                                         std::move(offsets_column),
+                                         rmm::device_buffer(chars.data(), chars.size(), stream),
+                                         0,
+                                         rmm::device_buffer{});
+  ASSERT_EQ(input->view().child(0).type().id(), cudf::type_id::INT64);
+  auto const slice =
+    cudf::slice(input->view(), {1, static_cast<cudf::size_type>(strings.size() - 1)})[0];
+  for (auto const direction : {cudf::order::ASCENDING, cudf::order::DESCENDING}) {
+    std::vector<cudf::size_type> expected_rows(slice.size());
+    std::iota(expected_rows.begin(), expected_rows.end(), cudf::size_type{0});
+    std::stable_sort(expected_rows.begin(), expected_rows.end(), [&](auto lhs, auto rhs) {
+      return direction == cudf::order::ASCENDING
+               ? bytewise_less(strings[lhs + 1], strings[rhs + 1])
+               : bytewise_less(strings[rhs + 1], strings[lhs + 1]);
+    });
+    auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+      expected_rows.begin(), expected_rows.end());
+    auto const result = cudf::stable_sorted_order(cudf::table_view{{slice}}, {direction});
+    CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+  }
 }

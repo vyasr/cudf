@@ -9,10 +9,12 @@
 
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/detail/device_scalar.hpp>
+#include <cudf/detail/iterator.cuh>
 #include <cudf/detail/utilities/cuda.cuh>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
 #include <cudf/detail/utilities/grid_1d.cuh>
 #include <cudf/strings/string_view.cuh>
+#include <cudf/strings/strings_column_view.hpp>
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
@@ -20,7 +22,10 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
+#include <cooperative_groups.h>
+#include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_segmented_radix_sort.cuh>
+#include <cuda/pipeline>
 #include <thrust/copy.h>
 #include <thrust/count.h>
 #include <thrust/fill.h>
@@ -34,11 +39,25 @@
 #include <cstdio>
 #include <utility>
 
+// CUDA's block pipeline state is intentionally initialized cooperatively in shared memory.
+#pragma nv_diag_suppress static_var_with_dynamic_init
+
 namespace cudf::detail {
 namespace segmented_string_sort {
 
-constexpr size_type block_sort_size = 256;
-constexpr size_type invalid_index   = -1;
+constexpr size_type block_sort_size         = 256;
+constexpr size_type invalid_index           = -1;
+constexpr size_type shuffle_block_size      = 256;
+constexpr size_type strings_per_shuffle_cta = 2048;
+constexpr size_type shuffle_copy_bytes      = 2048;
+constexpr size_type shuffle_pipeline_stages = 2;
+
+__device__ constexpr std::uint64_t byte_swap(std::uint64_t value)
+{
+  value = ((value & 0x00ff00ff00ff00ffULL) << 8) | ((value & 0xff00ff00ff00ff00ULL) >> 8);
+  value = ((value & 0x0000ffff0000ffffULL) << 16) | ((value & 0xffff0000ffff0000ULL) >> 16);
+  return (value << 32) | (value >> 32);
+}
 
 template <int bytes_per_pass>
 struct radix_key_layout {
@@ -110,6 +129,122 @@ CUDF_KERNEL void make_keys(column_device_view strings,
   } else {
     keys[position] = bytes;
   }
+}
+
+template <typename Offset>
+CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset const* offsets,
+                                                                       char const* chars,
+                                                                       size_type size,
+                                                                       std::uint64_t* keys)
+{
+  __shared__ __align__(16) Offset shared_offsets[strings_per_shuffle_cta + 1];
+  __shared__ __align__(16) char shared_chars[shuffle_copy_bytes * shuffle_pipeline_stages];
+  __shared__
+    cuda::pipeline_shared_state<cuda::thread_scope::thread_scope_block, shuffle_pipeline_stages>
+      pipeline_state;
+
+  auto const block       = cooperative_groups::this_thread_block();
+  auto pipeline          = cuda::make_pipeline(block, &pipeline_state);
+  auto const block_begin = static_cast<size_type>(blockIdx.x) * strings_per_shuffle_cta;
+  auto const block_size  = min(strings_per_shuffle_cta, size - block_begin);
+  for (auto index = static_cast<size_type>(threadIdx.x); index <= block_size;
+       index += static_cast<size_type>(blockDim.x)) {
+    shared_offsets[index] = offsets[block_begin + index];
+  }
+  block.sync();
+
+  auto const chars_begin = static_cast<Offset>(shared_offsets[0] & ~Offset{15});
+  auto const chars_end   = shared_offsets[block_size];
+  auto const char_count  = static_cast<size_type>(chars_end - chars_begin);
+  auto const iterations =
+    max(size_type{1}, (char_count + shuffle_copy_bytes - 1) / shuffle_copy_bytes);
+  auto next_copy = size_type{0};
+
+  auto issue_copy = [&](size_type stage) {
+    auto const copied = next_copy * shuffle_copy_bytes;
+    auto const bytes  = min(shuffle_copy_bytes, max(size_type{0}, char_count - copied));
+    pipeline.producer_acquire();
+    cuda::memcpy_async(block,
+                       shared_chars + stage * shuffle_copy_bytes,
+                       chars + chars_begin + copied,
+                       static_cast<std::size_t>(bytes),
+                       pipeline);
+    pipeline.producer_commit();
+    ++next_copy;
+  };
+  issue_copy(0);
+
+  auto local_row  = static_cast<size_type>(threadIdx.x);
+  auto byte       = size_type{0};
+  auto key        = std::uint64_t{0};
+  auto skip_empty = [&] {
+    while (local_row < block_size && shared_offsets[local_row] == shared_offsets[local_row + 1]) {
+      keys[block_begin + local_row] = 0;
+      local_row += static_cast<size_type>(blockDim.x);
+    }
+  };
+  skip_empty();
+
+  for (auto iteration = size_type{0}; iteration < iterations; ++iteration) {
+    auto const current_stage = iteration % shuffle_pipeline_stages;
+    if (next_copy < iterations) { issue_copy(next_copy % shuffle_pipeline_stages); }
+    pipeline.consumer_wait();
+    auto const window_begin = iteration * shuffle_copy_bytes;
+    auto const window_end   = min(window_begin + shuffle_copy_bytes, char_count);
+
+    while (local_row < block_size) {
+      auto const row_begin = static_cast<size_type>(shared_offsets[local_row] - chars_begin);
+      auto const row_size =
+        static_cast<size_type>(shared_offsets[local_row + 1] - shared_offsets[local_row]);
+      auto const key_size = min(size_type{8}, row_size);
+      if (row_begin + byte >= window_end) { break; }
+      while (byte < key_size && row_begin + byte < window_end) {
+        key = (key << 8) |
+              static_cast<unsigned char>(
+                shared_chars[current_stage * shuffle_copy_bytes + row_begin + byte - window_begin]);
+        ++byte;
+      }
+      if (byte != key_size) { break; }
+      keys[block_begin + local_row] = key << (8 * (8 - key_size));
+      local_row += static_cast<size_type>(blockDim.x);
+      byte = 0;
+      key  = 0;
+      skip_empty();
+    }
+    pipeline.consumer_release();
+  }
+}
+
+template <typename Offset, typename IndexIterator>
+CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
+                                      char const* chars,
+                                      size_type strings_offset,
+                                      IndexIterator indices,
+                                      std::uint8_t const* active,
+                                      std::uint64_t* keys,
+                                      size_type size,
+                                      size_type byte_offset)
+{
+  auto const position = cudf::detail::grid_1d::global_thread_id();
+  if (position >= size || active[position] == 0) { return; }
+
+  auto const row       = indices[position];
+  auto const row_begin = offsets[strings_offset + row];
+  auto const row_end   = offsets[strings_offset + row + 1];
+  auto const remaining = row_end - row_begin > byte_offset ? row_end - row_begin - byte_offset : 0;
+  auto const key_size  = min(Offset{8}, remaining);
+  auto key             = std::uint64_t{0};
+  if (key_size == 8) {
+    std::uint64_t native_word;
+    memcpy(&native_word, chars + row_begin + byte_offset, sizeof(native_word));
+    key = byte_swap(native_word);
+  } else {
+    for (Offset byte = 0; byte < key_size; ++byte) {
+      key = (key << 8) | static_cast<unsigned char>(chars[row_begin + byte_offset + byte]);
+    }
+    key <<= 8 * (8 - key_size);
+  }
+  keys[position] = key;
 }
 
 struct valid_row_predicate {
@@ -591,6 +726,48 @@ inline void segmented_radix_sort(std::uint64_t const* keys_in,
   CUDF_CUDA_TRY(invoke(temp_storage.data()));
 }
 
+inline void global_radix_sort(std::uint64_t const* keys_in,
+                              std::uint64_t* keys_out,
+                              size_type const* values_in,
+                              size_type* values_out,
+                              size_type size,
+                              bool ascending,
+                              rmm::device_buffer& temp_storage,
+                              cuda::stream_ref stream)
+{
+  std::size_t temp_storage_bytes = 0;
+  auto invoke                    = [&](void* storage) {
+    if (ascending) {
+      return cub::DeviceRadixSort::SortPairs(storage,
+                                             temp_storage_bytes,
+                                             keys_in,
+                                             keys_out,
+                                             values_in,
+                                             values_out,
+                                             size,
+                                             0,
+                                             64,
+                                             stream.get());
+    }
+    return cub::DeviceRadixSort::SortPairsDescending(storage,
+                                                     temp_storage_bytes,
+                                                     keys_in,
+                                                     keys_out,
+                                                     values_in,
+                                                     values_out,
+                                                     size,
+                                                     0,
+                                                     64,
+                                                     stream.get());
+  };
+  CUDF_CUDA_TRY(invoke(nullptr));
+  if (temp_storage_bytes > temp_storage.size()) {
+    temp_storage =
+      rmm::device_buffer(temp_storage_bytes, stream, cudf::get_current_device_resource_ref());
+  }
+  CUDF_CUDA_TRY(invoke(temp_storage.data()));
+}
+
 /**
  * @brief Sort string row indices using iterative big-endian prefix refinement.
  *
@@ -609,15 +786,18 @@ void sorted_order(column_view const& input,
                   segmented_string_sort_config const& tuning,
                   cuda::stream_ref stream)
 {
-  using key_layout      = radix_key_layout<bytes_per_pass>;
-  auto const size       = input.size();
-  auto const temp_mr    = cudf::get_current_device_resource_ref();
-  auto strings          = column_device_view::create(input, stream);
-  auto const exec       = rmm::exec_policy_nosync(stream, temp_mr);
-  auto const valid_size = key_layout::uses_full_width ? size - input.null_count() : size;
-  auto const null_size  = size - valid_size;
-  auto indices_a        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
-  auto indices_b        = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  using key_layout        = radix_key_layout<bytes_per_pass>;
+  auto const size         = input.size();
+  auto const temp_mr      = cudf::get_current_device_resource_ref();
+  auto const strings_view = strings_column_view{input};
+  auto const offsets      = strings_view.offsets();
+  auto const chars        = strings_view.chars_begin(stream);
+  auto strings            = column_device_view::create(input, stream);
+  auto const exec         = rmm::exec_policy_nosync(stream, temp_mr);
+  auto const valid_size   = key_layout::uses_full_width ? size - input.null_count() : size;
+  auto const null_size    = size - valid_size;
+  auto indices_a          = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
+  auto indices_b          = rmm::device_uvector<size_type>(valid_size, stream, temp_mr);
   auto null_indices =
     rmm::device_uvector<size_type>(key_layout::uses_full_width ? null_size : 0, stream, temp_mr);
   auto const rows = cuda::counting_iterator<size_type>{0};
@@ -689,15 +869,17 @@ void sorted_order(column_view const& input,
     thrust::fill(exec, run_byte_state.begin(), run_byte_state.end(), size_type{0});
   }
 
-  auto* current_indices = indices_a.data();
-  auto* other_indices   = indices_b.data();
-  auto* current_begins  = begins_a.data();
-  auto* current_ends    = ends_a.data();
-  auto* next_begins     = begins_b.data();
-  auto* next_ends       = ends_b.data();
-  auto* active          = active_a.data();
-  auto* next_active     = active_b.data();
-  auto const config     = cudf::detail::grid_1d{valid_size, 256};
+  auto* current_indices        = indices_a.data();
+  auto* other_indices          = indices_b.data();
+  auto* current_begins         = begins_a.data();
+  auto* current_ends           = ends_a.data();
+  auto* next_begins            = begins_b.data();
+  auto* next_ends              = ends_b.data();
+  auto* active                 = active_a.data();
+  auto* next_active            = active_b.data();
+  auto const config            = cudf::detail::grid_1d{valid_size, 256};
+  auto const first_pass_config = cudf::detail::grid_1d{
+    valid_size, shuffle_block_size, strings_per_shuffle_cta / shuffle_block_size};
   auto cub_temp_storage = rmm::device_buffer{};
   size_type num_segments{1};
   // This counts algorithm-visible workspace allocations rather than upstream pool growth. It makes
@@ -722,29 +904,57 @@ void sorted_order(column_view const& input,
     thrust::fill(exec, next_begins, next_begins + valid_size, valid_size);
     thrust::fill(exec, next_ends, next_ends + valid_size, valid_size);
 
-    make_keys<bytes_per_pass>
-      <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(*strings,
-                                                                             current_indices,
-                                                                             active,
-                                                                             keys_in.data(),
-                                                                             valid_size,
-                                                                             pass * bytes_per_pass,
-                                                                             null_precedence);
+    auto const launch_keys = [&]<typename Offset>() {
+      auto const* typed_offsets = offsets.head<Offset>() + input.offset();
+      if (pass == 0 && null_size == 0) {
+        make_first_keys<Offset><<<first_pass_config.num_blocks,
+                                  first_pass_config.num_threads_per_block,
+                                  0,
+                                  stream.get()>>>(typed_offsets, chars, valid_size, keys_in.data());
+      } else {
+        make_subsequent_keys<Offset>
+          <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
+            offsets.head<Offset>(),
+            chars,
+            input.offset(),
+            current_indices,
+            active,
+            keys_in.data(),
+            valid_size,
+            pass * bytes_per_pass);
+      }
+    };
+    if (offsets.type().id() == type_id::INT64) {
+      launch_keys.template operator()<int64_t>();
+    } else {
+      launch_keys.template operator()<size_type>();
+    }
     CUDF_CUDA_TRY(cudaGetLastError());
-    CUDF_CUDA_TRY(cudf::detail::memcpy_async(
-      other_indices, current_indices, sizeof(size_type) * valid_size, stream));
     auto const cub_storage_was_empty = cub_temp_storage.size() == 0;
-    segmented_radix_sort(keys_in.data(),
-                         keys_out.data(),
-                         current_indices,
-                         other_indices,
-                         valid_size,
-                         num_segments,
-                         current_begins,
-                         current_ends,
-                         ascending,
-                         cub_temp_storage,
-                         stream);
+    if (pass == 0) {
+      global_radix_sort(keys_in.data(),
+                        keys_out.data(),
+                        current_indices,
+                        other_indices,
+                        valid_size,
+                        ascending,
+                        cub_temp_storage,
+                        stream);
+    } else {
+      CUDF_CUDA_TRY(cudf::detail::memcpy_async(
+        other_indices, current_indices, sizeof(size_type) * valid_size, stream));
+      segmented_radix_sort(keys_in.data(),
+                           keys_out.data(),
+                           current_indices,
+                           other_indices,
+                           valid_size,
+                           num_segments,
+                           current_begins,
+                           current_ends,
+                           ascending,
+                           cub_temp_storage,
+                           stream);
+    }
     if (cub_storage_was_empty && cub_temp_storage.size() > 0) { ++allocation_count; }
     std::swap(current_indices, other_indices);
 

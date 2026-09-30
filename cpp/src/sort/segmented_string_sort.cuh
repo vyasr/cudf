@@ -89,6 +89,16 @@ struct remaining_bounds {
   size_type maximum{};
 };
 
+struct endpoint_offset {
+  size_type stride;
+  size_type offset;
+
+  __host__ __device__ size_type operator()(size_type segment) const
+  {
+    return segment * stride + offset;
+  }
+};
+
 struct combine_remaining_bounds {
   __host__ __device__ remaining_bounds operator()(remaining_bounds lhs, remaining_bounds rhs) const
   {
@@ -850,8 +860,10 @@ void sorted_order(column_view const& input,
   auto begins_b = rmm::device_uvector<size_type>(maximum_continuing_runs, stream, temp_mr);
   auto ends_b   = rmm::device_uvector<size_type>(maximum_continuing_runs, stream, temp_mr);
 
-  auto run_begins = rmm::device_uvector<size_type>(valid_size / 2, stream, temp_mr);
-  auto run_ends   = rmm::device_uvector<size_type>(valid_size / 2, stream, temp_mr);
+  auto const endpoint_capacity = valid_size / 2;
+  auto run_endpoints = rmm::device_uvector<size_type>(2 * endpoint_capacity, stream, temp_mr);
+  auto* run_begins   = run_endpoints.data();
+  auto* run_ends     = endpoint_capacity > 0 ? run_begins + endpoint_capacity : run_begins;
 
   // Every recorded final segment contains at least two rows, so half the row count is a tight
   // upper bound.
@@ -880,7 +892,7 @@ void sorted_order(column_view const& input,
   // This counts algorithm-visible workspace allocations rather than upstream pool growth. It makes
   // stage-to-stage buffer lifetime changes observable without replacing the caller's memory
   // resource.
-  auto allocation_count = size_type{15 + (null_indices.size() > 0 ? 1 : 0)};
+  auto allocation_count = size_type{14 + (null_indices.size() > 0 ? 1 : 0)};
   auto active_rows      = valid_size;
 
   for (size_type pass = 0; pass < maximum_radix_passes && num_segments > 0; ++pass) {
@@ -955,8 +967,8 @@ void sorted_order(column_view const& input,
       current_begins,
       current_ends,
       previous_run_count,
-      run_begins.data(),
-      run_ends.data(),
+      run_begins,
+      run_ends,
       refinement.data());
     CUDF_CUDA_TRY(cudaGetLastError());
 
@@ -966,8 +978,37 @@ void sorted_order(column_view const& input,
                  "Segmented string sort produced mismatched run endpoints");
     auto const candidate_count = observed.candidate_starts;
     if (candidate_count > 0) {
-      thrust::sort(exec, run_begins.begin(), run_begins.begin() + candidate_count);
-      thrust::sort(exec, run_ends.begin(), run_ends.begin() + candidate_count);
+      auto* ordered_begins = run_begins;
+      auto* ordered_ends   = run_ends;
+      if (candidate_count > 1) {
+        // Disjoint runs have the same begin/end order. Batching their independent endpoint sorts
+        // matches the source pipeline and avoids two separate sorting workspaces and launches.
+        // Sorted radix keys are dead after endpoint detection, so their buffer holds the output.
+        ordered_begins    = reinterpret_cast<size_type*>(keys_out.data());
+        ordered_ends      = ordered_begins + endpoint_capacity;
+        auto const begins = cudf::detail::make_counting_transform_iterator(
+          size_type{0}, endpoint_offset{endpoint_capacity, 0});
+        auto const ends = cudf::detail::make_counting_transform_iterator(
+          size_type{0}, endpoint_offset{endpoint_capacity, candidate_count});
+        std::size_t endpoint_sort_bytes = 0;
+        auto const sort_endpoints       = [&](void* storage) {
+          return cub::DeviceSegmentedSort::SortKeys(storage,
+                                                    endpoint_sort_bytes,
+                                                    run_endpoints.data(),
+                                                    ordered_begins,
+                                                    2 * endpoint_capacity,
+                                                    2,
+                                                    begins,
+                                                    ends,
+                                                    stream.get());
+        };
+        CUDF_CUDA_TRY(sort_endpoints(nullptr));
+        if (endpoint_sort_bytes > cub_temp_storage.size()) {
+          cub_temp_storage = rmm::device_buffer(endpoint_sort_bytes, stream, temp_mr);
+          ++allocation_count;
+        }
+        CUDF_CUDA_TRY(sort_endpoints(cub_temp_storage.data()));
+      }
       // A run can span the entire column. Tiling distributes its length proof across blocks instead
       // of making one classification block walk millions of rows. Unsorted radix keys are dead
       // until the next extraction, so their storage holds these two-word bounds without allocation.
@@ -981,8 +1022,8 @@ void sorted_order(column_view const& input,
                                      stream.get()>>>(remaining_length{byte_counts},
                                                      current_indices,
                                                      valid_size,
-                                                     run_begins.data(),
-                                                     run_ends.data(),
+                                                     ordered_begins,
+                                                     ordered_ends,
                                                      candidate_count,
                                                      bounds);
       auto const last_pass             = pass + 1 == maximum_radix_passes;
@@ -991,8 +1032,8 @@ void sorted_order(column_view const& input,
           <<<candidate_count, 256, 0, stream.get()>>>(bounds,
                                                       comparator.d_column,
                                                       current_indices,
-                                                      run_begins.data(),
-                                                      run_ends.data(),
+                                                      ordered_begins,
+                                                      ordered_ends,
                                                       candidate_count,
                                                       pass * radix_prefix_bytes,
                                                       radix_run_min,
@@ -1073,8 +1114,8 @@ void sorted_order(column_view const& input,
     }
     // Refinement endpoints are dead here and have enough capacity for one count/offset per finish
     // run, so the scan needs no additional row-sized storage.
-    auto* chunk_counts      = run_begins.data();
-    auto* chunk_offsets     = run_ends.data();
+    auto* chunk_counts      = run_begins;
+    auto* chunk_offsets     = run_ends;
     auto const chunk_config = cudf::detail::grid_1d{finish.segments, 256};
     compute_finish_chunk_counts<<<chunk_config.num_blocks,
                                   chunk_config.num_threads_per_block,

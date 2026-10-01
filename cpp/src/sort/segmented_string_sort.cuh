@@ -457,11 +457,11 @@ CUDF_KERNEL __launch_bounds__(shuffle_block_size) void make_first_keys(Offset co
   }
 }
 
-template <typename Offset, typename IndexIterator>
+template <typename Offset>
 CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
                                       char const* chars,
                                       size_type strings_offset,
-                                      IndexIterator indices,
+                                      size_type const* indices,
                                       size_type const* run_begins,
                                       size_type const* run_ends,
                                       size_type num_runs,
@@ -470,47 +470,99 @@ CUDF_KERNEL void make_subsequent_keys(Offset const* offsets,
                                       size_type size,
                                       size_type byte_offset)
 {
-  auto const position = cudf::detail::grid_1d::global_thread_id();
-  if (position >= size) { return; }
-  size_type run_begin, run_end;
-  if (!find_containing_run(position, run_begins, run_ends, num_runs, size, run_begin, run_end)) {
-    return;
-  }
-
-  auto const row       = indices[position];
-  auto const row_begin = offsets[strings_offset + row];
-  auto const row_end   = offsets[strings_offset + row + 1];
-  auto const remaining = row_end - row_begin > byte_offset ? row_end - row_begin - byte_offset : 0;
-  byte_counts[row]     = static_cast<std::uint8_t>(min(Offset{radix_prefix_bytes + 1}, remaining));
-  auto const key_size  = min(Offset{8}, remaining);
-  auto key             = std::uint64_t{0};
-  if (key_size == radix_prefix_bytes) {
-    auto const start         = row_begin + byte_offset;
-    auto const aligned_start = start & ~Offset{radix_prefix_bytes - 1};
-    auto const shift         = static_cast<unsigned int>((start - aligned_start) * 8);
-    auto const* words        = reinterpret_cast<std::uint64_t const*>(chars + aligned_start);
-    auto native_word         = words[0] >> shift;
-    if (shift != 0) {
-      // Reading a complete aligned word is safe only inside the chars allocation. A final
-      // misaligned string may require a few tail-byte loads instead of the reference's overread.
-      if (offsets[strings_offset + size] - aligned_start >= 2 * radix_prefix_bytes) {
-        native_word |= words[1] << (64 - shift);
+  auto const block_begin = static_cast<size_type>(blockIdx.x) * strings_per_shuffle_cta;
+  auto const block_rows  = min(strings_per_shuffle_cta, size - block_begin);
+  auto const block_end   = block_begin + block_rows;
+  auto const lane        = static_cast<size_type>(threadIdx.x);
+  auto const threads     = static_cast<size_type>(blockDim.x);
+  __shared__ size_type first_run;
+  __shared__ size_type last_run;
+  __shared__ __align__(16) size_type block_indices[strings_per_shuffle_cta];
+  if (lane == 0) {
+    auto low  = size_type{0};
+    auto high = num_runs;
+    while (low < high) {
+      auto const middle = low + (high - low) / 2;
+      if (run_ends[middle] <= block_begin) {
+        low = middle + 1;
       } else {
-        auto const loaded_bytes = radix_prefix_bytes - shift / 8;
-        for (auto byte = loaded_bytes; byte < radix_prefix_bytes; ++byte) {
-          native_word |= std::uint64_t{static_cast<unsigned char>(chars[start + byte])}
-                         << (8 * byte);
-        }
+        high = middle;
       }
     }
-    key = byte_swap(native_word);
-  } else {
-    for (Offset byte = 0; byte < key_size; ++byte) {
-      key = (key << 8) | static_cast<unsigned char>(chars[row_begin + byte_offset + byte]);
+    first_run = low;
+    high      = num_runs;
+    while (low < high) {
+      auto const middle = low + (high - low) / 2;
+      if (run_begins[middle] < block_end) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
     }
-    key <<= 8 * (8 - key_size);
+    last_run = low;
   }
-  keys[position] = key;
+  __syncthreads();
+  if (num_runs > 0 && first_run == last_run) { return; }
+
+  // The source amortizes each CTA over 2,048 rows. Shared index staging and a block-local run
+  // interval avoid launching a CTA per 256 rows and searching every run for every input row.
+  if (block_rows == strings_per_shuffle_cta) {
+    auto const* input_vectors = reinterpret_cast<int4 const*>(indices + block_begin);
+    auto* shared_vectors      = reinterpret_cast<int4*>(block_indices);
+    for (auto index = lane; index < strings_per_shuffle_cta / 4; index += threads) {
+      shared_vectors[index] = input_vectors[index];
+    }
+  } else {
+    for (auto index = lane; index < block_rows; index += threads) {
+      block_indices[index] = indices[block_begin + index];
+    }
+  }
+  __syncthreads();
+
+  for (auto local_row = lane; local_row < block_rows; local_row += threads) {
+    auto const position = block_begin + local_row;
+    if (num_runs > 0 && find_run_slot(position,
+                                      run_begins + first_run,
+                                      run_ends + first_run,
+                                      last_run - first_run) == invalid_index) {
+      continue;
+    }
+    auto const row       = block_indices[local_row];
+    auto const row_begin = offsets[strings_offset + row];
+    auto const row_end   = offsets[strings_offset + row + 1];
+    auto const remaining =
+      row_end - row_begin > byte_offset ? row_end - row_begin - byte_offset : 0;
+    byte_counts[row]    = static_cast<std::uint8_t>(min(Offset{radix_prefix_bytes + 1}, remaining));
+    auto const key_size = min(Offset{radix_prefix_bytes}, remaining);
+    auto key            = std::uint64_t{0};
+    if (key_size == radix_prefix_bytes) {
+      auto const start         = row_begin + byte_offset;
+      auto const aligned_start = start & ~Offset{radix_prefix_bytes - 1};
+      auto const shift         = static_cast<unsigned int>((start - aligned_start) * 8);
+      auto const* words        = reinterpret_cast<std::uint64_t const*>(chars + aligned_start);
+      auto native_word         = words[0] >> shift;
+      if (shift != 0) {
+        // Reading a complete aligned word is safe only inside the chars allocation. A final
+        // misaligned string may require a few tail-byte loads instead of the reference's overread.
+        if (offsets[strings_offset + size] - aligned_start >= 2 * radix_prefix_bytes) {
+          native_word |= words[1] << (64 - shift);
+        } else {
+          auto const loaded_bytes = radix_prefix_bytes - shift / 8;
+          for (auto byte = loaded_bytes; byte < radix_prefix_bytes; ++byte) {
+            native_word |= std::uint64_t{static_cast<unsigned char>(chars[start + byte])}
+                           << (8 * byte);
+          }
+        }
+      }
+      key = byte_swap(native_word);
+    } else {
+      for (Offset byte = 0; byte < key_size; ++byte) {
+        key = (key << 8) | static_cast<unsigned char>(chars[row_begin + byte_offset + byte]);
+      }
+      if (key_size > 0) { key <<= 8 * (radix_prefix_bytes - key_size); }
+    }
+    keys[position] = key;
+  }
 }
 
 struct valid_row_predicate {
@@ -905,19 +957,20 @@ void sorted_order(column_view const& input,
              0,
              stream.get()>>>(typed_offsets, chars, valid_size, keys_in.data(), byte_counts);
       } else {
-        make_subsequent_keys<Offset>
-          <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
-            offsets.head<Offset>(),
-            chars,
-            input.offset(),
-            current_indices,
-            current_begins,
-            current_ends,
-            pass == 0 ? size_type{0} : num_segments,
-            keys_in.data(),
-            byte_counts,
-            valid_size,
-            pass * radix_prefix_bytes);
+        make_subsequent_keys<Offset><<<first_pass_config.num_blocks,
+                                       first_pass_config.num_threads_per_block,
+                                       0,
+                                       stream.get()>>>(offsets.head<Offset>(),
+                                                       chars,
+                                                       input.offset(),
+                                                       current_indices,
+                                                       current_begins,
+                                                       current_ends,
+                                                       pass == 0 ? size_type{0} : num_segments,
+                                                       keys_in.data(),
+                                                       byte_counts,
+                                                       valid_size,
+                                                       pass * radix_prefix_bytes);
       }
     };
     if (offsets.type().id() == type_id::INT64) {

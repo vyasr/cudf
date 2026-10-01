@@ -56,6 +56,9 @@ rmm::device_uvector<int64_t> find_string_delimiter_positions(strings_column_view
                                                              cudf::string_view delimiter,
                                                              cuda::stream_ref stream);
 
+rmm::device_uvector<int64_t> find_whitespace_delimiter_positions(strings_column_view const& input,
+                                                                 cuda::stream_ref stream);
+
 /**
  * @brief Returns `true` if the byte at `idx` is a whitespace character
  */
@@ -777,6 +780,9 @@ std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split
   auto delimiter_positions = [&] {
     if constexpr (std::is_same_v<DelimiterFn, string_delimiter_fn>) {
       return find_string_delimiter_positions(input, delimiter_fn.d_delimiter, stream);
+    } else if constexpr (std::is_same_v<std::remove_cvref_t<DelimiterFn>,
+                                        whitespace_delimiter_fn>) {
+      return find_whitespace_delimiter_positions(input, stream);
     } else {
       auto [first_offset, last_offset] = get_first_and_last_offset(input, stream);
       auto const chars_bytes           = last_offset - first_offset;

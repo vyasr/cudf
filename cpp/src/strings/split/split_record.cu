@@ -50,7 +50,8 @@ std::unique_ptr<column> split_record_fn(strings_column_view const& input,
                              cudf::detail::copy_bitmask(input.parent(), stream, mr));
   }
 
-  auto [offsets, tokens] = split_helper(input, tokenizer, delimiter_fn, stream, mr);
+  using delimiter_type   = std::remove_cvref_t<DelimiterFn>;
+  auto [offsets, tokens] = split_helper(input, tokenizer, delimiter_type{delimiter_fn}, stream, mr);
   CUDF_EXPECTS(tokens.size() < static_cast<std::size_t>(std::numeric_limits<size_type>::max()),
                "Size of output exceeds the column size limit",
                std::overflow_error);

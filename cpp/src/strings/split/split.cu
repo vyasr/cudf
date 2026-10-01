@@ -256,14 +256,8 @@ std::unique_ptr<table> split_impl(strings_column_view const& input,
   if (delimiter.size() == 0) {
     if (non_null_count > 0 &&
         (input.chars_size(stream) / non_null_count) < AVG_CHAR_BYTES_THRESHOLD) {
-      auto extractor_fn = [d_str = *d_strings, max_tokens](auto d_offsets, auto* d_tokens) {
-        using fn_t = std::conditional_t<Forward, split_ws_extract_fn, rsplit_ws_extract_fn>;
-        return fn_t{d_str, d_offsets, d_tokens, max_tokens};
-      };
-      auto counter_fn = ws_token_count_fn{*d_strings, max_tokens};
-      auto [offsets, tokens] =
-        split_per_row_impl(*d_strings, counter_fn, extractor_fn, stream, temp_mr);
-      auto results = build_table_from_tokens(input, offsets->view(), tokens, stream, mr);
+      auto [offsets, tokens] = split_ws_per_row<Forward>(*d_strings, max_tokens, stream, temp_mr);
+      auto results           = build_table_from_tokens(input, offsets->view(), tokens, stream, mr);
       return (results->num_columns() == 0) ? make_all_null_table(input.size(), stream, mr)
                                            : std::move(results);
     }
@@ -278,14 +272,8 @@ std::unique_ptr<table> split_impl(strings_column_view const& input,
 
   if (non_null_count > 0 &&
       (input.chars_size(stream) / non_null_count) < AVG_CHAR_BYTES_THRESHOLD) {
-    auto const d_delim = delimiter.value(stream);
-    auto extractor_fn  = [d_str = *d_strings, d_delim](auto d_offsets, auto* d_tokens) {
-      using fn_t = std::conditional_t<Forward, split_extract_fn, rsplit_extract_fn>;
-      return fn_t{d_str, d_delim, d_offsets, d_tokens};
-    };
-    auto counter_fn = token_count_fn{*d_strings, d_delim, max_tokens};
     auto [offsets, tokens] =
-      split_per_row_impl(*d_strings, counter_fn, extractor_fn, stream, temp_mr);
+      split_per_row<Forward>(*d_strings, delimiter.value(stream), max_tokens, stream, temp_mr);
     return build_table_from_tokens(input, offsets->view(), tokens, stream, mr);
   }
 

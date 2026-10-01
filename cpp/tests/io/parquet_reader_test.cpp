@@ -1711,17 +1711,11 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeMiniBlockSkipRows)
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayBlockBoundary)
 {
-  // Value counts that land exactly on a block boundary, and one that lands a single delta past it.
-  // The block shape here is cudf's own writer default (delta_enc.cuh), so what is unusual is the
-  // count, not the geometry: a page whose delta stream ends with no partial block is where
-  // find_end_of_block has to locate the start of the string data from a full block, and a block
-  // holding one delta is where the trailing mini-blocks are empty and their bit widths describe no
-  // values at all.
-  //
-  // block_size=128, mini_block_count=4 -> 32 deltas/mini-block, 128 deltas/block. The stream holds
-  // n - 1 deltas, so n = 129 is exactly one full block and n = 257 exactly two. n = 130 is the
-  // other side of that boundary: a second block holding a lone delta, its other three mini-blocks
-  // empty.
+  // This test validates that delta binary decoding properly finds the end of the block in the edge
+  // cases where the end is located from either 1) a full block or 2) a block holding exactly one
+  // delta. The stream holds n-1 deltas, so with a block size of 128 a stream of size 129 has
+  // exactly one full block, a stream of size 130 has the one final delta with empty trailing mini
+  // blocks, and a stream of size 257 has two full blocks.
   for (auto const n : {129, 130, 257}) {
     SCOPED_TRACE("n = " + std::to_string(n));
     auto const strings = delta_test_strings(n, false);
@@ -1735,14 +1729,8 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayBlockBoundary)
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayTwoMiniBlocks)
 {
-  // The only coverage of a block header carrying exactly two bit widths. Walking that array is how
-  // the decoder finds each mini-block's packed data -- it advances by
-  // `cur_bitwidths[mb] * values_per_mb / CHAR_BIT` per mini-block -- and the other delta tests use
-  // one or four mini-blocks, so two is the untested arity. cudf's writer hardcodes four, so nothing
-  // round-tripping through it reaches this.
-  //
-  // block_size=256, mini_block_count=2 -> 128 deltas/mini-block. n = 333 gives 332 deltas, so the
-  // second block is partial: its first mini-block holds 76 deltas and its second is empty.
+  // Validates a mini_block_count of 2, which libcudf itself never produces and therefore goes
+  // largely untested without this explicit construction in the test.
   auto const strings = delta_test_strings(333, false);
   auto const file    = build_delta_length_byte_array_parquet(strings, 256, 2);
   delta_large_mini_block_string_read_test(file, strings);
@@ -1751,14 +1739,9 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayTwoMiniBlocks)
 
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeBlockSize)
 {
-  // The largest block covered here, and the only one where all four of a block's mini-blocks are
-  // full-size: the decoder rolls through four 128-value mini-blocks before it reaches the next
-  // block header. The existing tests reach 128- and 256-value mini-blocks (DeltaLengthByteArray-
-  // LargeMiniBlock128 and ...256) but only with a single mini-block per block, so the sequencing
-  // from one mini-block to the next within a block is what is new.
-  //
-  // block_size=512, mini_block_count=4 -> 128 deltas/mini-block, 512 deltas/block. n = 600 gives
-  // 599 deltas: one full block, then a partial one whose first mini-block holds 87 deltas.
+  // Validate the behavior for a combination of large mini block sizes _and_ a filled block followed
+  // by a subsequent partial subblock. This test should suss out if our miniblock to miniblock
+  // transition handling is correct and plays nicely with our block to block transition handling.
   auto const strings = delta_test_strings(600, false);
   auto const file    = build_delta_length_byte_array_parquet(strings, 512, 4);
   delta_large_mini_block_string_read_test(file, strings);
@@ -1768,12 +1751,8 @@ TEST_F(ParquetReaderTest, DeltaLengthByteArrayLargeBlockSize)
 TEST_F(ParquetReaderTest, DeltaLengthByteArrayOddPassCountFullBlock)
 {
   // A block whose mini-blocks each take an odd number of warp-size passes (96 values -> 3 passes),
-  // filled exactly to capacity. DeltaLengthByteArrayLargeMiniBlock96 already covers the odd pass
-  // count on this same geometry, but with n = 141 it populates only two of the four mini-blocks and
-  // stops mid-block; what is untested is that sequence running to the end of the block, where the
-  // last mini-block's final pass coincides with the end of the delta stream.
-  //
-  // block_size=384, mini_block_count=4 -> 96 deltas/mini-block. n = 385 gives exactly 384 deltas.
+  // filled exactly to capacity to test the sequence running to the end of the block, where the last
+  // mini-block's final pass coincides with the end of the delta stream.
   auto const strings = delta_test_strings(385, false);
   auto const file    = build_delta_length_byte_array_parquet(strings, 384, 4);
   delta_large_mini_block_string_read_test(file, strings);

@@ -34,6 +34,17 @@ namespace cudf {
 namespace strings {
 namespace detail {
 
+std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split_helper(
+  strings_column_view const& input,
+  split_tokenizer_fn tokenizer,
+  string_delimiter_fn delimiter_fn,
+  cuda::stream_ref stream,
+  rmm::device_async_resource_ref mr)
+{
+  return split_helper<split_tokenizer_fn, string_delimiter_fn>(
+    input, tokenizer, delimiter_fn, stream, mr);
+}
+
 namespace {
 
 /**

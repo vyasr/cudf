@@ -753,6 +753,13 @@ CUDF_KERNEL void count_delimiters_kernel(DelimiterFn delimiter_fn,
   }
 }
 
+std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split_helper(
+  strings_column_view const& input,
+  split_tokenizer_fn tokenizer,
+  string_delimiter_fn delimiter_fn,
+  cuda::stream_ref stream,
+  rmm::device_async_resource_ref mr);
+
 /**
  * @brief Helper function used by split/rsplit and split_record/rsplit_record
  *

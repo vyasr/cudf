@@ -596,9 +596,12 @@ __device__ comparison_value load_comparison_value(size_type row,
 template <bool ascending>
 __device__ bool stable_valid_string_less(comparison_value lhs, comparison_value rhs)
 {
+  // Equal byte bounds give the existing comparator one loop limit, matching the source's finish.
+  auto const common_bytes = min(lhs.bytes, rhs.bytes);
   auto const comparison =
-    string_view{lhs.data, lhs.bytes}.compare(string_view{rhs.data, rhs.bytes});
+    string_view{lhs.data, common_bytes}.compare(string_view{rhs.data, common_bytes});
   if (comparison != 0) { return ascending ? comparison < 0 : comparison > 0; }
+  if (lhs.bytes != rhs.bytes) { return ascending ? lhs.bytes < rhs.bytes : lhs.bytes > rhs.bytes; }
   return lhs.row < rhs.row;
 }
 

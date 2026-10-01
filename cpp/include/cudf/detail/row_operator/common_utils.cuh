@@ -12,7 +12,6 @@
 #include <cuda/std/type_traits>
 #include <thrust/detail/use_default.h>
 #include <thrust/iterator/iterator_adaptor.h>
-#include <thrust/iterator/iterator_categories.h>
 
 namespace cudf::detail {
 

@@ -34,6 +34,8 @@
 #include <thrust/for_each.h>
 #include <thrust/transform.h>
 
+#include <type_traits>
+
 namespace cudf::strings::detail {
 
 /**
@@ -49,6 +51,10 @@ struct string_delimiter_fn {
   int64_t chars_bytes{};
   char const* d_chars{};
 };
+
+rmm::device_uvector<int64_t> find_string_delimiter_positions(strings_column_view const& input,
+                                                             cudf::string_view delimiter,
+                                                             cuda::stream_ref stream);
 
 /**
  * @brief Returns `true` if the byte at `idx` is a whitespace character
@@ -768,32 +774,36 @@ std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split
   cuda::stream_ref stream,
   rmm::device_async_resource_ref mr)
 {
-  auto [first_offset, last_offset] = get_first_and_last_offset(input, stream);
-  auto const chars_bytes           = last_offset - first_offset;
-  delimiter_fn.d_chars             = input.chars_begin(stream) + first_offset;
-  delimiter_fn.chars_bytes         = chars_bytes;
+  auto delimiter_positions = [&] {
+    if constexpr (std::is_same_v<DelimiterFn, string_delimiter_fn>) {
+      return find_string_delimiter_positions(input, delimiter_fn.d_delimiter, stream);
+    } else {
+      auto [first_offset, last_offset] = get_first_and_last_offset(input, stream);
+      auto const chars_bytes           = last_offset - first_offset;
+      delimiter_fn.d_chars             = input.chars_begin(stream) + first_offset;
+      delimiter_fn.chars_bytes         = chars_bytes;
 
-  // count the number of delimiters in the entire column
-  cudf::detail::device_scalar<int64_t> d_count(0, stream, cudf::get_current_device_resource_ref());
-  if (chars_bytes > 0) {
-    constexpr int64_t block_size         = 512;
-    constexpr size_type bytes_per_thread = 4;
-    auto const num_blocks                = util::div_rounding_up_safe(
-      util::div_rounding_up_safe(chars_bytes, static_cast<int64_t>(bytes_per_thread)), block_size);
-    count_delimiters_kernel<DelimiterFn, block_size, bytes_per_thread>
-      <<<num_blocks, block_size, 0, stream.get()>>>(delimiter_fn, chars_bytes, d_count.data());
-    CUDF_CUDA_TRY(cudaGetLastError());
-  }
-
-  // Create a vector of every delimiter position in the chars column.
-  // These may include overlapping or otherwise out-of-bounds delimiters which
-  // will be resolved during token processing.
-  auto delimiter_positions = rmm::device_uvector<int64_t>(d_count.value(stream), stream);
-  cudf::detail::copy_if_async(cuda::counting_iterator<int64_t>{0},
-                              cuda::counting_iterator<int64_t>{chars_bytes},
-                              delimiter_positions.begin(),
-                              delimiter_fn,
-                              stream);
+      cudf::detail::device_scalar<int64_t> d_count(
+        0, stream, cudf::get_current_device_resource_ref());
+      if (chars_bytes > 0) {
+        constexpr int64_t block_size         = 512;
+        constexpr size_type bytes_per_thread = 4;
+        auto const num_blocks                = util::div_rounding_up_safe(
+          util::div_rounding_up_safe(chars_bytes, static_cast<int64_t>(bytes_per_thread)),
+          block_size);
+        count_delimiters_kernel<DelimiterFn, block_size, bytes_per_thread>
+          <<<num_blocks, block_size, 0, stream.get()>>>(delimiter_fn, chars_bytes, d_count.data());
+        CUDF_CUDA_TRY(cudaGetLastError());
+      }
+      auto positions = rmm::device_uvector<int64_t>(d_count.value(stream), stream);
+      cudf::detail::copy_if_async(cuda::counting_iterator<int64_t>{0},
+                                  cuda::counting_iterator<int64_t>{chars_bytes},
+                                  positions.begin(),
+                                  delimiter_fn,
+                                  stream);
+      return positions;
+    }
+  }();
 
   // create a vector of offsets to each string's delimiter set within delimiter_positions
   auto const delimiter_offsets =

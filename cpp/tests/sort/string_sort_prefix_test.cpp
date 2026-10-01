@@ -518,11 +518,12 @@ TEST_F(StringSort, RadixBoundariesAndZeroPaddedCollisions)
 
 TEST_F(StringSort, LaterPassZeroPaddedCollision)
 {
-  auto const short_value = std::string{"qqqqqqqqa"};
-  auto const long_value  = short_value + std::string(7, '\0');
+  constexpr cudf::size_type copies = 513;
+  auto const short_value           = std::string{"qqqqqqqqa"};
+  auto const long_value            = short_value + std::string(7, '\0');
   std::vector<std::string> strings;
-  strings.reserve(40);
-  for (auto i = 0; i < 20; ++i) {
+  strings.reserve(2 * copies);
+  for (auto i = 0; i < copies; ++i) {
     // Keeping the longer value first ensures stable equal radix keys cannot accidentally put the
     // shorter value in lexical order before comparison finishing.
     strings.push_back(long_value);
@@ -544,12 +545,57 @@ TEST_F(StringSort, LaterPassZeroPaddedCollision)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_ascending, ascending->view());
 
   auto descending_data = ascending_data;
-  std::rotate(descending_data.begin(), descending_data.begin() + 20, descending_data.end());
+  std::rotate(descending_data.begin(), descending_data.begin() + copies, descending_data.end());
   auto const expected_descending = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
     descending_data.begin(), descending_data.end());
   auto const descending =
     cudf::stable_sorted_order(cudf::table_view{{input}}, {cudf::order::DESCENDING});
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_descending, descending->view());
+}
+
+TEST_F(StringSort, NullableSlicedLaterPassCollision)
+{
+  constexpr cudf::size_type copies = 513;
+  auto const short_value           = std::string{"qqqqqqqqa"};
+  auto const long_value            = short_value + std::string(7, '\0');
+  std::vector<std::string> strings{"excluded-before"};
+  std::vector<bool> validity{true};
+  for (cudf::size_type row = 0; row < copies; ++row) {
+    // Interspersed nulls make dense radix positions differ from the byte-count sidecar's row IDs.
+    strings.insert(strings.end(), {long_value, short_value, "ignored-null"});
+    validity.insert(validity.end(), {true, true, false});
+  }
+  strings.emplace_back("excluded-after");
+  validity.push_back(true);
+  auto const input =
+    cudf::test::strings_column_wrapper(strings.begin(), strings.end(), validity.begin());
+  auto const slice = cudf::slice(input, {1, 1 + 3 * copies}).front();
+  for (auto direction : {cudf::order::ASCENDING, cudf::order::DESCENDING}) {
+    for (auto nulls : {cudf::null_order::BEFORE, cudf::null_order::AFTER}) {
+      auto const nulls_first =
+        (direction == cudf::order::ASCENDING) == (nulls == cudf::null_order::BEFORE);
+      std::vector<cudf::size_type> expected_rows(slice.size());
+      std::iota(expected_rows.begin(), expected_rows.end(), cudf::size_type{0});
+      std::stable_sort(expected_rows.begin(), expected_rows.end(), [&](auto lhs, auto rhs) {
+        auto const left_valid  = validity[lhs + 1];
+        auto const right_valid = validity[rhs + 1];
+        if (left_valid != right_valid) { return nulls_first ? !left_valid : left_valid; }
+        if (!left_valid) { return false; }
+        return direction == cudf::order::ASCENDING
+                 ? bytewise_less(strings[lhs + 1], strings[rhs + 1])
+                 : bytewise_less(strings[rhs + 1], strings[lhs + 1]);
+      });
+      auto const expected = cudf::test::fixed_width_column_wrapper<cudf::size_type>(
+        expected_rows.begin(), expected_rows.end());
+      auto const stable =
+        cudf::stable_sorted_order(cudf::table_view{{slice}}, {direction}, {nulls});
+      CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, stable->view());
+      auto const unstable = cudf::sorted_order(cudf::table_view{{slice}}, {direction}, {nulls});
+      auto const expected_values = cudf::gather(cudf::table_view{{slice}}, expected);
+      auto const actual_values   = cudf::gather(cudf::table_view{{slice}}, unstable->view());
+      CUDF_TEST_EXPECT_TABLES_EQUAL(expected_values->view(), actual_values->view());
+    }
+  }
 }
 
 TEST_F(StringSort, LongExactDuplicateRun)

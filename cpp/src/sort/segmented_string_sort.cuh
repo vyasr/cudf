@@ -717,10 +717,7 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
                                                                Offset const* offsets,
                                                                char const* chars)
 {
-  // Separate fields avoid the sixteen-byte stride when lanes probe different sibling positions.
-  __shared__ size_type sibling_rows[comparison_chunk_size];
-  __shared__ size_type sibling_bytes[comparison_chunk_size];
-  __shared__ char const* sibling_data[comparison_chunk_size];
+  __shared__ comparison_value sibling_values[comparison_chunk_size];
   auto const chunk              = static_cast<size_type>(blockIdx.x);
   auto const lane               = static_cast<size_type>(threadIdx.x);
   auto const begin              = chunk_begins[chunk];
@@ -740,14 +737,11 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     auto const sibling_slot   = run_offset + sibling;
     auto const sibling_begin  = chunk_begins[sibling_slot];
     auto const sibling_length = chunk_sizes[sibling_slot];
-    auto const sibling_value  = load_comparison_value(
+    sibling_values[lane]      = load_comparison_value(
       lane < sibling_length ? sorted_chunks[sibling_begin + lane] : invalid_index,
       known_prefix_bytes,
       offsets,
       chars);
-    sibling_rows[lane]  = sibling_value.row;
-    sibling_bytes[lane] = sibling_value.bytes;
-    sibling_data[lane]  = sibling_value.data;
     __syncthreads();
     if (!active) { continue; }
 
@@ -758,9 +752,7 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     auto upper = sibling_length;
     while (lower < upper) {
       auto const middle = lower + (upper - lower) / 2;
-      auto const probe =
-        comparison_value{sibling_rows[middle], sibling_bytes[middle], sibling_data[middle]};
-      if (stable_string_less<ascending>(probe, value)) {
+      if (stable_string_less<ascending>(sibling_values[middle], value)) {
         lower = middle + 1;
       } else {
         upper = middle;

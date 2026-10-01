@@ -96,6 +96,12 @@ std::unique_ptr<cudf::column> make_overflow_column(std::array<overflow_rep_t<T>,
 }
 
 struct overflow_batch {
+  struct failure_case {
+    cudf::size_type failing_input;
+    cudf::size_type safe_input;
+    std::string label;
+  };
+
   cudf::ast::tree tree{};
   std::vector<std::unique_ptr<cudf::column>> inputs{};
   std::vector<std::unique_ptr<cudf::column>> expected{};
@@ -104,6 +110,7 @@ struct overflow_batch {
   std::vector<std::reference_wrapper<cudf::ast::expression const>> outputs{};
   std::vector<std::reference_wrapper<cudf::ast::expression const>> throwing{};
   std::vector<std::string> labels{};
+  std::vector<failure_case> failures{};
 
   cudf::size_type add_input(std::unique_ptr<cudf::column> input)
   {
@@ -135,9 +142,19 @@ void expect_overflow_batch(overflow_batch& batch)
     CUDF_TEST_EXPECT_COLUMNS_EQUAL(batch.expected[i]->view(), result->view().column(i), VERBOSITY);
   }
 
-  // A generated kernel contains every throwing expression, so one invocation validates every
-  // THROW policy without separately compiling every numeric type.
-  EXPECT_THROW(cudf::compute_table_jit(table, batch.throwing), cudf::evaluation_error);
+  // PROPAGATE returns on the first error, so isolate each failure while keeping the expression
+  // graph and input schema unchanged to reuse the compiled kernel.
+  for (auto const& failure : batch.failures) {
+    input_views[failure.failing_input] = input_views[failure.safe_input];
+  }
+  ASSERT_NO_THROW(cudf::compute_table_jit(cudf::table_view{input_views}, batch.throwing));
+  for (auto const& failure : batch.failures) {
+    SCOPED_TRACE(failure.label);
+    input_views[failure.failing_input] = batch.inputs[failure.failing_input]->view();
+    EXPECT_THROW(cudf::compute_table_jit(cudf::table_view{input_views}, batch.throwing),
+                 cudf::evaluation_error);
+    input_views[failure.failing_input] = input_views[failure.safe_input];
+  }
 }
 
 template <typename... T, typename F>
@@ -189,6 +206,7 @@ void append_binary_overflow(overflow_batch& batch,
   batch.expected.push_back(make_overflow_column<T>(values.expected_fail, values.validity));
   batch.labels.push_back(label + " NULLIFY");
   batch.throwing.emplace_back(throws);
+  batch.failures.push_back({b_fail_index, b_index, label + " THROW"});
 }
 
 using integral_overflow_types = cudf::test::IntegralTypesNotBool;
@@ -272,6 +290,10 @@ void append_unary_overflow(overflow_batch& batch,
   batch.labels.push_back(std::string{cudf::type_to_name(cudf::data_type{cudf::type_to_id<T>()})} +
                          " NULLIFY");
   batch.throwing.emplace_back(throws);
+  batch.failures.push_back(
+    {a_fail_index,
+     a_index,
+     std::string{cudf::type_to_name(cudf::data_type{cudf::type_to_id<T>()})} + " THROW"});
 }
 
 template <cudf::ast::jit::op Op, typename F>
@@ -476,6 +498,10 @@ TEST_F(JITExpressionTest, CheckPrecision)
     batch.labels.push_back(std::string{cudf::type_to_name(cudf::data_type{cudf::type_to_id<T>()})} +
                            " NULLIFY");
     batch.throwing.emplace_back(throws);
+    batch.failures.push_back(
+      {a_fail_index,
+       a_index,
+       std::string{cudf::type_to_name(cudf::data_type{cudf::type_to_id<T>()})} + " THROW"});
   });
   expect_overflow_batch(batch);
 }

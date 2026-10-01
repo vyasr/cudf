@@ -21,8 +21,6 @@
 
 #include <cuda/iterator>
 #include <cuda/std/functional>
-#include <thrust/equal.h>
-#include <thrust/execution_policy.h>
 #include <thrust/logical.h>
 
 #include <memory>

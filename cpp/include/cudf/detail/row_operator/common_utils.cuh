@@ -10,8 +10,6 @@
 #include <cudf/utilities/type_dispatcher.hpp>
 
 #include <cuda/std/type_traits>
-#include <thrust/detail/use_default.h>
-#include <thrust/iterator/iterator_adaptor.h>
 
 namespace cudf::detail {
 

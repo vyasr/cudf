@@ -726,7 +726,10 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
                                                                Offset const* offsets,
                                                                char const* chars)
 {
-  __shared__ comparison_value sibling_values[comparison_chunk_size];
+  // Reconstruct addresses from global offsets instead of caching pointers in shared memory; this
+  // keeps the source's smaller merge workspace and exposes the global origin of comparison bytes.
+  __shared__ size_type sibling_rows[comparison_chunk_size];
+  __shared__ size_type sibling_bytes[comparison_chunk_size];
   auto const chunk              = static_cast<size_type>(blockIdx.x);
   auto const lane               = static_cast<size_type>(threadIdx.x);
   auto const begin              = chunk_begins[chunk];
@@ -746,11 +749,13 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     auto const sibling_slot   = run_offset + sibling;
     auto const sibling_begin  = chunk_begins[sibling_slot];
     auto const sibling_length = chunk_sizes[sibling_slot];
-    sibling_values[lane]      = load_comparison_value(
+    auto const sibling_value  = load_comparison_value(
       lane < sibling_length ? sorted_chunks[sibling_begin + lane] : invalid_index,
       known_prefix_bytes,
       offsets,
       chars);
+    sibling_rows[lane]  = sibling_value.row;
+    sibling_bytes[lane] = sibling_value.bytes;
     __syncthreads();
     if (!active) { continue; }
 
@@ -762,7 +767,10 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     while (lower < upper) {
       auto const middle = lower + (upper - lower) / 2;
       // Only active lanes search, and the bound excludes padded sibling entries.
-      if (stable_valid_string_less<ascending>(sibling_values[middle], value)) {
+      auto const sibling_row = sibling_rows[middle];
+      auto const candidate   = comparison_value{
+        sibling_row, sibling_bytes[middle], chars + offsets[sibling_row] + known_prefix_bytes};
+      if (stable_valid_string_less<ascending>(candidate, value)) {
         lower = middle + 1;
       } else {
         upper = middle;

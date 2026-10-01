@@ -41,50 +41,47 @@ void run_sorted_order_benchmark(nvbench::state& state, std::unique_ptr<cudf::col
 
 std::unique_ptr<cudf::column> make_prefixed_input(cudf::size_type num_rows,
                                                   cudf::size_type prefix_width,
-                                                  cudf::size_type suffix_width)
+                                                  cudf::size_type suffix_width,
+                                                  cudf::size_type prefix_cardinality)
 {
   data_profile const prefix_profile =
     data_profile_builder()
       .no_validity()
-      .cardinality(1)
-      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, prefix_width, prefix_width)
-      .string_char_range('a', 'a');
-  data_profile const suffix_profile =
-    data_profile_builder()
-      .no_validity()
-      .cardinality(0)
+      .cardinality(prefix_cardinality)
       .avg_run_length(1)
-      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, 0, suffix_width)
-      .string_char_range(' ', '~');
+      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, prefix_width, prefix_width);
+  data_profile const suffix_profile =
+    data_profile_builder().no_validity().cardinality(0).avg_run_length(1).distribution(
+      cudf::type_id::STRING, distribution_id::UNIFORM, 0, suffix_width);
   auto const prefix =
     create_random_column(cudf::type_id::STRING, row_count{num_rows}, prefix_profile, seed);
-  auto const suffix =
-    create_random_column(cudf::type_id::STRING, row_count{num_rows}, suffix_profile, seed + 1);
+  // The general STRING generator includes non-ASCII characters; this suffix needs printable ASCII.
+  auto const suffix = create_ascii_string_column(suffix_profile, num_rows, seed + 1);
   return cudf::strings::concatenate(cudf::table_view{{prefix->view(), suffix->view()}});
+}
+
+std::unique_ptr<cudf::column> make_cardinality_input(cudf::size_type num_rows,
+                                                     cudf::size_type max_width,
+                                                     cudf::size_type cardinality)
+{
+  data_profile const profile =
+    data_profile_builder()
+      .no_validity()
+      .cardinality(cardinality)
+      .avg_run_length(1)
+      .distribution(cudf::type_id::STRING, distribution_id::UNIFORM, 0, max_width);
+  return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
 }
 
 std::unique_ptr<cudf::column> make_distribution_input(cudf::size_type num_rows,
                                                       std::string const& profile_name)
 {
-  if (profile_name == "cardinality_1_width_32") {
-    data_profile const profile =
-      data_profile_builder().no_validity().cardinality(1).avg_run_length(1).distribution(
-        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 32);
-    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-  }
+  if (profile_name == "cardinality_1_width_32") { return make_cardinality_input(num_rows, 32, 1); }
   if (profile_name == "cardinality_64_width_128") {
-    data_profile const profile =
-      data_profile_builder().no_validity().cardinality(64).avg_run_length(1).distribution(
-        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 128);
-    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
+    return make_cardinality_input(num_rows, 128, 64);
   }
-  if (profile_name == "shared_prefix_64") { return make_prefixed_input(num_rows, 64, 32); }
-  if (profile_name == "variable_128") {
-    data_profile const profile =
-      data_profile_builder().no_validity().cardinality(0).avg_run_length(1).distribution(
-        cudf::type_id::STRING, distribution_id::UNIFORM, 0, 128);
-    return create_random_column(cudf::type_id::STRING, row_count{num_rows}, profile, seed);
-  }
+  if (profile_name == "shared_prefix_64") { return make_prefixed_input(num_rows, 64, 32, 1); }
+  if (profile_name == "variable_128") { return make_cardinality_input(num_rows, 128, 0); }
   CUDF_FAIL("Unknown string distribution profile: " + profile_name);
 }
 
@@ -226,6 +223,38 @@ NVBENCH_BENCH(bench_sorted_order_strings_distribution)
   .add_string_axis(
     "profile",
     {"cardinality_1_width_32", "cardinality_64_width_128", "shared_prefix_64", "variable_128"});
+
+static void bench_sorted_order_strings_cardinality(nvbench::state& state)
+{
+  auto const num_rows    = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const max_width   = static_cast<cudf::size_type>(state.get_int64("max_width"));
+  auto const cardinality = static_cast<cudf::size_type>(state.get_int64("cardinality"));
+  run_sorted_order_benchmark(state, make_cardinality_input(num_rows, max_width, cardinality));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_cardinality)
+  .set_name("sorted_order_strings_cardinality")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_int64_axis("max_width", {32, 128})
+  .add_int64_axis("cardinality", {1, 64, 0});
+
+static void bench_sorted_order_strings_prefixes(nvbench::state& state)
+{
+  auto const num_rows     = static_cast<cudf::size_type>(state.get_int64("num_rows"));
+  auto const prefix_width = static_cast<cudf::size_type>(state.get_int64("prefix_width"));
+  auto const suffix_width = static_cast<cudf::size_type>(state.get_int64("suffix_width"));
+  auto const prefix_cardinality =
+    static_cast<cudf::size_type>(state.get_int64("prefix_cardinality"));
+  run_sorted_order_benchmark(
+    state, make_prefixed_input(num_rows, prefix_width, suffix_width, prefix_cardinality));
+}
+
+NVBENCH_BENCH(bench_sorted_order_strings_prefixes)
+  .set_name("sorted_order_strings_prefixes")
+  .add_int64_axis("num_rows", {262144, 2097152})
+  .add_int64_axis("prefix_width", {64})
+  .add_int64_axis("suffix_width", {32})
+  .add_int64_axis("prefix_cardinality", {1, 64});
 
 static void bench_sorted_order_strings_nulls(nvbench::state& state)
 {

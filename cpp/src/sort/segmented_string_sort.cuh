@@ -581,14 +581,16 @@ struct comparison_value {
   char const* data;
 };
 
-template <typename Comparator>
+template <typename Offset>
 __device__ comparison_value load_comparison_value(size_type row,
                                                   size_type known_prefix_bytes,
-                                                  Comparator comparator)
+                                                  Offset const* offsets,
+                                                  char const* chars)
 {
   if (row == invalid_index) { return {row, 0, nullptr}; }
-  auto const value = comparator.d_column.template element<string_view>(row);
-  return {row, value.size_bytes() - known_prefix_bytes, value.data() + known_prefix_bytes};
+  auto const begin = offsets[row];
+  auto const bytes = static_cast<size_type>(offsets[row + 1] - begin) - known_prefix_bytes;
+  return {row, bytes, chars + begin + known_prefix_bytes};
 }
 
 template <bool ascending>
@@ -652,14 +654,15 @@ CUDF_KERNEL void expand_finish_chunks(size_type const* final_begins,
   }
 }
 
-template <bool ascending, typename Comparator>
+template <bool ascending, typename Offset>
 CUDF_KERNEL __launch_bounds__(comparison_chunk_size, 1) void bitonic_sort_finish_chunks(
   size_type const* input,
   size_type* sorted_chunks,
   size_type const* chunk_begins,
   size_type const* chunk_sizes,
   size_type const* chunk_prefix_bytes,
-  Comparator comparator)
+  Offset const* offsets,
+  char const* chars)
 {
   // Cache string metadata as in the source network so comparisons do not reload column offsets.
   __shared__ comparison_value values[comparison_chunk_size];
@@ -669,7 +672,7 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size, 1) void bitonic_sort_finish
   auto const length             = chunk_sizes[chunk];
   auto const known_prefix_bytes = chunk_prefix_bytes[chunk];
   values[lane]                  = load_comparison_value(
-    lane < length ? input[begin + lane] : invalid_index, known_prefix_bytes, comparator);
+    lane < length ? input[begin + lane] : invalid_index, known_prefix_bytes, offsets, chars);
   __syncthreads();
 
   auto sort_size = comparison_chunk_size;
@@ -702,7 +705,7 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size, 1) void bitonic_sort_finish
   if (lane < length) { sorted_chunks[begin + lane] = values[lane].row; }
 }
 
-template <bool ascending, typename Comparator>
+template <bool ascending, typename Offset>
 CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
                               1) void merge_all_sibling_chunks(size_type* output,
                                                                size_type const* sorted_chunks,
@@ -711,7 +714,8 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
                                                                size_type const* chunk_run_offsets,
                                                                size_type const* chunk_run_counts,
                                                                size_type const* chunk_prefix_bytes,
-                                                               Comparator comparator)
+                                                               Offset const* offsets,
+                                                               char const* chars)
 {
   __shared__ comparison_value sibling_values[comparison_chunk_size];
   auto const chunk              = static_cast<size_type>(blockIdx.x);
@@ -724,7 +728,7 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
   auto const local_chunk        = chunk - run_offset;
   auto const active             = lane < length;
   auto const value              = load_comparison_value(
-    active ? sorted_chunks[begin + lane] : invalid_index, known_prefix_bytes, comparator);
+    active ? sorted_chunks[begin + lane] : invalid_index, known_prefix_bytes, offsets, chars);
   auto rank = lane;
 
   for (size_type sibling = 0; sibling < chunk_count; ++sibling) {
@@ -736,7 +740,8 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     sibling_values[lane]      = load_comparison_value(
       lane < sibling_length ? sorted_chunks[sibling_begin + lane] : invalid_index,
       known_prefix_bytes,
-      comparator);
+      offsets,
+      chars);
     __syncthreads();
     if (!active) { continue; }
 
@@ -1214,14 +1219,18 @@ void sorted_order(column_view const& input,
                                            chunk_run_offsets.data(),
                                            chunk_run_counts.data(),
                                            chunk_prefix_bytes.data());
-    auto const launch_finish = [&]<bool sort_ascending>() {
+    // Nulls are already partitioned out; host-known offset width avoids repeated device dispatch
+    // when sibling ranking reloads string metadata.
+    auto const launch_finish = [&]<bool sort_ascending, typename Offset>() {
+      auto const* typed_offsets = offsets.head<Offset>() + input.offset();
       bitonic_sort_finish_chunks<sort_ascending>
         <<<total_chunks, comparison_chunk_size, 0, stream.get()>>>(current_indices,
                                                                    other_indices,
                                                                    chunk_begins.data(),
                                                                    chunk_sizes.data(),
                                                                    chunk_prefix_bytes.data(),
-                                                                   comparator);
+                                                                   typed_offsets,
+                                                                   chars);
       merge_all_sibling_chunks<sort_ascending>
         <<<total_chunks, comparison_chunk_size, 0, stream.get()>>>(current_indices,
                                                                    other_indices,
@@ -1230,12 +1239,20 @@ void sorted_order(column_view const& input,
                                                                    chunk_run_offsets.data(),
                                                                    chunk_run_counts.data(),
                                                                    chunk_prefix_bytes.data(),
-                                                                   comparator);
+                                                                   typed_offsets,
+                                                                   chars);
     };
-    if (ascending) {
-      launch_finish.template operator()<true>();
+    auto const launch_typed_finish = [&]<typename Offset>() {
+      if (ascending) {
+        launch_finish.template operator()<true, Offset>();
+      } else {
+        launch_finish.template operator()<false, Offset>();
+      }
+    };
+    if (offsets.type().id() == type_id::INT64) {
+      launch_typed_finish.template operator()<int64_t>();
     } else {
-      launch_finish.template operator()<false>();
+      launch_typed_finish.template operator()<size_type>();
     }
     CUDF_CUDA_TRY(cudaGetLastError());
   }

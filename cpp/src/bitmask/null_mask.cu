@@ -22,7 +22,6 @@
 
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
-#include <cub/block/block_reduce.cuh>
 #include <cuda/atomic>
 #include <cuda/memory_resource>
 #include <cuda/numeric>

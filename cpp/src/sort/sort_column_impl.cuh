@@ -22,6 +22,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cub/device/device_merge_sort.cuh>
+#include <cuda/buffer>
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/gather.h>
@@ -176,9 +177,10 @@ struct column_sorted_order_fn {
       }
     };
 
-    sort_keys(nullptr);
-    auto tmp_stg = rmm::device_buffer(tmp_bytes, stream);
-    sort_keys(tmp_stg.data());
+    CUDF_CUDA_TRY(sort_keys(nullptr));
+    auto tmp_stg = cuda::device_buffer<std::byte>(
+      stream, cudf::get_current_device_resource_ref(), tmp_bytes, cuda::no_init);
+    CUDF_CUDA_TRY(sort_keys(tmp_stg.data()));
   }
 
   template <typename PrefixKey, bool has_nulls>
@@ -253,12 +255,11 @@ struct column_sorted_order_fn {
   {
     if constexpr (std::is_same_v<T, string_view>) {
       prefix_sorted_order<uint64_t>(input, indices, ascending, null_precedence, stream);
-      return;
+    } else {
+      auto keys = column_device_view::create(input, stream);
+      auto comp = simple_comparator<T>{*keys, input.has_nulls(), ascending, null_precedence};
+      merge_sort(indices, comp, stream);
     }
-
-    auto keys = column_device_view::create(input, stream);
-    auto comp = simple_comparator<T>{*keys, input.has_nulls(), ascending, null_precedence};
-    merge_sort(indices, comp, stream);
   }
 
   template <typename T>

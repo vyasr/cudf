@@ -822,10 +822,8 @@ inline void segmented_key_sort(cub::DoubleBuffer<std::uint64_t>& keys,
   CUDF_CUDA_TRY(invoke(temp_storage.data()));
 }
 
-inline void global_radix_sort(std::uint64_t const* keys_in,
-                              std::uint64_t* keys_out,
-                              size_type const* values_in,
-                              size_type* values_out,
+inline void global_radix_sort(cub::DoubleBuffer<std::uint64_t>& keys,
+                              cub::DoubleBuffer<size_type>& values,
                               size_type size,
                               bool ascending,
                               rmm::device_buffer& temp_storage,
@@ -834,27 +832,11 @@ inline void global_radix_sort(std::uint64_t const* keys_in,
   std::size_t temp_storage_bytes = 0;
   auto invoke                    = [&](void* storage) {
     if (ascending) {
-      return cub::DeviceRadixSort::SortPairs(storage,
-                                             temp_storage_bytes,
-                                             keys_in,
-                                             keys_out,
-                                             values_in,
-                                             values_out,
-                                             size,
-                                             0,
-                                             64,
-                                             stream.get());
+      return cub::DeviceRadixSort::SortPairs(
+        storage, temp_storage_bytes, keys, values, size, 0, 64, stream.get());
     }
-    return cub::DeviceRadixSort::SortPairsDescending(storage,
-                                                     temp_storage_bytes,
-                                                     keys_in,
-                                                     keys_out,
-                                                     values_in,
-                                                     values_out,
-                                                     size,
-                                                     0,
-                                                     64,
-                                                     stream.get());
+    return cub::DeviceRadixSort::SortPairsDescending(
+      storage, temp_storage_bytes, keys, values, size, 0, 64, stream.get());
   };
   CUDF_CUDA_TRY(invoke(nullptr));
   if (temp_storage_bytes > temp_storage.size()) {
@@ -1003,24 +985,18 @@ void sorted_order(column_view const& input,
     }
     CUDF_CUDA_TRY(cudaGetLastError());
     auto const cub_storage_bytes_before = cub_temp_storage.size();
-    auto* sorted_keys                   = keys_out.data();
+    // Reusing both pairs lets CUB avoid row-sized fixed-output scratch. Only valid_size keys are
+    // exposed, so the original-row byte-count sidecar at the tail of keys_in remains untouched.
+    auto key_buffers   = cub::DoubleBuffer<std::uint64_t>{keys_in.data(), keys_out.data()};
+    auto value_buffers = cub::DoubleBuffer<size_type>{current_indices, other_indices};
     if (pass == 0) {
-      global_radix_sort(keys_in.data(),
-                        keys_out.data(),
-                        current_indices,
-                        other_indices,
-                        valid_size,
-                        ascending,
-                        cub_temp_storage,
-                        stream);
-      std::swap(current_indices, other_indices);
+      global_radix_sort(
+        key_buffers, value_buffers, valid_size, ascending, cub_temp_storage, stream);
     } else {
       CUDF_CUDA_TRY(cudf::detail::memcpy_async(
         other_indices, current_indices, sizeof(size_type) * valid_size, stream));
       // The source lets CUB choose its result buffer, avoiding fixed-output copies and row-sized
       // scratch. Both index buffers contain inactive rows because CUB only touches active runs.
-      auto key_buffers   = cub::DoubleBuffer<std::uint64_t>{keys_in.data(), keys_out.data()};
-      auto value_buffers = cub::DoubleBuffer<size_type>{current_indices, other_indices};
       segmented_key_sort(key_buffers,
                          value_buffers,
                          valid_size,
@@ -1030,10 +1006,11 @@ void sorted_order(column_view const& input,
                          ascending,
                          cub_temp_storage,
                          stream);
-      sorted_keys = key_buffers.Current();
-      if (value_buffers.Current() != current_indices) { std::swap(current_indices, other_indices); }
     }
+    auto* sorted_keys = key_buffers.Current();
+    if (value_buffers.Current() != current_indices) { std::swap(current_indices, other_indices); }
     if (cub_temp_storage.size() > cub_storage_bytes_before) { ++allocation_count; }
+    auto const radix_scratch_capacity = cub_temp_storage.size();
 
     refinement.set_value_async(refinement_counts{}, stream);
     auto const previous_run_count = pass == 0 ? size_type{0} : num_segments;
@@ -1059,7 +1036,7 @@ void sorted_order(column_view const& input,
       if (candidate_count > 1) {
         // Disjoint runs have the same begin/end order. Batching their independent endpoint sorts
         // matches the source pipeline and avoids two separate sorting workspaces and launches.
-        // Sorted radix keys are dead after endpoint detection, so their buffer holds the output.
+        // Prefix keys are dead after endpoint detection, so a key buffer holds the output.
         ordered_begins    = reinterpret_cast<size_type*>(keys_out.data());
         ordered_ends      = ordered_begins + endpoint_capacity;
         auto const begins = cudf::detail::make_counting_transform_iterator(
@@ -1086,7 +1063,7 @@ void sorted_order(column_view const& input,
         CUDF_CUDA_TRY(sort_endpoints(cub_temp_storage.data()));
       }
       // A run can span the entire column. Tiling distributes its length proof across blocks instead
-      // of making one classification block walk millions of rows. Unsorted radix keys are dead
+      // of making one classification block walk millions of rows. Prefix keys are dead
       // until the next extraction, so their storage holds these two-word bounds without allocation.
       static_assert(sizeof(remaining_bounds) == sizeof(std::uint64_t));
       auto* bounds = reinterpret_cast<remaining_bounds*>(keys_in.data());
@@ -1150,7 +1127,8 @@ void sorted_order(column_view const& input,
                    "continuing-runs=%d continuing-rows=%d completed-runs=%d completed-rows=%d "
                    "singleton-runs=%d "
                    "finish-runs=%d finish-rows=%d prefix-min=%d prefix-max=%d duplicate-rows=%d "
-                   "allocations=%d sync-points=%d trace-readbacks=%d\n",
+                   "allocations=%d sync-points=%d trace-readbacks=%d "
+                   "radix-scratch-capacity=%zu scratch-capacity=%zu\n",
                    pass,
                    active_rows,
                    candidate_count,
@@ -1166,7 +1144,9 @@ void sorted_order(column_view const& input,
                    observed.duplicate_rows,
                    allocation_count,
                    synchronization_points,
-                   trace_readbacks);
+                   trace_readbacks,
+                   radix_scratch_capacity,
+                   cub_temp_storage.size());
     }
 
     std::swap(current_begins, next_begins);

@@ -594,14 +594,20 @@ __device__ comparison_value load_comparison_value(size_type row,
 }
 
 template <bool ascending>
-__device__ bool stable_string_less(comparison_value lhs, comparison_value rhs)
+__device__ bool stable_valid_string_less(comparison_value lhs, comparison_value rhs)
 {
-  if (lhs.row == invalid_index) { return false; }
-  if (rhs.row == invalid_index) { return true; }
   auto const comparison =
     string_view{lhs.data, lhs.bytes}.compare(string_view{rhs.data, rhs.bytes});
   if (comparison != 0) { return ascending ? comparison < 0 : comparison > 0; }
   return lhs.row < rhs.row;
+}
+
+template <bool ascending>
+__device__ bool stable_string_less(comparison_value lhs, comparison_value rhs)
+{
+  if (lhs.row == invalid_index) { return false; }
+  if (rhs.row == invalid_index) { return true; }
+  return stable_valid_string_less<ascending>(lhs, rhs);
 }
 
 CUDF_KERNEL void compute_finish_chunk_counts(size_type const* final_begins,
@@ -752,7 +758,8 @@ CUDF_KERNEL __launch_bounds__(comparison_chunk_size,
     auto upper = sibling_length;
     while (lower < upper) {
       auto const middle = lower + (upper - lower) / 2;
-      if (stable_string_less<ascending>(sibling_values[middle], value)) {
+      // Only active lanes search, and the bound excludes padded sibling entries.
+      if (stable_valid_string_less<ascending>(sibling_values[middle], value)) {
         lower = middle + 1;
       } else {
         upper = middle;

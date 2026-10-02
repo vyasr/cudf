@@ -7,6 +7,7 @@
 #include <cudf_test/column_wrapper.hpp>
 #include <cudf_test/iterator_utilities.hpp>
 #include <cudf_test/testing_main.hpp>
+#include <cudf_test/type_list_utilities.hpp>
 #include <cudf_test/type_lists.hpp>
 
 #include <cudf/ast/expressions.hpp>
@@ -110,7 +111,6 @@ struct binary_overflow_inputs {
   std::array<R, 4> expected;
   std::array<R, 4> expected_fail;
   std::array<bool, 4> validity;
-  bool type_limit_failure{false};
 };
 
 template <typename R>
@@ -124,16 +124,10 @@ struct unary_overflow_inputs {
 
 using integral_overflow_types = cudf::test::IntegralTypesNotBool;
 using signed_overflow_types   = cudf::test::Types<int8_t, int16_t, int32_t, int64_t>;
-
-template <typename To, typename From, std::size_t N>
-std::array<To, N> cast_overflow_values(std::array<From, N> const& values)
-{
-  std::array<To, N> result;
-  for (std::size_t i = 0; i < N; ++i) {
-    result[i] = static_cast<To>(values[i]);
-  }
-  return result;
-}
+using binary_overflow_types =
+  cudf::test::Concat<integral_overflow_types, cudf::test::FixedPointTypes>;
+using signed_decimal_overflow_types =
+  cudf::test::Concat<signed_overflow_types, cudf::test::FixedPointTypes>;
 
 class overflow_batch {
   struct failure_case {
@@ -193,13 +187,9 @@ class overflow_batch {
                      binary_overflow_inputs<overflow_rep_t<T>> const& values,
                      std::string_view operation_name = {})
   {
-    auto const a_index = add_input(make_overflow_column<T>(values.a));
-    auto const b_index = add_input(make_overflow_column<T>(values.b));
-    auto b_fail_values = values.b_fail;
-    if (values.type_limit_failure) {
-      b_fail_values[1] = std::numeric_limits<overflow_rep_t<T>>::max();
-    }
-    auto const b_fail_index = add_input(make_overflow_column<T>(b_fail_values));
+    auto const a_index      = add_input(make_overflow_column<T>(values.a));
+    auto const b_index      = add_input(make_overflow_column<T>(values.b));
+    auto const b_fail_index = add_input(make_overflow_column<T>(values.b_fail));
     auto const& a           = add_reference(a_index);
     auto const& b           = add_reference(b_index);
     auto const& b_fail      = add_reference(b_fail_index);
@@ -227,25 +217,6 @@ class overflow_batch {
       }
       append_binary<U>(Op, make_inputs.template operator()<U>(), operation_name);
     });
-  }
-
-  template <cudf::ast::jit::op Op>
-  void append_integral_binary(binary_overflow_inputs<int64_t> const& values,
-                              std::string_view operation_name = {})
-  {
-    append_binary_types<Op>(
-      integral_overflow_types{},
-      [&]<typename T>() {
-        using R = overflow_rep_t<T>;
-        return binary_overflow_inputs<R>{cast_overflow_values<R>(values.a),
-                                         cast_overflow_values<R>(values.b),
-                                         cast_overflow_values<R>(values.b_fail),
-                                         cast_overflow_values<R>(values.expected),
-                                         cast_overflow_values<R>(values.expected_fail),
-                                         values.validity,
-                                         values.type_limit_failure};
-      },
-      operation_name);
   }
 
   template <typename T>
@@ -327,16 +298,8 @@ class overflow_batch {
 TEST_F(JITExpressionTest, BinaryOverflow)
 {
   overflow_batch batch;
-  batch.append_integral_binary<cudf::ast::jit::op::ADD_OVERFLOW>({{3, 20, 1, 50},
-                                                                  {10, 7, 20, 0},
-                                                                  {10, 0, 20, 0},
-                                                                  {13, 27, 21, 50},
-                                                                  {13, 0, 21, 50},
-                                                                  {1, 0, 1, 1},
-                                                                  true},
-                                                                 "add");
   batch.append_binary_types<cudf::ast::jit::op::ADD_OVERFLOW>(
-    cudf::test::FixedPointTypes{},
+    binary_overflow_types{},
     []<typename T>() {
       using R = overflow_rep_t<T>;
       return binary_overflow_inputs<R>{{3, 20, 1, 50},
@@ -347,14 +310,18 @@ TEST_F(JITExpressionTest, BinaryOverflow)
                                        {1, 0, 1, 1}};
     },
     "add");
-  batch.append_integral_binary<cudf::ast::jit::op::MUL_OVERFLOW>({{3, 20, 2, 50},
-                                                                  {10, 2, 1, 0},
-                                                                  {10, 0, 1, 0},
-                                                                  {30, 40, 2, 0},
-                                                                  {30, 0, 2, 0},
-                                                                  {1, 0, 1, 1},
-                                                                  true},
-                                                                 "multiply");
+  batch.append_binary_types<cudf::ast::jit::op::MUL_OVERFLOW>(
+    integral_overflow_types{},
+    []<typename T>() {
+      using R = overflow_rep_t<T>;
+      return binary_overflow_inputs<R>{{3, 20, 2, 50},
+                                       {10, 2, 1, 0},
+                                       {10, std::numeric_limits<R>::max(), 1, 0},
+                                       {30, 40, 2, 0},
+                                       {30, 0, 2, 0},
+                                       {1, 0, 1, 1}};
+    },
+    "multiply");
   batch.append_binary_types<cudf::ast::jit::op::MUL_OVERFLOW>(
     cudf::test::FixedPointTypes{},
     []<typename T>() {
@@ -367,41 +334,24 @@ TEST_F(JITExpressionTest, BinaryOverflow)
                                        {1, 0, 1, 1}};
     },
     "multiply");
-  batch.append_integral_binary<cudf::ast::jit::op::DIV_OVERFLOW>(
-    {{3, 20, 1, 50}, {10, 7, 2, 1}, {10, 1, 20, 0}, {0, 2, 0, 50}, {0, 20, 0, 50}, {1, 1, 1, 0}},
-    "divide");
   batch.append_binary_types<cudf::ast::jit::op::DIV_OVERFLOW>(
-    cudf::test::FixedPointTypes{},
+    binary_overflow_types{},
     []<typename T>() {
       using R = overflow_rep_t<T>;
       return binary_overflow_inputs<R>{
         {3, 20, 1, 50}, {10, 7, 2, 1}, {10, 1, 20, 0}, {0, 2, 0, 50}, {0, 20, 0, 50}, {1, 1, 1, 0}};
     },
     "divide");
-  batch.append_integral_binary<cudf::ast::jit::op::MOD_OVERFLOW>(
-    {{3, 20, 1, 50}, {10, 7, 2, 1}, {10, 1, 20, 0}, {3, 6, 1, 0}, {3, 0, 1, 0}, {1, 1, 1, 0}},
-    "modulo");
   batch.append_binary_types<cudf::ast::jit::op::MOD_OVERFLOW>(
-    cudf::test::FixedPointTypes{},
+    binary_overflow_types{},
     []<typename T>() {
       using R = overflow_rep_t<T>;
       return binary_overflow_inputs<R>{
         {3, 20, 1, 50}, {10, 7, 2, 1}, {10, 1, 20, 0}, {3, 6, 1, 0}, {3, 0, 1, 0}, {1, 1, 1, 0}};
     },
     "modulo");
-  for_each_overflow_type(signed_overflow_types{}, [&]<typename T>() {
-    using R = overflow_rep_t<T>;
-    batch.append_binary<T>(cudf::ast::jit::op::SUB_OVERFLOW,
-                           {{3, 20, 1, 50},
-                            {10, 7, 20, 0},
-                            {10, std::numeric_limits<R>::min(), 20, 0},
-                            {-7, 13, -19, 50},
-                            {-7, 0, -19, 50},
-                            {1, 0, 1, 1}},
-                           "subtract");
-  });
   batch.append_binary_types<cudf::ast::jit::op::SUB_OVERFLOW>(
-    cudf::test::FixedPointTypes{},
+    signed_decimal_overflow_types{},
     []<typename T>() {
       using R = overflow_rep_t<T>;
       return binary_overflow_inputs<R>{{3, 20, 1, 50},
@@ -439,8 +389,7 @@ TEST_F(JITExpressionTest, AbsOverflow)
       {R{3}, R{20}, R{1}, R{50}, R{0}, R{1}, R{0}},
       {1, 1, 1, 1, 0, 1, 1}};
   };
-  batch.append_unary_types<cudf::ast::jit::op::ABS_OVERFLOW>(signed_overflow_types{}, make_inputs);
-  batch.append_unary_types<cudf::ast::jit::op::ABS_OVERFLOW>(cudf::test::FixedPointTypes{},
+  batch.append_unary_types<cudf::ast::jit::op::ABS_OVERFLOW>(signed_decimal_overflow_types{},
                                                              make_inputs);
   batch.expect_results();
 }
@@ -469,8 +418,7 @@ TEST_F(JITExpressionTest, NegOverflow)
       {R{-3}, R{20}, R{-1}, R{50}, R{0}, R{-1}, R{0}},
       {1, 1, 1, 1, 0, 1, 1}};
   };
-  batch.append_unary_types<cudf::ast::jit::op::NEG_OVERFLOW>(signed_overflow_types{}, make_inputs);
-  batch.append_unary_types<cudf::ast::jit::op::NEG_OVERFLOW>(cudf::test::FixedPointTypes{},
+  batch.append_unary_types<cudf::ast::jit::op::NEG_OVERFLOW>(signed_decimal_overflow_types{},
                                                              make_inputs);
   batch.expect_results();
 }

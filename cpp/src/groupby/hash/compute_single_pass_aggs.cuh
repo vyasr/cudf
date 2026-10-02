@@ -24,7 +24,6 @@
 #include <cuco/static_set.cuh>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/for_each.h>
 
 namespace cudf::groupby::detail::hash {
 

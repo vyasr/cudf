@@ -16,7 +16,6 @@
 #include <cuda/buffer>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/copy.h>
 
 #include <cstddef>
 #include <cstring>

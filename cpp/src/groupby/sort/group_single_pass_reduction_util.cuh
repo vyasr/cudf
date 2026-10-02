@@ -24,7 +24,6 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/stream>
-#include <thrust/reduce.h>
 
 namespace cudf {
 namespace groupby {

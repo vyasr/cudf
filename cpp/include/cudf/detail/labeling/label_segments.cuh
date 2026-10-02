@@ -14,10 +14,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/for_each.h>
-#include <thrust/scan.h>
-#include <thrust/scatter.h>
-#include <thrust/uninitialized_fill.h>
 
 namespace cudf::detail {
 

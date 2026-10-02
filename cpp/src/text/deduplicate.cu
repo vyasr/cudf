@@ -29,7 +29,6 @@
 #include <thrust/binary_search.h>
 #include <thrust/remove.h>
 #include <thrust/sort.h>
-#include <thrust/transform.h>
 #include <thrust/unique.h>
 
 namespace nvtext {

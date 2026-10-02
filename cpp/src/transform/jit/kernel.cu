@@ -57,36 +57,29 @@ extern "C" __device__ transform_type transform;
 
 }  // namespace lto
 
-template <bool has_user_data>
-struct transform_op_invoker;
-
-template <>
-struct transform_op_invoker<false> {
-  template <typename UserData, typename... Args>
-  __device__ static errc invoke(UserData, thread_index_type, Args... args)
-  {
-    if constexpr (!cuda::std::is_void_v<decltype(GENERIC_TRANSFORM_OP(args...))>) {
-      return static_cast<cudf::errc>(GENERIC_TRANSFORM_OP(args...));
-    } else {
-      (void)GENERIC_TRANSFORM_OP(args...);
-      return errc::SUCCESS;
-    }
+// Expanding the argument packs directly avoids instantiating concatenated tuple types and
+// cuda::std::apply machinery, which is expensive in NVRTC's C++ frontend.
+template <typename... Args>
+  requires requires(Args... args) { GENERIC_TRANSFORM_OP(args...); }
+__device__ errc invoke_transform(Args... args)
+{
+  if constexpr (!cuda::std::is_void_v<decltype(GENERIC_TRANSFORM_OP(args...))>) {
+    return static_cast<errc>(GENERIC_TRANSFORM_OP(args...));
+  } else {
+    (void)GENERIC_TRANSFORM_OP(args...);
+    return errc::SUCCESS;
   }
-};
+}
 
-template <>
-struct transform_op_invoker<true> {
-  template <typename UserData, typename... Args>
-  __device__ static errc invoke(UserData user_data, thread_index_type row, Args... args)
-  {
-    if constexpr (!cuda::std::is_void_v<decltype(GENERIC_TRANSFORM_OP(user_data, row, args...))>) {
-      return static_cast<cudf::errc>(GENERIC_TRANSFORM_OP(user_data, row, args...));
-    } else {
-      (void)GENERIC_TRANSFORM_OP(user_data, row, args...);
-      return errc::SUCCESS;
-    }
+template <bool has_user_data, typename... Args>
+__device__ errc invoke_transform_op(void* user_data, size_type row, Args... args)
+{
+  if constexpr (has_user_data) {
+    return invoke_transform(user_data, row, args...);
+  } else {
+    return invoke_transform(args...);
   }
-};
+}
 
 /// @brief The generic transform kernel. Supports all types and nullability combinations.
 template <bool is_null_aware, bool has_user_data, typename InputAccessors, typename OutputAccessors>
@@ -110,8 +103,10 @@ __device__ void transform_kernel(size_type row_size,
 
       auto row_error = OutputAccessors::map([&]<typename... Out>() {
         return InputAccessors::map([&]<typename... In>() {
-          return transform_op_invoker<has_user_data>::invoke(
-            user_data, row, &cuda::std::get<Out::index>(outs)..., In::element(input_cols, row)...);
+          return invoke_transform_op<has_user_data>(user_data,
+                                                    static_cast<size_type>(row),
+                                                    &cuda::std::get<Out::index>(outs)...,
+                                                    In::element(input_cols, row)...);
         });
       });
 
@@ -134,11 +129,10 @@ __device__ void transform_kernel(size_type row_size,
 
       auto row_error = OutputAccessors::map([&]<typename... Out>() {
         return InputAccessors::map([&]<typename... In>() {
-          return transform_op_invoker<has_user_data>::invoke(
-            user_data,
-            row,
-            &cuda::std::get<Out::index>(outs)...,
-            In::nullable_element(input_cols, row)...);
+          return invoke_transform_op<has_user_data>(user_data,
+                                                    static_cast<size_type>(row),
+                                                    &cuda::std::get<Out::index>(outs)...,
+                                                    In::nullable_element(input_cols, row)...);
         });
       });
 

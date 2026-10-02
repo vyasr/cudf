@@ -19,7 +19,6 @@
 
 #include <cuda/std/limits>
 #include <cuda/std/type_traits>
-#include <thrust/equal.h>
 
 #include <memory>
 

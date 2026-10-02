@@ -12,7 +12,6 @@
 
 #include <cuda/std/optional>
 #include <cuda/std/utility>
-#include <thrust/execution_policy.h>
 #include <thrust/logical.h>
 
 namespace cudf::strings::detail {

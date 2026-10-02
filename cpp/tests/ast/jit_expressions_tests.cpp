@@ -60,19 +60,23 @@ TEST_F(JITExpressionTest, Coalesce)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view(), VERBOSITY);
 }
 
+/// @brief Selects the fixture value type so integer and decimal cases share input factories.
 template <typename T, bool = cudf::is_fixed_point<T>()>
 struct overflow_rep {
   using type = T;
 };
 
+/// @brief Uses decimal storage values while column construction preserves the logical type.
 template <typename T>
 struct overflow_rep<T, true> {
   using type = typename T::rep;
 };
 
+/// @brief Provides the storage value type used by overflow fixture arrays.
 template <typename T>
 using overflow_rep_t = typename overflow_rep<T>::type;
 
+/// @brief Creates typed fixture columns, retaining decimal semantics with scale zero.
 template <typename T, std::size_t N>
 std::unique_ptr<cudf::column> make_overflow_column(std::array<overflow_rep_t<T>, N> const& values)
 {
@@ -84,6 +88,7 @@ std::unique_ptr<cudf::column> make_overflow_column(std::array<overflow_rep_t<T>,
   }
 }
 
+/// @brief Creates nullable expected columns so NULLIFY results retain type and validity coverage.
 template <typename T, std::size_t N>
 std::unique_ptr<cudf::column> make_overflow_column(std::array<overflow_rep_t<T>, N> const& values,
                                                    std::array<bool, N> const& validity)
@@ -97,12 +102,14 @@ std::unique_ptr<cudf::column> make_overflow_column(std::array<overflow_rep_t<T>,
   }
 }
 
+/// @brief Expands type coverage within one batch instead of separate typed GTest nodes.
 template <typename... T, typename F>
 void for_each_overflow_type(cudf::test::Types<T...>, F&& f)
 {
   (f.template operator()<T>(), ...);
 }
 
+/// @brief Keeps binary boundary inputs and normal/NULLIFY expectations together for each type.
 template <typename R>
 struct binary_overflow_inputs {
   std::array<R, 4> a;
@@ -113,6 +120,7 @@ struct binary_overflow_inputs {
   std::array<bool, 4> validity;
 };
 
+/// @brief Keeps unary boundary inputs and normal/NULLIFY expectations together for each type.
 template <typename R>
 struct unary_overflow_inputs {
   std::array<R, 7> a;
@@ -122,14 +130,21 @@ struct unary_overflow_inputs {
   std::array<bool, 7> validity;
 };
 
+/// @brief Covers integer arithmetic boundaries without treating booleans as numeric operands.
 using integral_overflow_types = cudf::test::IntegralTypesNotBool;
-using signed_overflow_types   = cudf::test::Types<int8_t, int16_t, int32_t, int64_t>;
+/// @brief Restricts signed-only boundary cases to the four signed integer widths.
+using signed_overflow_types = cudf::test::Types<int8_t, int16_t, int32_t, int64_t>;
+/// @brief Shares binary fixtures across integer and decimal arithmetic with identical inputs.
 using binary_overflow_types =
   cudf::test::Concat<integral_overflow_types, cudf::test::FixedPointTypes>;
+/// @brief Shares signed boundary fixtures across signed integers and decimal representations.
 using signed_decimal_overflow_types =
   cudf::test::Concat<signed_overflow_types, cudf::test::FixedPointTypes>;
 
+/// @brief Owns fixture data and expressions to batch type coverage into fewer JIT compilations.
 class overflow_batch {
+  /// @brief Identifies interchangeable operands so each throwing case can be isolated without
+  /// changing the expression graph or input schema.
   struct failure_case {
     cudf::size_type failing_input;
     cudf::size_type safe_input;
@@ -145,6 +160,7 @@ class overflow_batch {
   std::vector<std::string> labels{};
   std::vector<failure_case> failures{};
 
+  /// @brief Retains column ownership for the borrowed views used during batch evaluation.
   cudf::size_type add_input(std::unique_ptr<cudf::column> input)
   {
     auto const index = static_cast<cudf::size_type>(inputs.size());
@@ -152,11 +168,13 @@ class overflow_batch {
     return index;
   }
 
+  /// @brief Gives operand references tree-owned lifetimes for the batch's expression graph.
   cudf::ast::column_reference const& add_reference(cudf::size_type column)
   {
     return tree.push(cudf::ast::column_reference(column));
   }
 
+  /// @brief Registers normal and NULLIFY outputs together with isolated THROW expectations.
   template <typename T, std::size_t N>
   void append_case(
     cudf::ast::jit::op op,
@@ -182,6 +200,7 @@ class overflow_batch {
   }
 
  public:
+  /// @brief Adds one type's binary boundary coverage while keeping its failing operand replaceable.
   template <typename T>
   void append_binary(cudf::ast::jit::op op,
                      binary_overflow_inputs<overflow_rep_t<T>> const& values,
@@ -202,6 +221,7 @@ class overflow_batch {
                    {b_fail_index, b_index, std::string{operation_name}});
   }
 
+  /// @brief Applies a shared binary fixture factory across types, preserving driver exclusions.
   template <cudf::ast::jit::op Op, typename... T, typename F>
   void append_binary_types(cudf::test::Types<T...> types,
                            F&& make_inputs,
@@ -219,6 +239,7 @@ class overflow_batch {
     });
   }
 
+  /// @brief Adds one type's unary boundary coverage while keeping its failing operand replaceable.
   template <typename T>
   void append_unary(cudf::ast::jit::op op, unary_overflow_inputs<overflow_rep_t<T>> const& values)
   {
@@ -235,6 +256,7 @@ class overflow_batch {
                    {a_fail_index, a_index, {}});
   }
 
+  /// @brief Applies a shared unary fixture factory across types within the same expression batch.
   template <cudf::ast::jit::op Op, typename... T, typename F>
   void append_unary_types(cudf::test::Types<T...> types, F&& make_inputs)
   {
@@ -242,6 +264,7 @@ class overflow_batch {
       types, [&]<typename U>() { append_unary<U>(Op, make_inputs.template operator()<U>()); });
   }
 
+  /// @brief Adds decimal precision boundaries and owns the scalar borrowed by their expressions.
   template <typename T>
   void append_precision()
   {
@@ -263,6 +286,8 @@ class overflow_batch {
                    {a_fail_index, a_index, {}});
   }
 
+  /// @brief Checks batched normal/NULLIFY outputs and each isolated THROW case with type
+  /// diagnostics.
   void expect_results() const
   {
     std::vector<cudf::column_view> input_views;

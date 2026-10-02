@@ -19,7 +19,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/transform.h>
 
 namespace cudf::binops::compiled::detail {
 template <class T, class... Ts>

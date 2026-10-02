@@ -17,9 +17,6 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/std/limits>
-#include <thrust/copy.h>
-#include <thrust/execution_policy.h>
-#include <thrust/find.h>
 
 namespace cudf::detail::rolling {
 

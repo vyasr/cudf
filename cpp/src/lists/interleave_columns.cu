@@ -22,11 +22,8 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 #include <thrust/for_each.h>
-#include <thrust/scan.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace lists {

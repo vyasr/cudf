@@ -52,6 +52,8 @@ struct string_delimiter_fn {
   char const* d_chars{};
 };
 
+// Keep one host entry point per fixed predicate so split_part.cu owns the count/select kernels
+// instead of emitting duplicate instantiations in each caller TU.
 rmm::device_uvector<int64_t> find_string_delimiter_positions(strings_column_view const& input,
                                                              cudf::string_view delimiter,
                                                              cuda::stream_ref stream);
@@ -502,6 +504,9 @@ CUDF_KERNEL void count_delimiters_kernel(DelimiterFn delimiter_fn,
   }
 }
 
+// Declaration-only owners avoid instantiating split_per_row_impl for each caller's
+// extractor-building lambda. Both helpers are explicitly instantiated in split_record.cu,
+// so table and record splits share count/scan/extract kernels while direction stays compile-time.
 template <bool Forward>
 std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split_per_row(
   column_device_view const& d_strings,
@@ -517,6 +522,9 @@ std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split
   cuda::stream_ref stream,
   rmm::device_async_resource_ref mr);
 
+// These non-template overloads prevent callers from emitting the same fixed helper kernels in
+// multiple TUs. split.cu owns the forward explicit-delimiter variant; split_record.cu owns the
+// reverse and whitespace variants. Keep definitions out of this header to preserve that ownership.
 std::pair<std::unique_ptr<column>, rmm::device_uvector<string_index_pair>> split_helper(
   strings_column_view const& input,
   rsplit_tokenizer_fn tokenizer,

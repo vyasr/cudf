@@ -26,7 +26,6 @@
 
 #include <cub/device/device_transform.cuh>
 #include <cuda/iterator>
-#include <thrust/binary_search.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 #include <thrust/scan.h>

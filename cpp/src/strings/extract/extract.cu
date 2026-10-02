@@ -21,8 +21,6 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
-#include <thrust/fill.h>
 
 namespace cudf {
 namespace strings {

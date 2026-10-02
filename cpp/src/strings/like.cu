@@ -23,8 +23,6 @@
 #include <cooperative_groups/reduce.h>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/copy.h>
-#include <thrust/count.h>
 
 namespace cudf {
 namespace strings {

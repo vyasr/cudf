@@ -22,7 +22,6 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <thrust/binary_search.h>
-#include <thrust/scan.h>
 
 #include <algorithm>
 #include <numeric>

@@ -24,8 +24,6 @@
 #include <cuda/functional>
 #include <cuda/std/functional>
 #include <cuda/stream>
-#include <thrust/find.h>
-#include <thrust/scan.h>
 
 #include <type_traits>
 

@@ -19,8 +19,6 @@
 
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <thrust/host_vector.h>
-#include <thrust/transform_scan.h>
 
 #include <numeric>
 

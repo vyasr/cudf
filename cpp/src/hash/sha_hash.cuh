@@ -24,9 +24,6 @@
 #include <cuda/iterator>
 #include <cuda/std/limits>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
-#include <thrust/fill.h>
-#include <thrust/for_each.h>
 
 #include <algorithm>
 #include <memory>

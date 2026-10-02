@@ -16,8 +16,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/scan.h>
-#include <thrust/scatter.h>
 
 namespace cudf {
 namespace strings {

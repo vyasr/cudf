@@ -39,8 +39,6 @@
 #include <cuda/std/execution>
 #include <cuda/std/iterator>
 #include <cuda/stream>
-#include <thrust/for_each.h>
-#include <thrust/transform.h>
 
 #include <algorithm>
 #include <iterator>

@@ -25,7 +25,6 @@
 #include <cuda/stream>
 #include <thrust/copy.h>
 #include <thrust/count.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

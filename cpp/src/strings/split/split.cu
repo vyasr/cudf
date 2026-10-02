@@ -24,10 +24,6 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/fill.h>
-#include <thrust/for_each.h>
-#include <thrust/reduce.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

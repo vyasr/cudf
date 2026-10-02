@@ -16,7 +16,6 @@
 #include <cub/device/device_segmented_reduce.cuh>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace reduction {

@@ -19,12 +19,8 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/std/algorithm>
-#include <thrust/for_each.h>
 #include <thrust/gather.h>
-#include <thrust/scan.h>
-#include <thrust/sequence.h>
 #include <thrust/sort.h>
-#include <thrust/transform.h>
 #include <thrust/transform_scan.h>
 
 #include <algorithm>

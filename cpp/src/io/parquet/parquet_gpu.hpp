@@ -351,10 +351,14 @@ enum class level_prepass_family : uint8_t {
  * @brief Level prepass scratch information
  *
  * Contains a valid-rank map computed from the rep and def levels for later decode kernels to use
+ *
+ * Reached through a pointer on `PageInfo`, the same way `PageNestingInfo` is,
+ * since the map is indexed straight out of global memory by rank, so there's
+ * no need to cache it in shared memory or be as careful about the total memory
+ * usage when the values will already be in registers.
  */
 struct PagePrepassState {
-  /// `nz_count` value meaning "claimed, but the producer has not run yet". The backing array
-  /// holds only claimed pages, so this never describes a page the selector passed over.
+  /// `nz_count` value meaning "claimed, but the producer has not run yet".
   static constexpr int32_t not_yet_produced = -2;
 
   /// Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a
@@ -445,11 +449,9 @@ struct PageInfo {
   bool is_compressed;                  // Whether the page is compressed (V2 header)
   bool has_value_info;  // true if str_bytes, num_valids, etc are derivable from page indexes
 
-  // Declared here, after the trailing scalars, so the enum lands in existing tail padding:
-  // sizeof(PageInfo) grows by 8 (the pointer) rather than 16.
-  //
+  // prepass_family indicates which prepass consumer a page uses.
   // `prepass_state` is null when the selector did not claim this page -- non-null *is* the
-  // selection flag. See PagePrepassState for why the scratch is held out of line.
+  // selection flag.
   level_prepass_family prepass_family{level_prepass_family::NONE};
   PagePrepassState* prepass_state{};
 

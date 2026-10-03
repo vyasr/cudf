@@ -538,7 +538,8 @@ reader_impl::reader_impl(std::size_t chunk_read_limit,
     _output_chunk_read_limit{chunk_read_limit},
     _input_pass_read_limit{pass_read_limit}
 {
-  // Snapshot once: the selector must not change between passes of a single reader.
+  // Snapshot the prepass enablement flag once. The selector must not change
+  // between passes of a single reader.
   _level_prepass_enabled = cudf::detail::get_bool_env_or("LIBCUDF_PARQUET_LEVEL_PREPASS", false);
 
   // The direct parquet-dict → DICTIONARY32 transcode fast path only supports single-pass,

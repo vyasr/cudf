@@ -45,16 +45,13 @@ namespace {
 /**
  * @brief Decide which level-prepass consumer, if any, can decode @p page.
  *
- * Structural only: it answers "is there a consumer for this page's shape and encoding", and
- * knows nothing about whether the prepass is enabled. The caller decides whether to ask at all --
- * with the feature off it does not, and every page keeps the default `NONE`.
+ * This function does not answer whether the prepass is enabled, it only answers whether there is a
+ * prepass consumer for a given page's shape and encoding. The caller decides whether to ask at all.
  */
 [[nodiscard]] level_prepass_family classify_prepass_family(PageInfo const& page,
                                                            ColumnChunkDesc const& chunk)
 {
-  // Only the DELTA encodings have a prepass consumer. Everything else -- the PLAIN, dictionary
-  // and BYTE_STREAM_SPLIT families -- decodes with the legacy kernels, which walk levels
-  // themselves, so those pages have no family and never reach a producer.
+  // For now, only the DELTA encodings have a prepass consumer.
   bool const is_delta = BitAnd(page.kernel_mask,
                                BitOr(decode_kernel_mask::DELTA_BINARY,
                                      decode_kernel_mask::DELTA_BYTE_ARRAY,
@@ -327,9 +324,13 @@ void reader_impl::allocate_level_decode_space()
   size_t total_memory_size = 0;
   for (size_t idx = 0; idx < num_pages; idx++) {
     auto& page = pages[idx];
-    // Stamp every page, masked-out ones included: in the multi-subpass path pages are copied out
-    // of `pass.pages`, which an earlier subpass already stamped, so leaving one unwritten would
-    // let a stale selection through.
+    // Clear any selection left over from a previous subpass, on every page, including masked-out
+    // ones. A subpass's page array is filled by copying whole `PageInfo` structs out of
+    // `pass.pages`, so on the second and later subpasses of a pass these two fields can still hold
+    // what the previous subpass wrote, including a `prepass_state` pointer into scratch that
+    // subpass has since released. The reset has to precede the page-mask `continue` below, or a
+    // masked-out page would keep that stale selection and carry the dangling pointer to the
+    // device.
     page.prepass_family = level_prepass_family::NONE;
     page.prepass_state  = nullptr;
 
@@ -386,18 +387,16 @@ void reader_impl::allocate_level_decode_space()
       std::max(def_level_sizes[idx], rep_level_sizes[idx]) / pass.level_type_size;
   }
 
-  // Hand out the out-of-line prepass scratch. A page gets an entry exactly when the selector
-  // claims it, so a null `prepass_state` *is* "not selected" and no separate flag is needed.
+  // TODO: count the prepass scratch in the chunked-read budget, before the prepass is enabled by
+  // default.
   //
-  // The array holds only the claimed pages, not one slot per page of the subpass. On a mixed file
-  // that is most of it -- every PLAIN, dictionary and BYTE_STREAM_SPLIT page would otherwise pay
-  // for a slot nothing reads, in pinned memory, device memory and the H2D copy. It also keeps
-  // `nz_count`'s sentinel meaning exactly one thing: with no slots for unclaimed pages, a
-  // `not_yet_produced` entry always belongs to a page that really was claimed.
+  // For now, both `level_decode_data` above and the allocations below are not tracked in the
+  // chunked-read budged. We will fix that once we start actually leveraging the prepass and
+  // therefore introduce some of the machinery that will be needed to calculate the memory usage.
   //
-  // The device needs no page-to-slot map: it only ever reaches this state through
-  // `PageInfo::prepass_state`, which carries the address directly. Only the host-side seeding
-  // below needs to find a page's slot, so the mapping stays here.
+  // Hand out the out-of-line prepass scratch. There is exactly one for each claimed page, so most
+  // pages (those that do not use the prepass) have nothing here. This information is only needed on
+  // the host. On device, a non-null `PageInfo::prepass_state` always indicates that state exists.
   std::vector<size_t> prepass_slot(num_pages, std::numeric_limits<size_t>::max());
   size_t num_claimed = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
@@ -410,8 +409,8 @@ void reader_impl::allocate_level_decode_space()
   subpass.prepass_state_buf =
     cudf::detail::hostdevice_vector<PagePrepassState>(num_claimed, _stream);
 
-  // `PageInfo` travels to the device, so it must carry the DEVICE address; the host-side seeding
-  // below goes through `host_state()`. Both are uploaded together in `setup_next_subpass`.
+  // `PageInfo` travels to the device, so it must carry the device address, while the host-side
+  // seeding below goes through `host_state()`.
   for (size_t idx = 0; idx < num_pages; ++idx) {
     if (prepass_slot[idx] != std::numeric_limits<size_t>::max()) {
       pages[idx].prepass_state = subpass.prepass_state_buf.device_ptr(prepass_slot[idx]);
@@ -423,9 +422,9 @@ void reader_impl::allocate_level_decode_space()
              : nullptr;
   };
 
-  // Size the flat valid-rank maps. A required page needs no map at all: its rank map is the
-  // identity, which the consumer synthesizes rather than reading. Sizes are kept so the carve
-  // below cannot drift from the predicate that produced them.
+  // Size the flat valid-rank maps. A required page needs no map at all since its rank map is the
+  // identity, which the consumer synthesizes rather than reading. Sizes are kept so the carve below
+  // cannot drift from the predicate that produced them.
   std::vector<size_t> flat_map_sizes(num_pages, 0);
   size_t flat_prepass_size = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {

@@ -264,12 +264,11 @@ enum class decode_kernel_mask {
  * @brief Which level-prepass consumer a page uses, or NONE for the legacy decoders.
  *
  * The level prepass walks a page's definition levels once up front and publishes a valid-rank
- * map, so that the decode kernel can place values without decoding levels itself. Only the DELTA
- * encodings have a consumer for that map; everything else -- PLAIN, dictionary and
- * BYTE_STREAM_SPLIT -- decodes with the legacy kernels, which walk the levels themselves. See
+ * map, so that the decode kernel can place values without decoding levels
+ * itself. For now, only the DELTA encodings have a consumer for the map. See
  * `classify_prepass_family` in reader_impl_preprocess.cu.
  *
- * `uint8_t` so that `PageInfo` can carry it in existing tail padding.
+ * uint8_t to minimize the overhead in PageInfo
  */
 enum class level_prepass_family : uint8_t {
   NONE,

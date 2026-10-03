@@ -348,23 +348,13 @@ enum class level_prepass_family : uint8_t {
 };
 
 /**
- * @brief Out-of-line per-page scratch for the level prepass.
+ * @brief Level prepass scratch information
  *
- * Held out of `PageInfo` deliberately. Inlining these fields cost 104 bytes on every page of
- * every read, including reads that never engage the prepass, and that alone regressed the reader
- * by 5-22% -- `PageInfo` is copied host-to-device once per subpass and the cost scales with page
- * count, so it was worst on page-dense columns.
- *
- * Seeded on the host, written by a producer kernel, and read by a consumer kernel in a *later*
- * launch, so this array must live in device memory across launches and must not be re-uploaded
- * from the host in between.
+ * Contains a valid-rank map computed from the rep and def levels for later decode kernels to use
  */
 struct PagePrepassState {
-  /// `nz_count` value meaning "selected, but the producer has not run yet".
-  ///
-  /// The backing array is sized to every page of the subpass, so an *unselected* page's slot holds
-  /// this value too. It is only meaningful when reached through `PageInfo::prepass_state`, which is
-  /// null for those pages -- do not iterate the array by page index.
+  /// `nz_count` value meaning "claimed, but the producer has not run yet". The backing array
+  /// holds only claimed pages, so this never describes a page the selector passed over.
   static constexpr int32_t not_yet_produced = -2;
 
   /// Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a
@@ -372,7 +362,8 @@ struct PagePrepassState {
   uint32_t* nz_idx{};
   /// Negative until the producer runs; the page's valid count afterwards.
   int32_t nz_count{not_yet_produced};
-  /// The page's null count, written by the producer.
+  /// Producer-written count whose meaning depends on the page's family, which is why it is not
+  /// named for one of them. `DELTA_FLAT`, the only family here, uses it for the page's null count.
   int32_t aux_count{};
 };
 

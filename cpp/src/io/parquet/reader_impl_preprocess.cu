@@ -388,24 +388,39 @@ void reader_impl::allocate_level_decode_space()
 
   // Hand out the out-of-line prepass scratch. A page gets an entry exactly when the selector
   // claims it, so a null `prepass_state` *is* "not selected" and no separate flag is needed.
-  auto const any_prepass_selected =
-    std::any_of(pages.host_begin(), pages.host_end(), [](PageInfo const& page) {
-      return page.prepass_family != level_prepass_family::NONE;
-    });
-  if (!any_prepass_selected) { return; }
+  //
+  // The array holds only the claimed pages, not one slot per page of the subpass. On a mixed file
+  // that is most of it -- every PLAIN, dictionary and BYTE_STREAM_SPLIT page would otherwise pay
+  // for a slot nothing reads, in pinned memory, device memory and the H2D copy. It also keeps
+  // `nz_count`'s sentinel meaning exactly one thing: with no slots for unclaimed pages, a
+  // `not_yet_produced` entry always belongs to a page that really was claimed.
+  //
+  // The device needs no page-to-slot map: it only ever reaches this state through
+  // `PageInfo::prepass_state`, which carries the address directly. Only the host-side seeding
+  // below needs to find a page's slot, so the mapping stays here.
+  std::vector<size_t> prepass_slot(num_pages, std::numeric_limits<size_t>::max());
+  size_t num_claimed = 0;
+  for (size_t idx = 0; idx < num_pages; ++idx) {
+    if (pages[idx].prepass_family != level_prepass_family::NONE) {
+      prepass_slot[idx] = num_claimed++;
+    }
+  }
+  if (num_claimed == 0) { return; }
 
-  subpass.prepass_state_buf = cudf::detail::hostdevice_vector<PagePrepassState>(num_pages, _stream);
+  subpass.prepass_state_buf =
+    cudf::detail::hostdevice_vector<PagePrepassState>(num_claimed, _stream);
 
   // `PageInfo` travels to the device, so it must carry the DEVICE address; the host-side seeding
   // below goes through `host_state()`. Both are uploaded together in `setup_next_subpass`.
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    auto& page = pages[idx];
-    if (page.prepass_family != level_prepass_family::NONE) {
-      page.prepass_state = subpass.prepass_state_buf.device_ptr(idx);
+    if (prepass_slot[idx] != std::numeric_limits<size_t>::max()) {
+      pages[idx].prepass_state = subpass.prepass_state_buf.device_ptr(prepass_slot[idx]);
     }
   }
   auto host_state = [&](size_t idx) -> PagePrepassState* {
-    return pages[idx].prepass_state != nullptr ? subpass.prepass_state_buf.host_ptr(idx) : nullptr;
+    return prepass_slot[idx] != std::numeric_limits<size_t>::max()
+             ? subpass.prepass_state_buf.host_ptr(prepass_slot[idx])
+             : nullptr;
   };
 
   // Size the flat valid-rank maps. A required page needs no map at all: its rank map is the

@@ -94,6 +94,9 @@ __device__ void transform_kernel(size_type row_size,
   auto stride       = detail::grid_1d::grid_stride();
   auto thread_error = errc::SUCCESS;
 
+  // Keep row_index wide: the final stride increment and warp padding can exceed size_type's range.
+  // Only narrow to row after checking bounds, so column accessors and UDFs receive a safe
+  // size_type.
   if constexpr (!is_null_aware) {
     for (auto row_index = start; row_index < row_size; row_index += stride) {
       auto const row = static_cast<size_type>(row_index);

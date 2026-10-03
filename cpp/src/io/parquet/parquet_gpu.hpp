@@ -260,50 +260,6 @@ enum class decode_kernel_mask {
   DICT_INT32               = (1 << 26),  // Run decode kernel for dict string → INT32 indices
 };
 
-/**
- * @brief Which level-prepass consumer a page uses, or NONE for the legacy decoders.
- *
- * The level prepass walks a page's definition levels once up front and publishes a valid-rank
- * map, so that the decode kernel can place values without decoding levels
- * itself. For now, only the DELTA encodings have a consumer for the map. See
- * `classify_prepass_family` in reader_impl_preprocess.cu.
- *
- * uint8_t to minimize the overhead in PageInfo
- */
-enum class level_prepass_family : uint8_t {
-  NONE,
-  DELTA_FLAT,
-};
-
-/**
- * @brief Out-of-line per-page scratch for the level prepass.
- *
- * Held out of `PageInfo` deliberately. Inlining these fields cost 104 bytes on every page of
- * every read, including reads that never engage the prepass, and that alone regressed the reader
- * by 5-22% -- `PageInfo` is copied host-to-device once per subpass and the cost scales with page
- * count, so it was worst on page-dense columns.
- *
- * Seeded on the host, written by a producer kernel, and read by a consumer kernel in a *later*
- * launch, so this array must live in device memory across launches and must not be re-uploaded
- * from the host in between.
- */
-struct PagePrepassState {
-  /// `nz_count` value meaning "selected, but the producer has not run yet".
-  ///
-  /// The backing array is sized to every page of the subpass, so an *unselected* page's slot holds
-  /// this value too. It is only meaningful when reached through `PageInfo::prepass_state`, which is
-  /// null for those pages -- do not iterate the array by page index.
-  static constexpr int32_t not_yet_produced = -2;
-
-  /// Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a
-  /// required page, whose map is the identity and is synthesized by the consumer.
-  uint32_t* nz_idx{};
-  /// Negative until the producer runs; the page's valid count afterwards.
-  int32_t nz_count{not_yet_produced};
-  /// The page's null count, written by the producer.
-  int32_t aux_count{};
-};
-
 constexpr uint32_t STRINGS_MASK_NON_DELTA = BitOr(decode_kernel_mask::STRING,
                                                   decode_kernel_mask::STRING_NESTED,
                                                   decode_kernel_mask::STRING_LIST,
@@ -374,6 +330,50 @@ struct PageNestingInfo {
   int32_t size;  // this page/nesting-level's row count contribution to the output column, if fully
                  // decoded
   int32_t batch_size;  // the size of the page for this batch
+};
+
+/**
+ * @brief Which level-prepass consumer a page uses, or NONE for the legacy decoders.
+ *
+ * The level prepass walks a page's definition levels once up front and publishes a valid-rank
+ * map, so that the decode kernel can place values without decoding levels
+ * itself. For now, only the DELTA encodings have a consumer for the map. See
+ * `classify_prepass_family` in reader_impl_preprocess.cu.
+ *
+ * uint8_t to minimize the overhead in PageInfo
+ */
+enum class level_prepass_family : uint8_t {
+  NONE,
+  DELTA_FLAT,
+};
+
+/**
+ * @brief Out-of-line per-page scratch for the level prepass.
+ *
+ * Held out of `PageInfo` deliberately. Inlining these fields cost 104 bytes on every page of
+ * every read, including reads that never engage the prepass, and that alone regressed the reader
+ * by 5-22% -- `PageInfo` is copied host-to-device once per subpass and the cost scales with page
+ * count, so it was worst on page-dense columns.
+ *
+ * Seeded on the host, written by a producer kernel, and read by a consumer kernel in a *later*
+ * launch, so this array must live in device memory across launches and must not be re-uploaded
+ * from the host in between.
+ */
+struct PagePrepassState {
+  /// `nz_count` value meaning "selected, but the producer has not run yet".
+  ///
+  /// The backing array is sized to every page of the subpass, so an *unselected* page's slot holds
+  /// this value too. It is only meaningful when reached through `PageInfo::prepass_state`, which is
+  /// null for those pages -- do not iterate the array by page index.
+  static constexpr int32_t not_yet_produced = -2;
+
+  /// Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a
+  /// required page, whose map is the identity and is synthesized by the consumer.
+  uint32_t* nz_idx{};
+  /// Negative until the producer runs; the page's valid count afterwards.
+  int32_t nz_count{not_yet_produced};
+  /// The page's null count, written by the producer.
+  int32_t aux_count{};
 };
 
 /**

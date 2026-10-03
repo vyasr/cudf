@@ -95,7 +95,8 @@ __device__ void transform_kernel(size_type row_size,
   auto thread_error = errc::SUCCESS;
 
   if constexpr (!is_null_aware) {
-    for (auto row = start; row < row_size; row += stride) {
+    for (auto row_index = start; row_index < row_size; row_index += stride) {
+      auto const row = static_cast<size_type>(row_index);
       if (stencil != nullptr && !bit_is_set(stencil, row)) { continue; }
 
       auto outs = OutputAccessors::map(
@@ -103,10 +104,8 @@ __device__ void transform_kernel(size_type row_size,
 
       auto row_error = OutputAccessors::map([&]<typename... Out>() {
         return InputAccessors::map([&]<typename... In>() {
-          return invoke_transform_op<has_user_data>(user_data,
-                                                    static_cast<size_type>(row),
-                                                    &cuda::std::get<Out::index>(outs)...,
-                                                    In::element(input_cols, row)...);
+          return invoke_transform_op<has_user_data>(
+            user_data, row, &cuda::std::get<Out::index>(outs)..., In::element(input_cols, row)...);
         });
       });
 
@@ -120,9 +119,10 @@ __device__ void transform_kernel(size_type row_size,
     // Keep every lane in a warp on the same loop iteration when writing validity.
     auto warp_padded_size = util::round_up_safe<thread_index_type>(row_size, detail::warp_size);
 
-    for (auto row = start; row < warp_padded_size; row += stride) {
-      auto active_mask = __ballot_sync(0xffff'ffffu, row < row_size);
-      if (row >= row_size) { continue; }
+    for (auto row_index = start; row_index < warp_padded_size; row_index += stride) {
+      auto active_mask = __ballot_sync(0xffff'ffffu, row_index < row_size);
+      if (row_index >= row_size) { continue; }
+      auto const row = static_cast<size_type>(row_index);
 
       auto outs = OutputAccessors::map(
         [&]<typename... A>() { return cuda::std::tuple{A::null_output_arg(output_cols, row)...}; });
@@ -130,7 +130,7 @@ __device__ void transform_kernel(size_type row_size,
       auto row_error = OutputAccessors::map([&]<typename... Out>() {
         return InputAccessors::map([&]<typename... In>() {
           return invoke_transform_op<has_user_data>(user_data,
-                                                    static_cast<size_type>(row),
+                                                    row,
                                                     &cuda::std::get<Out::index>(outs)...,
                                                     In::nullable_element(input_cols, row)...);
         });

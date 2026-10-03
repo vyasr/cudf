@@ -24,7 +24,6 @@
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
-#include <thrust/scatter.h>
 
 #include <algorithm>
 #include <cstdint>

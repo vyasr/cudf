@@ -20,9 +20,7 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/for_each.h>
 #include <thrust/sort.h>
-#include <thrust/transform.h>
 #include <thrust/transform_scan.h>
 #include <thrust/unique.h>
 

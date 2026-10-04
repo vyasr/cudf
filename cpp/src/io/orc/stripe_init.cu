@@ -12,7 +12,6 @@
 #include <cub/block/block_reduce.cuh>
 #include <cuda/std/array>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
 
 namespace cudf::io::orc::detail {
 

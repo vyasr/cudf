@@ -43,7 +43,6 @@
 #include <thrust/reduce.h>
 #include <thrust/remove.h>
 #include <thrust/replace.h>
-#include <thrust/scan.h>
 #include <thrust/transform.h>
 
 namespace cudf {

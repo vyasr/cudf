@@ -14,7 +14,6 @@
 #include <rmm/resource_ref.hpp>
 
 #include <cuda/stream>
-#include <thrust/copy.h>
 
 #include <iterator>
 

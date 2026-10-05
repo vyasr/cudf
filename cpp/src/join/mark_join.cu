@@ -29,7 +29,6 @@
 #include <cuda/atomic>
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <thrust/copy.h>
 #include <thrust/sequence.h>
 
 namespace cg = cooperative_groups;

@@ -20,7 +20,6 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/uninitialized_fill.h>
 
 namespace cudf {
 namespace groupby {

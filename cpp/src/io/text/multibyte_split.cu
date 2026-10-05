@@ -36,7 +36,6 @@
 #include <cuda/stream>
 #include <thrust/copy.h>
 #include <thrust/find.h>
-#include <thrust/transform.h>
 
 #include <cstdint>
 #include <limits>

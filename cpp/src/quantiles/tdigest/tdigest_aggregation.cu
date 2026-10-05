@@ -41,7 +41,6 @@
 #include <thrust/copy.h>
 #include <thrust/execution_policy.h>
 #include <thrust/remove.h>
-#include <thrust/replace.h>
 
 namespace cudf {
 namespace tdigest {

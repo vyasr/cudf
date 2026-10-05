@@ -16,7 +16,6 @@
 #include <cuda/stream>
 #include <thrust/count.h>
 #include <thrust/execution_policy.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

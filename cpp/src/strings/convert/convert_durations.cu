@@ -21,7 +21,6 @@
 #include <cuda/std/algorithm>
 #include <cuda/std/cmath>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
 #include <thrust/transform_reduce.h>
 
 #include <map>

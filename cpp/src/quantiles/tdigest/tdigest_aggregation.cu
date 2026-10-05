@@ -42,7 +42,6 @@
 #include <thrust/execution_policy.h>
 #include <thrust/remove.h>
 #include <thrust/replace.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace tdigest {

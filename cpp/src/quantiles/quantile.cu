@@ -28,7 +28,6 @@
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/iterator/transform_iterator.h>
-#include <thrust/transform.h>
 
 #include <memory>
 #include <vector>

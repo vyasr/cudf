@@ -45,7 +45,6 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/execution_policy.h>
-#include <thrust/extrema.h>
 #include <thrust/for_each.h>
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>

@@ -21,7 +21,6 @@
 #include <cuda/iterator>
 #include <cuda/std/utility>
 #include <cuda/stream>
-#include <thrust/scan.h>
 #include <thrust/uninitialized_fill.h>
 
 namespace cudf {

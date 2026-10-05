@@ -45,7 +45,6 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/sort.h>
-#include <thrust/tabulate.h>
 
 #include <algorithm>
 #include <cstring>

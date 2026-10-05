@@ -12,7 +12,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
 
 namespace cudf {
 namespace strings {

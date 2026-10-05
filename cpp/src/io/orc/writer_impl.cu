@@ -48,8 +48,6 @@
 #include <thrust/extrema.h>
 #include <thrust/for_each.h>
 #include <thrust/host_vector.h>
-#include <thrust/reduce.h>
-#include <thrust/scan.h>
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/tabulate.h>

@@ -51,7 +51,6 @@
 #include <thrust/sequence.h>
 #include <thrust/sort.h>
 #include <thrust/tabulate.h>
-#include <thrust/transform.h>
 
 #include <algorithm>
 #include <cstring>

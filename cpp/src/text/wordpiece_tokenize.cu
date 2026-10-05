@@ -38,8 +38,6 @@
 #include <cuda/std/iterator>
 #include <cuda/std/limits>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
-#include <thrust/find.h>
 #include <thrust/remove.h>
 
 namespace nvtext {

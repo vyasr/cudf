@@ -13,8 +13,6 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <thrust/fill.h>
-
 namespace cudf::detail {
 
 template <typename Hasher>

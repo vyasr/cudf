@@ -28,11 +28,7 @@
 #include <cuda/std/iterator>
 #include <cuda/std/limits>
 #include <cuda/std/utility>
-#include <thrust/execution_policy.h>
-#include <thrust/find.h>
-#include <thrust/logical.h>
 #include <thrust/tabulate.h>
-#include <thrust/transform.h>
 
 #include <type_traits>
 

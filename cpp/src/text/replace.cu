@@ -28,8 +28,6 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
-#include <thrust/execution_policy.h>
-#include <thrust/find.h>
 #include <thrust/remove.h>
 
 namespace nvtext {

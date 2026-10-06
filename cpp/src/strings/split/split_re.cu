@@ -24,7 +24,6 @@
 #include <cuda/std/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/transform_reduce.h>
 
 namespace cudf {
 namespace strings {

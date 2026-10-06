@@ -104,7 +104,8 @@ repos:
       - id: no-programmatic-xfail
         name: no-programmatic-xfail
         description: 'Enforce that pytest.xfail is not introduced (see dev docs for details)'
-        entry: 'pytest\.xfail'
+        # JUnit telemetry contains this name as data; prohibit calls, not XML markers.
+        entry: 'pytest\.xfail\s*\('
         language: pygrep
         types: [python]
       - id: use-exec-policy-nosync

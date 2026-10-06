@@ -16,8 +16,6 @@
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
-#include <thrust/for_each.h>
-#include <thrust/uninitialized_fill.h>
 
 namespace cudf::strings::detail {
 

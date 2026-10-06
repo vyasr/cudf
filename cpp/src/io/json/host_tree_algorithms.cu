@@ -27,13 +27,7 @@
 #include <cuda/std/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/copy.h>
-#include <thrust/for_each.h>
-#include <thrust/scan.h>
-#include <thrust/scatter.h>
 #include <thrust/sort.h>
-#include <thrust/transform.h>
-#include <thrust/uninitialized_fill.h>
 
 #include <algorithm>
 #include <deque>

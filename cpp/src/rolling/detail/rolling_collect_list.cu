@@ -15,12 +15,7 @@
 
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <thrust/execution_policy.h>
-#include <thrust/fill.h>
-#include <thrust/scan.h>
-#include <thrust/scatter.h>
 #include <thrust/tabulate.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

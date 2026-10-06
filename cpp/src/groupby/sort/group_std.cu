@@ -22,8 +22,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/for_each.h>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace groupby {

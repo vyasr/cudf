@@ -29,8 +29,6 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/fill.h>
-#include <thrust/sequence.h>
 
 #include <limits>
 #include <memory>

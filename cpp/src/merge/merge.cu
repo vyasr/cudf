@@ -35,10 +35,6 @@
 #include <cuda/std/iterator>
 #include <cuda/std/utility>
 #include <cuda/stream>
-#include <thrust/binary_search.h>
-#include <thrust/merge.h>
-#include <thrust/sequence.h>
-#include <thrust/transform.h>
 
 #include <limits>
 #include <numeric>

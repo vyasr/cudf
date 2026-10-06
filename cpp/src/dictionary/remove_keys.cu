@@ -24,8 +24,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/fill.h>
-#include <thrust/scatter.h>
 #include <thrust/sequence.h>
 
 namespace cudf {

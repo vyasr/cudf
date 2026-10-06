@@ -21,6 +21,7 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf::groupby::detail::sort {
 

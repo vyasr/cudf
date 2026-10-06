@@ -10,6 +10,9 @@
 #include <cudf/utilities/type_dispatcher.hpp>
 
 #include <cuda/std/type_traits>
+#include <thrust/iterator/iterator_adaptor.h>
+#include <thrust/iterator/iterator_facade.h>
+#include <thrust/iterator/iterator_traversal_tags.h>
 
 namespace cudf::detail {
 

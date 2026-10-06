@@ -34,7 +34,9 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/execution_policy.h>
 #include <thrust/gather.h>
+#include <thrust/transform.h>
 #include <thrust/transform_scan.h>
 
 #include <algorithm>

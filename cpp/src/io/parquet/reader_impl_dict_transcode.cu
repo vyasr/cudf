@@ -23,6 +23,8 @@
 
 #include <cuda/iterator>
 #include <thrust/binary_search.h>
+#include <thrust/execution_policy.h>
+#include <thrust/for_each.h>
 
 #include <algorithm>
 #include <functional>

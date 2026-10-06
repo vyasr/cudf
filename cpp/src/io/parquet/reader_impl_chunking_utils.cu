@@ -28,6 +28,7 @@
 #include <cuda/std/functional>
 #include <cuda/std/optional>
 #include <cuda/std/utility>
+#include <thrust/binary_search.h>
 #include <thrust/sequence.h>
 #include <thrust/unique.h>
 

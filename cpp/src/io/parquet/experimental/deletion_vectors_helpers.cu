@@ -19,6 +19,8 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <thrust/count.h>
+#include <thrust/fill.h>
+#include <thrust/scatter.h>
 #include <thrust/sequence.h>
 
 #include <algorithm>

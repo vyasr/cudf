@@ -20,6 +20,8 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/copy.h>
+#include <thrust/for_each.h>
 
 #include <type_traits>
 

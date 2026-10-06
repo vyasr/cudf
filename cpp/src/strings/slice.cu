@@ -29,6 +29,7 @@
 #include <cuda/std/limits>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

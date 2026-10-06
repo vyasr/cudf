@@ -11,6 +11,8 @@
 #include <cudf/wrappers/durations.hpp>
 
 #include <thrust/equal.h>
+#include <thrust/execution_policy.h>
+#include <thrust/find.h>
 
 namespace cudf {
 namespace io {

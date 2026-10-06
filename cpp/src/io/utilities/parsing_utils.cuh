@@ -25,6 +25,8 @@
 #include <cuda/std/optional>
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
+#include <thrust/execution_policy.h>
+#include <thrust/mismatch.h>
 
 using cudf::device_span;
 

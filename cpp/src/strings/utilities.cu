@@ -22,6 +22,7 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 #include <cstdlib>
 #include <string>

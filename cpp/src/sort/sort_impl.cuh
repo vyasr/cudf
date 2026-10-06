@@ -25,6 +25,7 @@
 #include <rmm/resource_ref.hpp>
 
 #include <cuda/stream>
+#include <thrust/sequence.h>
 #include <thrust/sort.h>
 
 #include <cstddef>

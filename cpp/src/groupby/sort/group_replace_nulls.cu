@@ -15,6 +15,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/std/tuple>
+#include <thrust/scan.h>
 
 #include <utility>
 

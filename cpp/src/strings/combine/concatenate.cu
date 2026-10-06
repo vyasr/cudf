@@ -25,6 +25,7 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/execution_policy.h>
 #include <thrust/logical.h>
 
 #include <algorithm>

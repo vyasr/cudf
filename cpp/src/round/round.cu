@@ -21,6 +21,8 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/stream>
+#include <thrust/transform.h>
+#include <thrust/uninitialized_fill.h>
 
 #include <type_traits>
 

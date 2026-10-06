@@ -26,7 +26,9 @@
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <thrust/execution_policy.h>
 #include <thrust/logical.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

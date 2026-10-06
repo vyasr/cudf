@@ -33,6 +33,7 @@
 #include <cuda/stream>
 #include <thrust/binary_search.h>
 #include <thrust/sort.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace dictionary {

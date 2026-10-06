@@ -24,6 +24,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 #include <algorithm>
 #include <numeric>

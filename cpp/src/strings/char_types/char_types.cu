@@ -21,6 +21,7 @@
 #include <cuda/iterator>
 #include <cuda/std/limits>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

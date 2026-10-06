@@ -34,8 +34,13 @@
 #include <cuda/std/tuple>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/count.h>
 #include <thrust/remove.h>
+#include <thrust/scan.h>
+#include <thrust/sequence.h>
 #include <thrust/sort.h>
+#include <thrust/tabulate.h>
+#include <thrust/transform.h>
 
 namespace cudf::io::json {
 namespace detail {

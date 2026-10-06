@@ -29,6 +29,7 @@
 #include <cuda/buffer>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 #include <nanoarrow/nanoarrow.h>
 #include <nanoarrow/nanoarrow.hpp>

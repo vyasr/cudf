@@ -14,6 +14,8 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <cuda/stream>
+#include <thrust/count.h>
+#include <thrust/execution_policy.h>
 
 namespace {
 // Returns true if the mask is true for index i in at least keep_threshold

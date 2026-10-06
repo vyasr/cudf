@@ -31,6 +31,10 @@
 #include <cuda/iterator>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <thrust/fill.h>
+#include <thrust/for_each.h>
+#include <thrust/scan.h>
+#include <thrust/transform.h>
 
 #include <algorithm>
 #include <numeric>

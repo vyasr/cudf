@@ -31,6 +31,8 @@
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/merge.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

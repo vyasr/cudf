@@ -26,6 +26,7 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/for_each.h>
 
 namespace nvtext {
 namespace detail {

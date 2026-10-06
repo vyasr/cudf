@@ -26,6 +26,7 @@
 #include <cuda/std/limits>
 #include <cuda/std/type_traits>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

@@ -28,6 +28,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/stream>
+#include <thrust/scan.h>
 
 namespace cudf {
 namespace groupby {

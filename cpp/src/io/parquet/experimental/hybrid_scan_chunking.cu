@@ -19,6 +19,7 @@
 
 #include <cuda/functional>
 #include <cuda/iterator>
+#include <thrust/host_vector.h>
 
 #include <numeric>
 

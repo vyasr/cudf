@@ -28,6 +28,8 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/execution_policy.h>
+#include <thrust/merge.h>
 #include <thrust/remove.h>
 #include <thrust/unique.h>
 

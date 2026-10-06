@@ -49,6 +49,7 @@ Mark Adler    madler@alumni.caltech.edu
 #include <cuda/std/tuple>
 #include <cuda/stream>
 #include <thrust/gather.h>
+#include <thrust/sequence.h>
 #include <thrust/sort.h>
 
 namespace cudf::io::detail {

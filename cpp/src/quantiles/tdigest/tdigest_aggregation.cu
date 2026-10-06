@@ -38,7 +38,13 @@
 #include <cuda/std/tuple>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/copy.h>
+#include <thrust/execution_policy.h>
+#include <thrust/reduce.h>
 #include <thrust/remove.h>
+#include <thrust/replace.h>
+#include <thrust/scan.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace tdigest {

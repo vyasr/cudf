@@ -37,6 +37,8 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
+#include <thrust/scan.h>
+#include <thrust/transform.h>
 
 namespace {  // anonymous
 

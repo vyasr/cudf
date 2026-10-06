@@ -17,7 +17,9 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/count.h>
 #include <thrust/sort.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

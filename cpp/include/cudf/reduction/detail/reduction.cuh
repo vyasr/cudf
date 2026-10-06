@@ -19,6 +19,7 @@
 #include <cub/device/device_reduce.cuh>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/for_each.h>
 
 #include <optional>
 

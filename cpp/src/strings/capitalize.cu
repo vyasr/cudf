@@ -21,6 +21,7 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

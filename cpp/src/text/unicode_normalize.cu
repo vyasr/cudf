@@ -35,8 +35,10 @@
 #include <cuda/std/algorithm>
 #include <cuda/std/span>
 #include <cuda/stream>
+#include <thrust/fill.h>
 #include <thrust/remove.h>
 #include <thrust/sort.h>
+#include <thrust/transform.h>
 
 #include <cstdint>
 

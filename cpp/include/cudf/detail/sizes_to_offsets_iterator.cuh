@@ -16,6 +16,7 @@
 #include <cuda/functional>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/scan.h>
 
 #include <stdexcept>
 

@@ -19,6 +19,7 @@
 #include <cuda/std/cmath>
 #include <cuda/std/type_traits>
 #include <cuda/stream>
+#include <thrust/count.h>
 
 namespace cudf {
 namespace detail {

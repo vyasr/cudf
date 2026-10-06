@@ -27,6 +27,7 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 #include <memory>
 #include <vector>

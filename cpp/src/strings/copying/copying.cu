@@ -17,6 +17,7 @@
 
 #include <cuda/functional>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

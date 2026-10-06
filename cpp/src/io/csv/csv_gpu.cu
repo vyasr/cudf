@@ -29,6 +29,7 @@
 #include <cuda/atomic>
 #include <cuda/std/algorithm>
 #include <cuda/stream>
+#include <thrust/count.h>
 #include <thrust/remove.h>
 
 #include <type_traits>

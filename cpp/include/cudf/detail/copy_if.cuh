@@ -20,6 +20,7 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/copy.h>
 
 namespace cudf {
 namespace detail {

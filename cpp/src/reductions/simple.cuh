@@ -22,6 +22,7 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/reduce.h>
 
 namespace cudf {
 namespace reduction {

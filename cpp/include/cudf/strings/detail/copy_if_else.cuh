@@ -16,6 +16,7 @@
 #include <cuda/iterator>
 #include <cuda/std/optional>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace strings {

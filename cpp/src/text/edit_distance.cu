@@ -27,6 +27,7 @@
 #include <cuda/iterator>
 #include <cuda/std/functional>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace nvtext {
 namespace detail {

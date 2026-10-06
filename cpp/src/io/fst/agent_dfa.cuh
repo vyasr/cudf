@@ -14,6 +14,7 @@
 #include <cuda/iterator>
 #include <cuda/std/array>
 #include <cuda/std/type_traits>
+#include <thrust/execution_policy.h>
 #include <thrust/sequence.h>
 
 namespace cudf::io::fst::detail {

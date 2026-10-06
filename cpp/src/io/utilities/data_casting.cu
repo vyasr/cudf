@@ -30,6 +30,8 @@
 #include <cuda/std/iterator>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <thrust/copy.h>
+#include <thrust/transform_reduce.h>
 
 #include <memory>
 #include <type_traits>

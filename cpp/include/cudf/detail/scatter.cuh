@@ -27,6 +27,9 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/scatter.h>
+#include <thrust/sequence.h>
+#include <thrust/uninitialized_fill.h>
 
 namespace cudf {
 namespace detail {

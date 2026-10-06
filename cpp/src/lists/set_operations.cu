@@ -26,6 +26,8 @@
 #include <cuda/std/functional>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/scatter.h>
+#include <thrust/uninitialized_fill.h>
 
 namespace cudf::lists {
 namespace detail {

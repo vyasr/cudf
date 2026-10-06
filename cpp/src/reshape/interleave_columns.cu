@@ -25,6 +25,7 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

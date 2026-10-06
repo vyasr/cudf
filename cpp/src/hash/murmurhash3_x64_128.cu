@@ -16,6 +16,7 @@
 #include <cuda/std/array>
 #include <cuda/std/limits>
 #include <cuda/stream>
+#include <thrust/for_each.h>
 
 namespace cudf {
 namespace hashing {

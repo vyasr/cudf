@@ -12,6 +12,8 @@
 #include <cudf/utilities/span.hpp>
 
 #include <cuda/iterator>
+#include <thrust/scatter.h>
+#include <thrust/uninitialized_fill.h>
 
 namespace cudf {
 namespace detail {

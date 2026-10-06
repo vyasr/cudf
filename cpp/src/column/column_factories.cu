@@ -15,6 +15,7 @@
 #include <cudf/utilities/memory_resource.hpp>
 
 #include <cuda/iterator>
+#include <thrust/uninitialized_fill.h>
 
 namespace cudf {
 

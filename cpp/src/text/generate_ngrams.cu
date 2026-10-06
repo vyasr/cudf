@@ -31,6 +31,7 @@
 #include <cuda/functional>
 #include <cuda/std/iterator>
 #include <cuda/stream>
+#include <thrust/copy.h>
 
 #include <stdexcept>
 

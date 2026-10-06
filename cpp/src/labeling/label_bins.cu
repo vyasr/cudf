@@ -28,6 +28,8 @@
 #include <cuda/std/utility>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/execution_policy.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

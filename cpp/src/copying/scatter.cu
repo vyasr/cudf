@@ -29,6 +29,8 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/stream>
+#include <thrust/scatter.h>
+#include <thrust/sequence.h>
 
 #include <stdexcept>
 

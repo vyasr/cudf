@@ -17,6 +17,7 @@
 #include <cuda/iterator>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
+#include <thrust/scan.h>
 
 namespace cudf::reduction::detail {
 

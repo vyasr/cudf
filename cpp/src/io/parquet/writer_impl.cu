@@ -42,6 +42,7 @@
 #include <cuda/iterator>
 #include <cuda/numeric>
 #include <cuda/stream>
+#include <thrust/fill.h>
 
 #include <algorithm>
 #include <cstring>

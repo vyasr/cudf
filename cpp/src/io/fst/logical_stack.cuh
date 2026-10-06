@@ -21,6 +21,9 @@
 #include <cuda/buffer>
 #include <cuda/iterator>
 #include <cuda/std/functional>
+#include <thrust/device_ptr.h>
+#include <thrust/fill.h>
+#include <thrust/scatter.h>
 
 #include <algorithm>
 #include <cstdint>

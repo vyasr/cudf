@@ -33,6 +33,10 @@
 #include <cuda/iterator>
 #include <cuda/std/atomic>
 #include <cuda/stream>
+#include <thrust/fill.h>
+#include <thrust/for_each.h>
+#include <thrust/reduce.h>
+#include <thrust/replace.h>
 
 #include <cstddef>
 #include <limits>

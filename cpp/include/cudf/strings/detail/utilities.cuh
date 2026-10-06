@@ -1,11 +1,14 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2019-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2019-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
 
 #include <cudf/strings/string_view.cuh>
 #include <cudf/utilities/error.hpp>
+
+#include <thrust/copy.h>
+#include <thrust/execution_policy.h>
 
 #include <mutex>
 #include <unordered_map>

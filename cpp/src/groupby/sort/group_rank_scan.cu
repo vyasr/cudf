@@ -23,6 +23,8 @@
 #include <cuda/std/limits>
 #include <cuda/std/utility>
 #include <cuda/stream>
+#include <thrust/scan.h>
+#include <thrust/transform.h>
 
 namespace cudf {
 namespace groupby {

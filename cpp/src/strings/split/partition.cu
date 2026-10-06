@@ -21,7 +21,6 @@
 #include <cuda/std/algorithm>
 #include <cuda/std/utility>
 #include <cuda/stream>
-#include <thrust/for_each.h>
 
 #include <vector>
 

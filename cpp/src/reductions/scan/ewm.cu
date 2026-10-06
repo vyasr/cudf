@@ -18,7 +18,6 @@
 #include <cuda/iterator>
 #include <cuda/std/utility>
 #include <cuda/stream>
-#include <thrust/scan.h>
 #include <thrust/transform_scan.h>
 
 namespace cudf {

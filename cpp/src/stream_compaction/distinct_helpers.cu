@@ -17,7 +17,6 @@
 #include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/stream>
-#include <thrust/uninitialized_fill.h>
 
 namespace cudf::detail {
 

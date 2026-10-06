@@ -21,11 +21,6 @@
 #include <cuda/std/iterator>
 #include <cuda/std/optional>
 #include <cuda/stream>
-#include <thrust/binary_search.h>
-#include <thrust/execution_policy.h>
-#include <thrust/for_each.h>
-#include <thrust/scan.h>
-#include <thrust/transform.h>
 
 #include <memory>
 #include <type_traits>

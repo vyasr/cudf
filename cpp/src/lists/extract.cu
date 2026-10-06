@@ -20,8 +20,6 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/stream>
-#include <thrust/copy.h>
-#include <thrust/fill.h>
 
 #include <limits>
 

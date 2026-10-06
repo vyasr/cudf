@@ -20,7 +20,6 @@
 #include <cuda/std/cmath>
 #include <cuda/std/type_traits>
 #include <cuda/stream>
-#include <thrust/transform.h>
 
 namespace cudf {
 namespace detail {

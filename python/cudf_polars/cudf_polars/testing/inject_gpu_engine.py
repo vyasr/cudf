@@ -189,12 +189,14 @@ def pytest_runtest_makereport(
     outcome = yield
     report = outcome.get_result()
     if report.when == "call":
-        report.user_properties.extend(
-            (
-                ("cudf_polars_nodeid", item.nodeid),
-                ("cudf_polars_fallback", str(fallback_used.get()).lower()),
-            )
+        properties = (
+            ("cudf_polars_nodeid", item.nodeid),
+            ("cudf_polars_fallback", str(fallback_used.get()).lower()),
         )
+        # JUnit finalizes successful tests from the teardown report, which
+        # copies the item's properties rather than the call report's.
+        item.user_properties.extend(properties)
+        report.user_properties.extend(properties)
 
 
 def _verify_collect_patch(engine: object) -> None:

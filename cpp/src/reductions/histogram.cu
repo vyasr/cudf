@@ -24,7 +24,6 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/std/tuple>
-#include <thrust/uninitialized_fill.h>
 
 #include <optional>
 

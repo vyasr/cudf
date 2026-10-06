@@ -24,7 +24,6 @@
 #include <cuda/std/functional>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/reduce.h>
 
 #include <memory>
 #include <utility>

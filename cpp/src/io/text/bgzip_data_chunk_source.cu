@@ -25,8 +25,6 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/host_vector.h>
-#include <thrust/transform.h>
 
 #include <fstream>
 #include <limits>

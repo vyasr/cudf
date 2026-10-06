@@ -26,8 +26,6 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/iterator>
-#include <thrust/execution_policy.h>
-#include <thrust/scatter.h>
 
 #include <BS_thread_pool.hpp>
 #include <BS_thread_pool_utils.hpp>

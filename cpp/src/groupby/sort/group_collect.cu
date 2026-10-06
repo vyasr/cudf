@@ -14,10 +14,6 @@
 
 #include <cuda/iterator>
 #include <cuda/stream>
-#include <thrust/copy.h>
-#include <thrust/count.h>
-#include <thrust/execution_policy.h>
-#include <thrust/transform.h>
 
 #include <memory>
 

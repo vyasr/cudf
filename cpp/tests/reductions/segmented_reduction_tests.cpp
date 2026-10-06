@@ -1363,20 +1363,19 @@ TYPED_TEST(SegmentedReductionFixedPointTest, SumOfSquares)
 // Position of the min/max: start of segment, end of segment
 // Include null, exclude null
 
-TEST_F(SegmentedReductionTestUntyped, StringMinMaxWithEmptyAndNullSegments)
+TEST_F(SegmentedReductionTestUntyped, StringMinMaxUtf8RepeatedExtrema)
 {
-  // Repeated extrema and null segments guard against changing the shared index reducer.
-  cudf::test::strings_column_wrapper input{{"é", "apple", "é", "", "", "z", "z", ""},
-                                           {true, true, true, false, true, true, true, false}};
-  auto const offsets   = std::vector<cudf::size_type>{0, 3, 3, 4, 6, 8, 8};
+  // Exercise repeated multibyte extrema; existing cases cover empty and all-null segments.
+  cudf::test::strings_column_wrapper input{{"é", "apple", "é", "é", "é", ""},
+                                           {true, true, true, true, true, false}};
+  auto const offsets   = std::vector<cudf::size_type>{0, 3, 6};
   auto const d_offsets = cudf::detail::make_device_uvector_async(
     offsets, cudf::get_default_stream(), cudf::get_current_device_resource_ref());
 
   for (auto const policy : {cudf::null_policy::INCLUDE, cudf::null_policy::EXCLUDE}) {
-    auto const valid =
-      std::vector<bool>{true, false, false, true, policy == cudf::null_policy::EXCLUDE, false};
-    cudf::test::strings_column_wrapper expected_min{{"apple", "", "", "", "z", ""}, valid.begin()};
-    cudf::test::strings_column_wrapper expected_max{{"é", "", "", "z", "z", ""}, valid.begin()};
+    auto const valid = std::vector<bool>{true, policy == cudf::null_policy::EXCLUDE};
+    cudf::test::strings_column_wrapper expected_min{{"apple", "é"}, valid.begin()};
+    cudf::test::strings_column_wrapper expected_max{{"é", "é"}, valid.begin()};
     auto const minimum =
       cudf::segmented_reduce(input,
                              d_offsets,

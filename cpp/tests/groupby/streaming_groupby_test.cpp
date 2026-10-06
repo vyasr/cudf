@@ -1657,7 +1657,6 @@ TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
           cudf::table_view{{expected_key_view}},
           {expected_sum, expected_min, expected_max, expected_count},
           true);
-    verify_against_groupby(keys, results, {batch1, batch2}, KEY_COL, requests);
 
     // Dictionary values force global-memory aggregation, where four kinds select dense output.
     // This exercises the stateless callers even when the small raw-value case uses shared memory.

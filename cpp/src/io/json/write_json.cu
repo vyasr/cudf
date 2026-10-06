@@ -42,11 +42,7 @@
 #include <cuda/iterator>
 #include <cuda/std/tuple>
 #include <cuda/stream>
-#include <thrust/for_each.h>
 #include <thrust/gather.h>
-#include <thrust/host_vector.h>
-#include <thrust/scan.h>
-#include <thrust/tabulate.h>
 
 #include <algorithm>
 #include <memory>

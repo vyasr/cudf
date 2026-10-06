@@ -21,7 +21,6 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/stream>
-#include <thrust/uninitialized_fill.h>
 
 #include <memory>
 #include <optional>

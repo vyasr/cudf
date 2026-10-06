@@ -61,13 +61,15 @@ def test_build_report_classifies_fallback_per_engine(tmp_path: Path) -> None:
             "total": 2,
             "fallback": 1,
             "no_fallback_observed": 1,
+            "unknown": 0,
             "outcomes": {"failed": 1, "passed": 1},
         },
         "spmd": {
-            "total": 1,
+            "total": 2,
             "fallback": 0,
             "no_fallback_observed": 1,
-            "outcomes": {"passed": 1},
+            "unknown": 1,
+            "outcomes": {"passed": 2},
         },
     }
     assert report["tests"] == [
@@ -84,9 +86,80 @@ def test_build_report_classifies_fallback_per_engine(tmp_path: Path) -> None:
             "fallback": "false",
         },
         {
+            "nodeid": "missing-telemetry",
+            "engine": "spmd",
+            "outcome": "passed",
+            "fallback": "unknown",
+        },
+        {
             "nodeid": "tests/unit/test_a.py::test_a",
             "engine": "spmd",
             "outcome": "passed",
             "fallback": "false",
         },
     ]
+
+
+def test_report_merges_call_failure_and_teardown_error(tmp_path: Path) -> None:
+    analyzer = _load_analyzer()
+    path = tmp_path / "phases.xml"
+    _write_junit(
+        path,
+        """
+        <testcase><properties>
+          <property name="cudf_polars_nodeid" value="tests/unit/test_a.py::test_a" />
+          <property name="cudf_polars_fallback" value="false" />
+        </properties><failure /></testcase>
+        <testcase><properties>
+          <property name="cudf_polars_nodeid" value="tests/unit/test_a.py::test_a" />
+          <property name="cudf_polars_fallback" value="true" />
+        </properties><error /></testcase>
+        """,
+    )
+
+    report = analyzer.build_report({"in-memory": path})
+
+    assert report["summary"]["in-memory"] == {
+        "total": 1,
+        "fallback": 1,
+        "no_fallback_observed": 0,
+        "unknown": 0,
+        "outcomes": {"error": 1},
+    }
+    assert report["tests"][0]["outcome"] == "error"
+    assert report["tests"][0]["fallback"] == "true"
+
+
+def test_report_preserves_skips_xfails_and_missing_telemetry(
+    tmp_path: Path,
+) -> None:
+    analyzer = _load_analyzer()
+    path = tmp_path / "skips.xml"
+    _write_junit(
+        path,
+        """
+        <testcase name="test_skip"><properties>
+          <property name="cudf_polars_nodeid" value="tests/unit/test_a.py::test_skip" />
+          <property name="cudf_polars_fallback" value="false" />
+        </properties><skipped type="pytest.skip" /></testcase>
+        <testcase name="test_xfail"><properties>
+          <property name="cudf_polars_nodeid" value="tests/unit/test_a.py::test_xfail" />
+          <property name="cudf_polars_fallback" value="true" />
+        </properties><skipped type="pytest.xfail" /></testcase>
+        <testcase classname="tests.unit.test_a" name="test_missing"><error /></testcase>
+        """,
+    )
+
+    report = analyzer.build_report({"spmd": path})
+
+    assert report["summary"]["spmd"] == {
+        "total": 3,
+        "fallback": 1,
+        "no_fallback_observed": 1,
+        "unknown": 1,
+        "outcomes": {"error": 1, "skipped": 1, "xfailed": 1},
+    }
+    missing = next(
+        test for test in report["tests"] if test["fallback"] == "unknown"
+    )
+    assert missing["nodeid"] == "tests.unit.test_a::test_missing"

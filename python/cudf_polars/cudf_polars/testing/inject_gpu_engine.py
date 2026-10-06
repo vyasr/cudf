@@ -185,18 +185,21 @@ def pytest_runtest_protocol(
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
 ) -> Generator[None, Result[pytest.TestReport], None]:
-    """Attach per-test fallback telemetry to the call report."""
+    """Attach per-test fallback telemetry to each phase's report."""
     outcome = yield
     report = outcome.get_result()
-    if report.when == "call":
-        properties = (
-            ("cudf_polars_nodeid", item.nodeid),
-            ("cudf_polars_fallback", str(fallback_used.get()).lower()),
-        )
-        # JUnit finalizes successful tests from the teardown report, which
-        # copies the item's properties rather than the call report's.
-        item.user_properties.extend(properties)
-        report.user_properties.extend(properties)
+    properties = {
+        "cudf_polars_nodeid": item.nodeid,
+        "cudf_polars_fallback": str(fallback_used.get()).lower(),
+    }
+    # JUnit finalizes from different phases for failures and successful tests.
+    # Replace earlier snapshots so teardown fallback is retained without
+    # accumulating duplicate properties on the item or its reports.
+    for user_properties in (item.user_properties, report.user_properties):
+        user_properties[:] = [
+            (name, value) for name, value in user_properties if name not in properties
+        ]
+        user_properties.extend(properties.items())
 
 
 def _verify_collect_patch(engine: object) -> None:

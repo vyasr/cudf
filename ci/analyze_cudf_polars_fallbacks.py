@@ -14,14 +14,26 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+OUTCOME_PRIORITY = {
+    "passed": 0,
+    "xfailed": 1,
+    "skipped": 2,
+    "failed": 3,
+    "error": 4,
+}
+FALLBACK_PRIORITY = {"false": 0, "unknown": 1, "true": 2}
+
 
 def _outcome(testcase: ET.Element) -> str:
     if testcase.find("failure") is not None:
         return "failed"
     if testcase.find("error") is not None:
         return "error"
-    if testcase.find("skipped") is not None:
-        return "skipped"
+    skipped = testcase.find("skipped")
+    if skipped is not None:
+        return (
+            "xfailed" if skipped.get("type") == "pytest.xfail" else "skipped"
+        )
     return "passed"
 
 
@@ -38,25 +50,44 @@ def _report_argument(value: str) -> tuple[str, Path]:
 def read_report(path: Path, engine: str) -> list[dict[str, str]]:
     """Read one engine's JUnit report into node-level fallback diagnostics."""
     root = ET.parse(path).getroot()
-    tests: list[dict[str, str]] = []
+    tests: dict[str, dict[str, str]] = {}
     for testcase in root.iter("testcase"):
         properties = {
             property_.get("name"): property_.get("value", "")
             for property_ in testcase.findall("properties/property")
         }
-        nodeid = properties.get("cudf_polars_nodeid")
-        fallback = properties.get("cudf_polars_fallback")
-        if nodeid is None or fallback is None:
-            continue
-        tests.append(
-            {
-                "nodeid": nodeid,
-                "engine": engine,
-                "outcome": _outcome(testcase),
-                "fallback": fallback,
-            }
+        nodeid = (
+            properties.get("cudf_polars_nodeid")
+            or "::".join(
+                filter(None, (testcase.get("classname"), testcase.get("name")))
+            )
+            or "<unknown>"
         )
-    return sorted(tests, key=lambda test: test["nodeid"])
+        fallback = properties.get("cudf_polars_fallback", "unknown")
+        if fallback not in FALLBACK_PRIORITY:
+            raise ValueError(
+                f"Invalid fallback telemetry {fallback!r} for {nodeid} in {path}"
+            )
+        outcome = _outcome(testcase)
+        previous = tests.get(nodeid)
+        # A call failure followed by a teardown error yields two JUnit cases
+        # for the same item. Count it once and preserve all observed fallback.
+        if previous is not None:
+            fallback = max(
+                previous["fallback"],
+                fallback,
+                key=FALLBACK_PRIORITY.__getitem__,
+            )
+            outcome = max(
+                previous["outcome"], outcome, key=OUTCOME_PRIORITY.__getitem__
+            )
+        tests[nodeid] = {
+            "nodeid": nodeid,
+            "engine": engine,
+            "outcome": outcome,
+            "fallback": fallback,
+        }
+    return sorted(tests.values(), key=lambda test: test["nodeid"])
 
 
 def build_report(reports: dict[str, Path]) -> dict[str, Any]:
@@ -77,6 +108,9 @@ def build_report(reports: dict[str, Path]) -> dict[str, Any]:
             "no_fallback_observed": sum(
                 test["fallback"] == "false" for test in engine_tests
             ),
+            "unknown": sum(
+                test["fallback"] == "unknown" for test in engine_tests
+            ),
             "outcomes": dict(
                 sorted(
                     Counter(test["outcome"] for test in engine_tests).items()
@@ -92,6 +126,7 @@ def write_html(report: dict[str, Any], output: Path) -> None:
         "<li>"
         f"{html.escape(engine)}: {summary['fallback']} fallback; "
         f"{summary['no_fallback_observed']} no fallback observed; "
+        f"{summary['unknown']} missing telemetry; "
         f"{summary['total']} total.</li>"
         for engine, summary in report["summary"].items()
     )
@@ -110,6 +145,9 @@ def write_html(report: dict[str, Any], output: Path) -> None:
         "<h1>cudf-polars fallback diagnostics</h1>"
         "<p><code>false</code> means no CPU fallback was observed; it does not "
         "by itself prove that a test invoked LazyFrame.collect.</p>"
+        "<p><code>unknown</code> means fallback telemetry is missing. Verify "
+        "that the installed injection plugin exports telemetry. Such rows "
+        "use JUnit test names when an exact pytest node ID is unavailable.</p>"
         f"<ul>{summaries}</ul>"
         "<table><thead><tr><th>Upstream node</th><th>Engine</th>"
         "<th>Outcome</th><th>CPU fallback observed</th>"

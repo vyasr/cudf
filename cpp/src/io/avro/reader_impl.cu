@@ -27,7 +27,6 @@
 
 #include <cuda/buffer>
 #include <cuda/stream>
-#include <thrust/equal.h>
 #include <thrust/tabulate.h>
 
 #include <memory>

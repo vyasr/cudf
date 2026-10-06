@@ -11,8 +11,6 @@
 
 #include <rmm/exec_policy.hpp>
 
-#include <thrust/fill.h>
-
 namespace cudf {
 namespace detail {
 namespace {

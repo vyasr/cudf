@@ -14,8 +14,6 @@
 
 #include <cuda/std/utility>
 #include <cuda/stream>
-#include <thrust/execution_policy.h>
-#include <thrust/for_each.h>
 
 namespace cudf {
 namespace strings {

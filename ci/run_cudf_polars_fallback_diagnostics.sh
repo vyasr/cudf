@@ -14,10 +14,16 @@ if [[ ! -d "${polars_dir}/py-polars/tests" ]]; then
     echo "Missing ${polars_dir}/py-polars/tests. Run ci/test_cudf_polars_polars_tests.sh first." >&2
     exit 2
 fi
+polars_dir="$(realpath "${polars_dir}")"
 
 mkdir -p "${output_dir}"
 in_memory_report="$(realpath -m "${output_dir}/in-memory.xml")"
 spmd_report="$(realpath -m "${output_dir}/spmd-small-blocksize.xml")"
+
+# A process that exits before writing JUnit must not reuse a previous run's
+# telemetry or leave its generated summaries looking current.
+rm -f -- "${in_memory_report}" "${spmd_report}" \
+    "${output_dir}/fallback-diagnostics.json" "${output_dir}/index.html"
 
 exit_code=0
 POLARS_DIR="${polars_dir}" "${repo_root}/ci/run_cudf_polars_polars_tests.sh" \

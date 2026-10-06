@@ -77,9 +77,7 @@ else
     PYTEST_MARK_EXPR="not slow"
 fi
 
-# Support invoking run_cudf_polars_pytests.sh outside the script directory
-# Assumption, polars has been cloned in the root of the repo.
-cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")"/../polars/
+cd "${POLARS_DIR:-${SCRIPT_DIR}/../polars}"
 
 DESELECTED_TESTS=()
 load_deselected_tests "${DESELECTED_TESTS_FILE}"

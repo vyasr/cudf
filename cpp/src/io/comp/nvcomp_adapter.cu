@@ -12,7 +12,6 @@
 #include <cuda/functional>
 #include <cuda/iterator>
 #include <cuda/std/tuple>
-#include <thrust/transform.h>
 
 namespace cudf::io::detail::nvcomp {
 

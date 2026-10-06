@@ -41,9 +41,6 @@
 #include <cuda/std/tuple>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
-#include <thrust/for_each.h>
-#include <thrust/sort.h>
-#include <thrust/transform.h>
 #include <thrust/unique.h>
 
 #include <memory>

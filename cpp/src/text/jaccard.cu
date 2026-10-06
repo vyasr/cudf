@@ -32,11 +32,7 @@
 #include <cuda/std/iterator>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
-#include <thrust/execution_policy.h>
-#include <thrust/reduce.h>
-#include <thrust/scan.h>
 #include <thrust/sequence.h>
-#include <thrust/transform.h>
 
 namespace nvtext {
 namespace detail {

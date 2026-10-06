@@ -23,9 +23,7 @@
 
 #include <cuda/functional>
 #include <cuda/iterator>
-#include <thrust/scatter.h>
 #include <thrust/sequence.h>
-#include <thrust/transform.h>
 
 #include <cinttypes>
 

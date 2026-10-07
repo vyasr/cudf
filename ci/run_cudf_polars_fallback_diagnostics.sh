@@ -17,20 +17,20 @@ fi
 polars_dir="$(realpath "${polars_dir}")"
 
 mkdir -p "${output_dir}"
-in_memory_report="$(realpath -m "${output_dir}/in-memory.xml")"
-spmd_report="$(realpath -m "${output_dir}/spmd-small-blocksize.xml")"
+in_memory_report="$(realpath -m "${output_dir}/in-memory.json")"
+spmd_report="$(realpath -m "${output_dir}/spmd-small-blocksize.json")"
 
-# A process that exits before writing JUnit must not reuse a previous run's
+# A process that exits before writing diagnostics must not reuse a previous run's
 # telemetry or leave its generated summaries looking current.
 rm -f -- "${in_memory_report}" "${spmd_report}" \
     "${output_dir}/fallback-diagnostics.json" "${output_dir}/index.html"
 
 exit_code=0
 POLARS_DIR="${polars_dir}" "${repo_root}/ci/run_cudf_polars_polars_tests.sh" \
-    --engine in-memory --junitxml="${in_memory_report}" || exit_code=$?
+    --engine in-memory --inject-gpu-engine-report="${in_memory_report}" || exit_code=$?
 POLARS_DIR="${polars_dir}" "${repo_root}/ci/run_cudf_polars_polars_tests.sh" \
     --engine spmd --inject-gpu-engine-blocksize small \
-    --junitxml="${spmd_report}" || exit_code=$?
+    --inject-gpu-engine-report="${spmd_report}" || exit_code=$?
 
 python "${repo_root}/ci/analyze_cudf_polars_fallbacks.py" \
     --report "in-memory=${in_memory_report}" \

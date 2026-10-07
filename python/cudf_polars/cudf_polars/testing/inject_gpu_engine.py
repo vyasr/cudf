@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from functools import partialmethod
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import packaging.version
@@ -20,6 +21,7 @@ from cudf_polars.testing.engine_utils import (
     SMALL_TARGET_PARTITION_SIZE,
 )
 from cudf_polars.testing.fallback import fallback_used
+from cudf_polars.testing.fallback_report import FallbackReport
 from cudf_polars.utils.config import StreamingFallbackMode
 
 if TYPE_CHECKING:
@@ -66,6 +68,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "Force raise_on_fail=True on the injected engine and suppress the "
             "plugin's xfail markers (tests will surface real failures)."
         ),
+    )
+    group.addoption(
+        "--inject-gpu-engine-report",
+        metavar="PATH",
+        help="Write per-test fallback diagnostics as JSON on the pytest controller.",
     )
     group.addoption(
         "--cudf-polars-shard-id",
@@ -138,6 +145,13 @@ def pytest_configure(config: pytest.Config) -> None:
         config.getoption("cudf_polars_shard_id"),
         config.getoption("cudf_polars_num_shards"),
     )
+    report_path = config.getoption("--inject-gpu-engine-report")
+    # Workers send TestReport objects to the controller; only the controller
+    # should aggregate them and write the shared output file.
+    if report_path and not hasattr(config, "workerinput"):
+        config.pluginmanager.register(
+            FallbackReport(Path(report_path).resolve()), "cudf-polars-fallback-report"
+        )
 
     if variant == "in-memory":
         engine = polars.GPUEngine(executor="in-memory", raise_on_fail=raise_on_fail)
@@ -188,18 +202,11 @@ def pytest_runtest_makereport(
     """Attach per-test fallback telemetry to each phase's report."""
     outcome = yield
     report = outcome.get_result()
-    properties = {
-        "cudf_polars_nodeid": item.nodeid,
-        "cudf_polars_fallback": str(fallback_used.get()).lower(),
-    }
-    # JUnit finalizes from different phases for failures and successful tests.
-    # Replace earlier snapshots so teardown fallback is retained without
-    # accumulating duplicate properties on the item or its reports.
-    for user_properties in (item.user_properties, report.user_properties):
-        user_properties[:] = [
-            (name, value) for name, value in user_properties if name not in properties
-        ]
-        user_properties.extend(properties.items())
+    if item.config.getoption("--inject-gpu-engine-report"):
+        # user_properties travel with TestReport across xdist's worker boundary.
+        report.user_properties.append(
+            ("cudf_polars_fallback", str(fallback_used.get()).lower())
+        )
 
 
 def _verify_collect_patch(engine: object) -> None:

@@ -144,7 +144,7 @@ std::unique_ptr<cudf::column> make_workload_input(cudf::size_type num_rows,
   }
   if (workload == "shared_prefix") {
     constexpr cudf::size_type suffix_width = 8;
-    return make_prefixed_input(num_rows, max_width - suffix_width, suffix_width);
+    return make_prefixed_input(num_rows, max_width - suffix_width, suffix_width, 1);
   }
   if (workload == "normal") {
     data_profile const profile = data_profile_builder().no_validity().distribution(
@@ -197,7 +197,7 @@ std::unique_ptr<cudf::column> make_sensitivity_input(cudf::size_type num_rows,
     CUDF_FAIL("Unknown string sensitivity profile: " + profile_name);
   }
   auto const prefix_width = width * prefix_percent / 100;
-  return make_prefixed_input(num_rows, prefix_width, width - prefix_width);
+  return make_prefixed_input(num_rows, prefix_width, width - prefix_width, 1);
 }
 
 std::string fixed_width_token(std::uint64_t value, cudf::size_type width)

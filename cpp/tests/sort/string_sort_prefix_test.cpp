@@ -15,6 +15,7 @@
 #include <cudf/column/column_factories.hpp>
 #include <cudf/copying.hpp>
 #include <cudf/detail/utilities/cuda_memcpy.hpp>
+#include <cudf/null_mask.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/table/table_view.hpp>
 #include <cudf/utilities/error.hpp>
@@ -787,11 +788,12 @@ TEST_F(StringSort, ExplicitLargeOffsetsAndSlice)
   auto offsets_column =
     cudf::test::fixed_width_column_wrapper<std::int64_t>(offsets.begin(), offsets.end()).release();
   auto const stream = cudf::get_default_stream();
-  auto input        = cudf::make_strings_column(static_cast<cudf::size_type>(strings.size()),
-                                         std::move(offsets_column),
-                                         rmm::device_buffer(chars.data(), chars.size(), stream),
-                                         0,
-                                         rmm::device_buffer{});
+  auto input =
+    cudf::make_strings_column(static_cast<cudf::size_type>(strings.size()),
+                              std::move(offsets_column),
+                              rmm::device_buffer(chars.data(), chars.size(), stream),
+                              0,
+                              cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED, stream));
   ASSERT_EQ(input->view().child(0).type().id(), cudf::type_id::INT64);
   auto const slice =
     cudf::slice(input->view(), {1, static_cast<cudf::size_type>(strings.size() - 1)})[0];
@@ -843,8 +845,12 @@ TEST_F(StringSort, SliceOffsetsBeyondInt32)
   // uninitialized padding, even though it must not use that byte in a prefix key.
   CUDF_CUDA_TRY(cudf::detail::memcpy_async(
     static_cast<char*>(chars.data()) + slice_begin - 1, values.data(), values.size(), stream));
-  auto const input = cudf::make_strings_column(
-    rows + 2, offsets.release(), std::move(chars), 0, rmm::device_buffer{});
+  auto const input =
+    cudf::make_strings_column(rows + 2,
+                              offsets.release(),
+                              std::move(chars),
+                              0,
+                              cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED, stream));
   auto const slice = cudf::slice(input->view(), {2, rows + 2})[0];
   for (auto const direction : {cudf::order::ASCENDING, cudf::order::DESCENDING}) {
     std::vector<cudf::size_type> expected_rows(rows);

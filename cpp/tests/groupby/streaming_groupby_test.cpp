@@ -26,6 +26,7 @@
 #include <cuda_runtime_api.h>
 
 #include <atomic>
+#include <cstddef>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -103,17 +104,11 @@ void verify_against_groupby(
 void check(std::unique_ptr<cudf::table>& keys,
            std::vector<cudf::groupby::aggregation_result>& results,
            cudf::table_view expect_keys,
-           std::vector<cudf::column_view> const& expect_vals,
-           bool equivalent_keys = false)
+           std::vector<cudf::column_view> const& expect_vals)
 {
   auto const order       = cudf::sorted_order(keys->view());
   auto const sorted_keys = cudf::gather(keys->view(), *order);
-  if (equivalent_keys) {
-    // All-valid masks may be normalized differently without changing logical key values.
-    CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expect_keys, sorted_keys->view());
-  } else {
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expect_keys, sorted_keys->view());
-  }
+  CUDF_TEST_EXPECT_TABLES_EQUAL(expect_keys, sorted_keys->view());
 
   size_t val_idx = 0;
   for (auto& agg_res : results) {
@@ -1611,7 +1606,8 @@ TEST_F(StreamingGroupbyTest, StructKeySumTwoBatches)
 
 TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
 {
-  // Stable nullability layouts isolate launcher delegation from cross-batch schema transitions.
+  // Stable key nullability layouts isolate launcher delegation from cross-batch key schema
+  // transitions.
   cudf::test::fixed_width_column_wrapper<int32_t> keys1{{1, 2, 1}, {true, true, true}};
   cudf::test::fixed_width_column_wrapper<int32_t> keys2{{2, 3, 0}, {true, true, false}};
   cudf::test::fixed_width_column_wrapper<int32_t> values1{{10, 0, 30}, {true, false, true}};
@@ -1619,7 +1615,7 @@ TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
   cudf::test::structs_column_wrapper nested_keys1{{keys1}, {true, true, true}};
   cudf::test::structs_column_wrapper nested_keys2{{keys2}, {true, true, false}};
 
-  cudf::test::fixed_width_column_wrapper<int32_t> expected_keys{{1, 2, 3}, {true, true, true}};
+  cudf::test::fixed_width_column_wrapper<int32_t> expected_keys{1, 2, 3};
   cudf::test::structs_column_wrapper expected_nested_keys{{expected_keys}};
   cudf::test::fixed_width_column_wrapper<int64_t> expected_sum{40, 40, 50};
   cudf::test::fixed_width_column_wrapper<int32_t> expected_min{10, 40, 50};
@@ -1635,26 +1631,31 @@ TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
 
   // Multiple kinds exercise concurrent updates by streaming's dense-output kernel.
   // Explicit expectations make the regression independent of the reference implementation.
-  for (bool const nested : {false, true}) {
-    auto const first_keys  = nested ? cudf::column_view{nested_keys1} : cudf::column_view{keys1};
-    auto const second_keys = nested ? cudf::column_view{nested_keys2} : cudf::column_view{keys2};
+  struct {
+    char const* name;
+    cudf::column_view first_keys;
+    cudf::column_view second_keys;
+    cudf::column_view expected_keys;
+  } const key_parameters[] = {{"top-level", keys1, keys2, expected_keys},
+                              {"nested", nested_keys1, nested_keys2, expected_nested_keys}};
+  for (auto const& [name, first_keys, second_keys, expected_key_view] : key_parameters) {
+    SCOPED_TRACE(name);
     cudf::table_view const batch1{{first_keys, values1}};
     cudf::table_view const batch2{{second_keys, values2}};
-    cudf::groupby::streaming_groupby streaming_agg(KEY_COL, requests, DEFAULT_MAX_DISTINCT_KEYS);
+    // The null-key row must contribute to none of the expected aggregates.
+    cudf::groupby::streaming_groupby streaming_agg(
+      KEY_COL, requests, DEFAULT_MAX_DISTINCT_KEYS, cudf::null_policy::EXCLUDE);
     streaming_agg.aggregate(batch1);
     streaming_agg.aggregate(batch2);
     auto [keys, results] = streaming_agg.finalize();
 
     ASSERT_EQ(results.size(), requests.size());
-    for (auto const& result : results) {
-      ASSERT_EQ(result.results.size(), 1);
+    for (std::size_t i = 0; i < results.size(); ++i) {
+      ASSERT_EQ(results[i].results.size(), 1) << "aggregation request " << i;
     }
-    auto const expected_key_view =
-      nested ? cudf::column_view{expected_nested_keys} : cudf::column_view{expected_keys};
     check(keys,
           results,
           cudf::table_view{{expected_key_view}},
-          {expected_sum, expected_min, expected_max, expected_count},
-          true);
+          {expected_sum, expected_min, expected_max, expected_count});
   }
 }

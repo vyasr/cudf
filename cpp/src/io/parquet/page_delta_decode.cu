@@ -15,7 +15,6 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/std/algorithm>
-#include <thrust/transform_scan.h>
 
 namespace cudf::io::parquet::detail {
 

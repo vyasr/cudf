@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "utilities/radix_sort_keys.hpp"
+
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/copy.hpp>
@@ -32,7 +34,6 @@
 #include <cuda/std/iterator>
 #include <cuda/stream>
 #include <thrust/binary_search.h>
-#include <thrust/sort.h>
 #include <thrust/transform.h>
 
 namespace cudf {
@@ -113,7 +114,7 @@ std::unique_ptr<column> encode(column_view const& input,
   keys_indices.resize(cuda::std::distance(keys_indices.begin(), keys_end), stream);
 
   // sort the keys_indices so we can use lower-bound on them
-  thrust::sort(rmm::exec_policy_nosync(stream, temp_mr), keys_indices.begin(), keys_indices.end());
+  cudf::detail::sort_int_keys(keys_indices.begin(), keys_indices.end(), stream, temp_mr);
 
   // use keys_indices to retrieve the keys
   auto const oob_policy   = cudf::out_of_bounds_policy::DONT_CHECK;

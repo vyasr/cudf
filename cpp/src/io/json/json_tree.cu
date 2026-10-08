@@ -5,6 +5,7 @@
 
 #include "io/utilities/parsing_utils.cuh"
 #include "nested_json.hpp"
+#include "utilities/radix_sort_keys.hpp"
 #include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/detail/algorithms/copy_if.cuh>
@@ -978,9 +979,8 @@ std::pair<rmm::device_uvector<NodeIndexT>, rmm::device_uvector<NodeIndexT>> gene
                           mr);
   }();
 
-  thrust::sort(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-               unique_keys.begin(),
-               unique_keys.end());
+  cudf::detail::sort_int_keys(
+    unique_keys.begin(), unique_keys.end(), stream, cudf::get_current_device_resource_ref());
   thrust::lower_bound(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                       unique_keys.begin(),
                       unique_keys.end(),

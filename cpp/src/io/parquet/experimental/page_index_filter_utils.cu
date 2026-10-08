@@ -5,6 +5,7 @@
 
 #include "io/parquet/stats_filter_helpers.hpp"
 #include "page_index_filter_utils.hpp"
+#include "utilities/radix_sort_keys.hpp"
 
 #include <cudf/column/column_factories.hpp>
 #include <cudf/detail/algorithms/reduce.cuh>
@@ -30,7 +31,6 @@
 #include <rmm/device_uvector.hpp>
 #include <rmm/exec_policy.hpp>
 
-#include <cub/device/device_radix_sort.cuh>
 #include <cub/device/device_select.cuh>
 #include <cub/device/device_transform.cuh>
 #include <cuda/iterator>
@@ -405,8 +405,8 @@ constexpr auto min_segments_for_device_offsets = 1024;
   // Offsets are non-negative and at most `total_rows`, so only their low bits need sorting.
   auto sorted_offsets = rmm::device_uvector<size_type>(num_items, stream, temp_mr);
   auto const end_bit  = static_cast<int>(cuda::std::bit_width(static_cast<uint32_t>(total_rows)));
-  CUDF_CUDA_TRY(cub::DeviceRadixSort::SortKeys(
-    all_page_row_offsets.data(), sorted_offsets.data(), num_items, 0, end_bit, env));
+  CUDF_CUDA_TRY(cudf::detail::radix_sort_int_keys(
+    all_page_row_offsets.data(), sorted_offsets.data(), num_items, 0, end_bit, stream, temp_mr));
 
   auto segment_row_offsets = rmm::device_uvector<size_type>(num_items, stream, mr);
   auto num_unique          = cudf::detail::device_scalar<cuda::std::int64_t>(stream, temp_mr);

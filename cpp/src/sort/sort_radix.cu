@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "utilities/radix_sort_keys.hpp"
+
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/utilities/type_dispatcher.hpp>
@@ -67,10 +69,18 @@ struct sort_radix_fn {
     // cub radix sort implementation is always stable
     std::size_t tmp_bytes = 0;
     if (ascending) {
-      cub::DeviceRadixSort::SortKeys(nullptr, tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      if constexpr (std::is_same_v<T, size_type>) {
+        radix_sort_int_keys(nullptr, tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      } else {
+        cub::DeviceRadixSort::SortKeys(nullptr, tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      }
       auto tmp_stg = cuda::device_buffer<std::byte>(
         stream, cudf::get_current_device_resource_ref(), tmp_bytes, cuda::no_init);
-      cub::DeviceRadixSort::SortKeys(tmp_stg.data(), tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      if constexpr (std::is_same_v<T, size_type>) {
+        radix_sort_int_keys(tmp_stg.data(), tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      } else {
+        cub::DeviceRadixSort::SortKeys(tmp_stg.data(), tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
+      }
     } else {
       cub::DeviceRadixSort::SortKeysDescending(nullptr, tmp_bytes, d_in, d_out, n, 0, end_bit, sv);
       auto tmp_stg = cuda::device_buffer<std::byte>(

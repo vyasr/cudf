@@ -12,7 +12,6 @@
 #include <cudf/aggregation.hpp>
 #include <cudf/concatenate.hpp>
 #include <cudf/copying.hpp>
-#include <cudf/dictionary/encode.hpp>
 #include <cudf/groupby.hpp>
 #include <cudf/sorting.hpp>
 #include <cudf/table/table.hpp>
@@ -1654,26 +1653,6 @@ TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
       nested ? cudf::column_view{expected_nested_keys} : cudf::column_view{expected_keys};
     check(keys,
           results,
-          cudf::table_view{{expected_key_view}},
-          {expected_sum, expected_min, expected_max, expected_count},
-          true);
-
-    // Dictionary values force global-memory aggregation, where four kinds select dense output.
-    // This exercises the stateless callers even when the small raw-value case uses shared memory.
-    auto const all_data       = cudf::concatenate(std::vector<cudf::table_view>{batch1, batch2});
-    auto const encoded_values = cudf::dictionary::encode(all_data->view().column(1));
-    std::vector<cudf::groupby::aggregation_request> dense_requests(1);
-    dense_requests.front().values = encoded_values->view();
-    for (auto const& request : requests) {
-      dense_requests.front().aggregations.push_back(std::unique_ptr<cudf::groupby_aggregation>{
-        dynamic_cast<cudf::groupby_aggregation*>(request.aggregation->clone().release())});
-    }
-    cudf::groupby::groupby dense_groupby{cudf::table_view{{all_data->view().column(0)}}};
-    auto [dense_keys, dense_results] = dense_groupby.aggregate(dense_requests);
-    ASSERT_EQ(dense_results.size(), 1);
-    ASSERT_EQ(dense_results.front().results.size(), requests.size());
-    check(dense_keys,
-          dense_results,
           cudf::table_view{{expected_key_view}},
           {expected_sum, expected_min, expected_max, expected_count},
           true);

@@ -25,6 +25,7 @@
 
 namespace cudf {
 namespace ast {
+
 operation::operation(ast_operator op, expression const& input) : op{op}, operands{input}
 {
   CUDF_EXPECTS(cudf::ast::detail::ast_operator_arity(op) == 1,

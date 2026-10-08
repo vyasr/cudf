@@ -22,6 +22,7 @@
 
 #include <cuda/std/type_traits>
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>

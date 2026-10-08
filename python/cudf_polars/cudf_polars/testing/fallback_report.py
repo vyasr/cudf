@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -67,6 +69,12 @@ class FallbackReport:
         report = {
             "engine": config.getoption("--inject-gpu-engine"),
             "blocksize": config.getoption("--inject-gpu-engine-blocksize"),
+            "shard_id": config.getoption("cudf_polars_shard_id"),
+            "num_shards": config.getoption("cudf_polars_num_shards"),
+            "python": platform.python_version(),
+            "arch": platform.machine(),
+            "cuda": os.environ.get("RAPIDS_CUDA_VERSION"),
+            "dependencies": os.environ.get("RAPIDS_DEPENDENCIES"),
             "exitstatus": int(exitstatus),
             "collected": session.testscollected,
             "tests": sorted(self.tests.values(), key=lambda test: test["nodeid"]),

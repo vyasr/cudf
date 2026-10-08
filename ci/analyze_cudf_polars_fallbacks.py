@@ -2,42 +2,62 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Summarize JSON fallback diagnostics from upstream Polars pytest runs."""
+"""Summarize JSON fallback diagnostics from upstream Polars CI runs."""
 
 from __future__ import annotations
 
 import argparse
 import html
 import json
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 
-def _report_argument(value: str) -> tuple[str, Path]:
-    """Parse an ENGINE=REPORT_JSON command-line argument."""
-    engine, separator, path = value.partition("=")
-    if not separator or not engine or not path:
-        raise argparse.ArgumentTypeError(
-            "reports must have the form ENGINE=REPORT_JSON"
-        )
-    return engine, Path(path)
-
-
-def build_report(reports: dict[str, Path]) -> dict[str, Any]:
-    """Build a compact per-engine summary and a per-node diagnostic table."""
+def build_report(paths: list[Path]) -> dict[str, Any]:
+    """Combine available shard/configuration reports without losing run identity."""
     tests = []
+    runs = []
+    unreadable = []
+    for path in paths:
+        try:
+            run = json.loads(path.read_text())
+            engine = run["engine"]
+            if engine == "spmd":
+                engine += f"-{run['blocksize']}"
+            run["exitstatus"]
+            run["collected"]
+            run_tests = run.pop("tests")
+            # Equal node IDs in different matrix jobs are separate executions,
+            # not duplicates: fallback can depend on the tested configuration.
+            run_tests = [
+                {
+                    "nodeid": test["nodeid"],
+                    "outcome": test["outcome"],
+                    "fallback": test["fallback"],
+                    "engine": engine,
+                    "run": path.name,
+                }
+                for test in run_tests
+            ]
+            tests.extend(run_tests)
+            runs.append({**run, "engine": engine, "run": path.name})
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            unreadable.append({"run": path.name, "error": str(error)})
+
+    grouped = defaultdict(list)
+    for test in tests:
+        grouped[test["engine"]].append(test)
     summaries = {}
-    for engine, path in reports.items():
-        run = json.loads(path.read_text())
-        engine_tests = [
-            {**test, "engine": engine}
-            for test in sorted(run["tests"], key=lambda test: test["nodeid"])
-        ]
-        tests.extend(engine_tests)
+    for engine in sorted({run["engine"] for run in runs}):
+        engine_runs = [run for run in runs if run["engine"] == engine]
+        engine_tests = grouped[engine]
         summaries[engine] = {
-            "exitstatus": run["exitstatus"],
-            "collected": run["collected"],
+            "runs": len(engine_runs),
+            "nonzero_exitstatus": sum(
+                run["exitstatus"] != 0 for run in engine_runs
+            ),
+            "collected": sum(run["collected"] for run in engine_runs),
             "total": len(engine_tests),
             "fallback": sum(
                 test["fallback"] == "true" for test in engine_tests
@@ -54,64 +74,85 @@ def build_report(reports: dict[str, Path]) -> dict[str, Any]:
                 )
             ),
         }
-    return {"summary": summaries, "tests": tests}
+    return {
+        "summary": summaries,
+        "runs": runs,
+        "unreadable_reports": unreadable,
+        "tests": sorted(
+            tests,
+            key=lambda test: (test["engine"], test["nodeid"], test["run"]),
+        ),
+    }
+
+
+def summary_markdown(report: dict[str, Any]) -> str:
+    """Describe observed executions, not an assumed complete baseline."""
+    lines = [
+        "## Upstream Polars CPU fallback diagnostics",
+        "",
+        "Counts include executions across the available shards and matrix configurations. "
+        "Missing jobs are not represented; failed or partial runs are not a complete baseline.",
+        "",
+        "No fallback observed does not prove GPU execution: eager-only tests also report false.",
+        "",
+        "| Engine | Reports | CPU fallback | No fallback observed | Missing telemetry | Reported / collected | Runs with nonzero exit status |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for engine, summary in report["summary"].items():
+        lines.append(
+            f"| {engine} | {summary['runs']} | {summary['fallback']} | "
+            f"{summary['no_fallback_observed']} | {summary['unknown']} | "
+            f"{summary['total']} / {summary['collected']} | {summary['nonzero_exitstatus']} |"
+        )
+    if not report["runs"]:
+        lines.extend(
+            ["", "No readable diagnostics were uploaded by the upstream jobs."]
+        )
+    if report["unreadable_reports"]:
+        lines.extend(
+            [
+                "",
+                f"Unreadable reports: {len(report['unreadable_reports'])}; see the JSON artifact.",
+            ]
+        )
+    return "\n".join(lines) + "\n"
 
 
 def write_html(report: dict[str, Any], output: Path) -> None:
-    """Write a readable version of the JSON diagnostic data."""
-    summaries = "".join(
-        "<li>"
-        f"{html.escape(engine)}: {summary['fallback']} fallback; "
-        f"{summary['no_fallback_observed']} no fallback observed; "
-        f"{summary['unknown']} missing telemetry; "
-        f"{summary['total']} reported of {summary['collected']} collected; "
-        f"exit status {summary['exitstatus']}.</li>"
-        for engine, summary in report["summary"].items()
-    )
+    """Include run identity so repeated nodes across configurations stay traceable."""
     rows = "".join(
         "<tr>"
-        f"<td><code>{html.escape(test['nodeid'])}</code></td>"
-        f"<td>{html.escape(test['engine'])}</td>"
-        f"<td>{html.escape(test['outcome'])}</td>"
-        f"<td>{html.escape(test['fallback'])}</td>"
-        "</tr>"
+        + "".join(
+            f"<td><code>{html.escape(test[key])}</code></td>"
+            for key in ("nodeid", "engine", "run", "outcome", "fallback")
+        )
+        + "</tr>"
         for test in report["tests"]
     )
     output.write_text(
-        "<!doctype html><meta charset=utf-8>"
-        "<title>cudf-polars fallback diagnostics</title>"
-        "<h1>cudf-polars fallback diagnostics</h1>"
-        "<p><code>false</code> means no CPU fallback was observed; it does not "
-        "by itself prove that a test invoked LazyFrame.collect.</p>"
-        "<p><code>unknown</code> means fallback telemetry is missing. Verify "
-        "that the installed injection plugin exports telemetry.</p>"
-        f"<ul>{summaries}</ul>"
-        "<table><thead><tr><th>Upstream node</th><th>Engine</th>"
-        "<th>Outcome</th><th>CPU fallback observed</th>"
-        "</tr></thead><tbody>"
-        f"{rows}</tbody></table>"
+        "<!doctype html><meta charset=utf-8><title>cudf-polars fallback diagnostics</title>"
+        f"<pre>{html.escape(summary_markdown(report))}</pre>"
+        "<table><thead><tr><th>Upstream node</th><th>Engine</th><th>Run</th>"
+        "<th>Outcome</th><th>CPU fallback observed</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>"
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--report",
-        action="append",
-        type=_report_argument,
-        metavar="ENGINE=REPORT_JSON",
-        required=True,
-        help="JSON diagnostics from one injected-engine run",
-    )
+    parser.add_argument("--reports-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--summary-file", type=Path)
     args = parser.parse_args()
-    reports = dict(args.report)
+    report = build_report(sorted(args.reports_dir.glob("*.json")))
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    report = build_report(reports)
     (args.output_dir / "fallback-diagnostics.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
     write_html(report, args.output_dir / "index.html")
+    if args.summary_file:
+        with args.summary_file.open("a") as summary:
+            summary.write(summary_markdown(report))
 
 
 if __name__ == "__main__":

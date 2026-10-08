@@ -1506,7 +1506,7 @@ TEST_F(SegmentedReductionStringTest, EmptyInputWithOffsets)
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(*result, expect);
 }
 
-TEST_F(SegmentedReductionStringTest, StringMinMaxUtf8RepeatedExtrema)
+TEST_F(SegmentedReductionStringTest, MinMaxUtf8RepeatedExtrema)
 {
   // Exercise repeated multibyte extrema; existing cases cover empty and all-null segments.
   cudf::test::strings_column_wrapper input{{"é", "apple", "é", "é", "é", ""},
@@ -1537,7 +1537,7 @@ TEST_F(SegmentedReductionStringTest, StringMinMaxUtf8RepeatedExtrema)
   }
 }
 
-TEST_F(SegmentedReductionStringTest, StringMinMaxSlicedInput)
+TEST_F(SegmentedReductionStringTest, MinMaxSlicedInput)
 {
   // The prefix contains both extrema so ignoring the slice offset changes MIN and MAX.
   cudf::test::strings_column_wrapper input{"", "ÿ", "é", "apple", "é", "", "z", "z", "ÿ"};
@@ -1552,12 +1552,13 @@ TEST_F(SegmentedReductionStringTest, StringMinMaxSlicedInput)
 
   struct {
     char const* name;
-    cudf::column_view input;
+    cudf::column_view values;
     cudf::null_policy policy;
   } const cases[] = {
     {"nonnullable", sliced_input, cudf::null_policy::EXCLUDE},
     {"nullable, include nulls", sliced_nullable_input, cudf::null_policy::INCLUDE},
-    {"nullable, exclude nulls", sliced_nullable_input, cudf::null_policy::EXCLUDE}};
+    {"nullable, exclude nulls", sliced_nullable_input, cudf::null_policy::EXCLUDE},
+  };
 
   for (auto const& [name, values, policy] : cases) {
     SCOPED_TRACE(name);

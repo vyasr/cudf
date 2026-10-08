@@ -1636,8 +1636,10 @@ TEST_F(StreamingGroupbyTest, DenseAggregationsNullableFlatAndNestedKeys)
     cudf::column_view first_keys;
     cudf::column_view second_keys;
     cudf::column_view expected_keys;
-  } const key_parameters[] = {{"top-level", keys1, keys2, expected_keys},
-                              {"nested", nested_keys1, nested_keys2, expected_nested_keys}};
+  } const key_parameters[] = {
+    {"top-level", keys1, keys2, expected_keys},
+    {"nested", nested_keys1, nested_keys2, expected_nested_keys},
+  };
   for (auto const& [name, first_keys, second_keys, expected_key_view] : key_parameters) {
     SCOPED_TRACE(name);
     cudf::table_view const batch1{{first_keys, values1}};

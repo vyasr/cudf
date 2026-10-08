@@ -5,19 +5,15 @@
 
 #pragma once
 
-#include "reductions/nested_types_extrema_utils.cuh"
-
 #include <cudf/column/column.hpp>
+#include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
 #include <cudf/column/column_view.hpp>
-#include <cudf/copying.hpp>
 #include <cudf/detail/aggregation/aggregation.cuh>
-#include <cudf/detail/gather.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/detail/null_mask.hpp>
-#include <cudf/detail/structs/utilities.hpp>
 #include <cudf/detail/utilities/cast_functor.cuh>
-#include <cudf/table/table_device_view.cuh>
+#include <cudf/table/table_view.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/span.hpp>
@@ -34,6 +30,12 @@ namespace cudf {
 namespace groupby {
 namespace detail {
 
+/**
+ * @brief Computes a nested MIN/MAX prefix scan within each sorted group.
+ *
+ * The shared implementation keeps the comparator's min/max choice out of the scan's
+ * template identity while preserving the input struct hierarchy and null mask.
+ */
 std::unique_ptr<column> group_nested_minmax_scan(
   column_view const& values,
   cudf::device_span<cudf::size_type const> group_labels,

@@ -71,7 +71,7 @@ struct bitwise_group_reduction_functor {
 
     if (values.has_nulls()) {
       rmm::device_uvector<bool> validity(num_groups, stream);
-      reduce_group_validity(group_labels, *d_values_ptr, validity.data(), stream);
+      reduce_group_validity(group_labels, *d_values_ptr, validity, stream);
 
       auto [null_mask, null_count] =
         cudf::detail::valid_if(validity.begin(), validity.end(), cuda::std::identity{}, stream, mr);

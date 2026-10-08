@@ -3,11 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "group_scan_util.cuh"
+#include "groupby/sort/group_scan_util.cuh"
+#include "reductions/nested_types_extrema_utils.cuh"
 
-namespace cudf {
-namespace groupby {
-namespace detail {
+#include <cudf/copying.hpp>
+#include <cudf/detail/gather.hpp>
+#include <cudf/detail/structs/utilities.hpp>
+
+namespace cudf::groupby::detail {
 
 std::unique_ptr<column> group_nested_minmax_scan(
   column_view const& values,
@@ -21,8 +24,8 @@ std::unique_ptr<column> group_nested_minmax_scan(
   // Create a gather map containing indices of the prefix min/max elements within each group.
   auto gather_map = rmm::device_uvector<size_type>(values.size(), stream);
 
-  // row_arg_minmax_fn carries the operation in its state, so this single instantiation serves
-  // both MIN and MAX without changing the comparator specialization.
+  // The generated operation carries the MIN/MAX choice in its state, so one scan
+  // instantiation serves both without changing the comparator specialization.
   auto const binop_generator =
     cudf::reduction::detail::arg_minmax_binop_generator::create(values, is_min, stream);
   thrust::inclusive_scan_by_key(
@@ -62,6 +65,4 @@ std::unique_ptr<column> group_nested_minmax_scan(
                                   mr);
 }
 
-}  // namespace detail
-}  // namespace groupby
-}  // namespace cudf
+}  // namespace cudf::groupby::detail

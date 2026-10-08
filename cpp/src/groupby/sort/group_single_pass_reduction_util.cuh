@@ -6,7 +6,6 @@
 #pragma once
 
 #include "groupby/common/value_accessor.cuh"
-#include "groupby/sort/group_argminmax.hpp"
 #include "groupby/sort/group_validity.cuh"
 
 #include <cudf/column/column.hpp>
@@ -159,23 +158,6 @@ struct group_reduction_functor<
       result->set_null_mask(std::move(null_mask), null_count);
     }
     return result;
-  }
-};
-
-template <aggregation::Kind K, typename T>
-struct group_reduction_functor<
-  K,
-  T,
-  std::enable_if_t<is_group_reduction_supported<K, T>() &&
-                   (K == aggregation::ARGMIN || K == aggregation::ARGMAX)>> {
-  static std::unique_ptr<column> invoke(column_view const& values,
-                                        size_type num_groups,
-                                        cudf::device_span<cudf::size_type const> group_labels,
-                                        cuda::stream_ref stream,
-                                        rmm::device_async_resource_ref mr)
-  {
-    return group_argminmax_indices(
-      values, num_groups, group_labels, K == aggregation::ARGMIN, stream, mr);
   }
 };
 

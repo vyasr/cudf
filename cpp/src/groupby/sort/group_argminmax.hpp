@@ -15,19 +15,6 @@
 namespace cudf::groupby::detail {
 
 /**
- * @brief Computes ARGMIN/ARGMAX indices into the group-sorted values.
- *
- * Sharing allocation and validity handling keeps both operations and nested/non-nested
- * inputs from instantiating identical host wrappers around the private kernel owners.
- */
-std::unique_ptr<column> group_argminmax_indices(column_view const& values,
-                                                size_type num_groups,
-                                                device_span<size_type const> group_labels,
-                                                bool is_argmin,
-                                                cuda::stream_ref stream,
-                                                rmm::device_async_resource_ref mr);
-
-/**
  * @brief Computes ARGMIN/ARGMAX indices into the original, unsorted values.
  *
  * The shared remapping step preserves the reduction's null mask for both operations.

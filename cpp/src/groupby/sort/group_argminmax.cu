@@ -3,14 +3,33 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "groupby/sort/group_single_pass_reduction_util.cuh"
+#include "groupby/sort/group_argminmax.hpp"
+#include "groupby/sort/group_validity.cuh"
 #include "reductions/nested_types_extrema_utils.cuh"
 
-#include <rmm/device_uvector.hpp>
+#include <cudf/column/column_factories.hpp>
+#include <cudf/detail/valid_if.cuh>
+#include <cudf/dictionary/dictionary_column_view.hpp>
+#include <cudf/utilities/error.hpp>
+#include <cudf/utilities/traits.hpp>
+#include <cudf/utilities/type_dispatcher.hpp>
 
+#include <rmm/device_uvector.hpp>
+#include <rmm/exec_policy.hpp>
+
+#include <cuda/std/functional>
 #include <thrust/gather.h>
 
 namespace cudf::groupby::detail {
+namespace {
+
+struct is_argminmax_supported {
+  template <typename T>
+  bool operator()() const
+  {
+    return is_relationally_comparable<T, T>() || cudf::is_nested<T>();
+  }
+};
 
 std::unique_ptr<column> group_argminmax_indices(column_view const& values,
                                                 size_type num_groups,
@@ -51,6 +70,8 @@ std::unique_ptr<column> group_argminmax_indices(column_view const& values,
   return result;
 }
 
+}  // namespace
+
 std::unique_ptr<column> group_argminmax(column_view const& values,
                                         size_type num_groups,
                                         device_span<size_type const> group_labels,
@@ -62,20 +83,10 @@ std::unique_ptr<column> group_argminmax(column_view const& values,
   auto dispatch_type = cudf::is_dictionary(values.type())
                          ? dictionary_column_view(values).keys().type()
                          : values.type();
-  auto indices       = is_argmin ? type_dispatcher(dispatch_type,
-                                             group_reduction_dispatcher<aggregation::ARGMIN>{},
-                                             values,
-                                             num_groups,
-                                             group_labels,
-                                             stream,
-                                             mr)
-                                 : type_dispatcher(dispatch_type,
-                                             group_reduction_dispatcher<aggregation::ARGMAX>{},
-                                             values,
-                                             num_groups,
-                                             group_labels,
-                                             stream,
-                                             mr);
+  // Validate before the empty-input shortcut so unsupported types retain their error behavior.
+  CUDF_EXPECTS(type_dispatcher(dispatch_type, is_argminmax_supported{}),
+               "Unsupported groupby reduction type-agg combination.");
+  auto indices = group_argminmax_indices(values, num_groups, group_labels, is_argmin, stream, mr);
 
   // Convert group-sorted indices back to the original row order. Using Thrust rather than
   // cudf::gather lets both operations move the reduction's null mask without copying it.

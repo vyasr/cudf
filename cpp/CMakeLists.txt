@@ -1223,6 +1223,7 @@ add_library(
   src/utilities/host_worker_pool.cpp
   src/utilities/linked_column.cpp
   src/utilities/logger.cpp
+  src/utilities/offsets.cu
   src/utilities/prefetch.cpp
   src/utilities/roaring_bitmap.cu
   src/utilities/stream_pool.cpp

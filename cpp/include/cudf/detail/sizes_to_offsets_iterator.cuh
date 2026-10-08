@@ -14,6 +14,7 @@
 #include <rmm/exec_policy.hpp>
 
 #include <cuda/functional>
+#include <cuda/iterator>
 #include <cuda/std/iterator>
 #include <cuda/stream>
 #include <thrust/scan.h>
@@ -339,6 +340,26 @@ std::pair<std::unique_ptr<column>, size_type> make_offsets_child_column(InputIte
   offsets_column->set_null_count(0);
   return std::pair(std::move(offsets_column), static_cast<size_type>(total_elements));
 }
+
+// These layouts are shared across unrelated subsystems. One owner prevents each caller from
+// compiling and embedding the same scan kernels, while other iterator types remain generic.
+extern template CUDF_EXPORT std::pair<std::unique_ptr<column>, size_type>
+make_offsets_child_column<size_type*>(size_type*,
+                                      size_type*,
+                                      cuda::stream_ref,
+                                      cudf::memory_resources);
+
+extern template CUDF_EXPORT std::pair<std::unique_ptr<column>, size_type>
+make_offsets_child_column<size_type const*>(size_type const*,
+                                            size_type const*,
+                                            cuda::stream_ref,
+                                            cudf::memory_resources);
+
+extern template CUDF_EXPORT std::pair<std::unique_ptr<column>, size_type>
+  make_offsets_child_column<cuda::constant_iterator<size_type>>(cuda::constant_iterator<size_type>,
+                                                                cuda::constant_iterator<size_type>,
+                                                                cuda::stream_ref,
+                                                                cudf::memory_resources);
 
 }  // namespace detail
 }  // namespace cudf

@@ -100,9 +100,9 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
   // The nz map is a second decode path selected by an env var: the same file must read
   // identically with it on and off.
   //
-  // DELTA_BINARY_PACKED because it is the only encoding claimed at this point in the series, and
-  // nullable so that the map itself is exercised. A required column is claimed too, but takes the
-  // consumer's identity-map path, where no map is allocated.
+  // DELTA_BINARY_PACKED because it is the only encoding with a consumer at this point in the
+  // series, and nullable so that the map itself is exercised. A required column gets one too, but
+  // takes the consumer's identity-map path, where no map is allocated.
   static constexpr char const* nz_map_env_var = "LIBCUDF_PARQUET_NZ_MAP";
 
   constexpr int num_rows = 50000;

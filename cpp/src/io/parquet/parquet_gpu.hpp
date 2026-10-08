@@ -357,7 +357,7 @@ enum class nz_map_kind : uint8_t {
  * per-kernel shared-memory struct: the map is indexed by rank straight out of global memory.
  */
 struct page_nz_map {
-  // `nz_count` value meaning "claimed, but the producer has not run yet".
+  // `nz_count` value meaning "this page has a map, but the producer has not run yet".
   static constexpr int32_t not_yet_produced = -1;
 
   // Valid-rank map: `nz_idx[rank]` is the input position of the rank-th valid value. Null for a
@@ -449,8 +449,8 @@ struct PageInfo {
   bool has_value_info;  // true if str_bytes, num_valids, etc are derivable from page indexes
 
   // map_kind indicates which nz map consumer a page uses.
-  // `nz_map` is null when `classify_nz_map_kind` did not claim this page -- non-null *is* the
-  // selection flag.
+  // `nz_map` is null when `classify_nz_map_kind` selected no consumer for this page --
+  // non-null *is* the selection flag.
   nz_map_kind map_kind{nz_map_kind::NONE};
   page_nz_map* nz_map{};
 
@@ -1075,8 +1075,7 @@ void write_final_offsets(host_span<size_type const> offsets,
  * @param[in] min_row Minimum number of rows to read
  * @param[in] level_type_size Size in bytes of the type for level decoding
  * @param[in] page_mask Boolean vector indicating which pages need to be decoded
- * @param[in] non_nz_map_page_mask Pages the nz map producer did not claim, empty when it
- * claimed none
+ * @param[in] non_nz_map_page_mask Pages with no nz map, empty when no page has one
  * @param[out] error_code Error code for kernel failures
  * @param[in] stream CUDA stream to use
  */
@@ -1193,7 +1192,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  * @brief Launches the kernel that computes the flat nz map
  *
  * Runs once per subpass, before the decode kernels, over the pages `classify_nz_map_kind`
- * claimed. Writes
+ * selected a consumer for. Writes
  * `page_nz_map::nz_idx` / `nz_count` and the leaf column's null mask, so that the matching
  * decode kernel can place values without walking definition levels itself.
  *
@@ -1201,7 +1200,7 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  * @param[in] chunks All chunks to be processed
  * @param[in] page_mask Boolean vector indicating which pages need to be processed
  * @param[out] non_nz_map_page_mask Page mask for the level-decoding kernels. Seeded here from
- *             @p page_mask (all true when that is empty), then cleared for every page claimed
+ *             @p page_mask (all true when that is empty), then cleared for every page mapped
  * @param[in] min_row Minimum row index to read
  * @param[in] num_rows Number of rows to read starting from min_row
  * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)

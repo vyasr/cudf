@@ -395,7 +395,7 @@ void reader_impl::allocate_level_decode_space()
   // chunked-read budget. We will fix that once we start actually leveraging the nz map producer and
   // therefore introduce some of the machinery that will be needed to calculate the memory usage.
   //
-  // Hand out the out-of-line nz map scratch. There is exactly one for each claimed page, so most
+  // Hand out the out-of-line nz map scratch. There is exactly one for each mapped page, so most
   // pages (those that do not use the nz map producer) have nothing here. This information is only
   // needed on the host. On device, a non-null `PageInfo::nz_map` always indicates that state
   // exists.
@@ -414,7 +414,7 @@ void reader_impl::allocate_level_decode_space()
              : nullptr;
   };
 
-  // Point each claimed page at its scratch and size the flat valid-rank maps in a single walk.
+  // Point each mapped page at its scratch and size the flat valid-rank maps in a single walk.
   // `PageInfo` travels to the device, so the page carries the device address while the seeding
   // here goes through `host_state()`. A required page needs no map at all since its rank map is
   // the identity, which the consumer synthesizes rather than reading. The sizes are stored rather

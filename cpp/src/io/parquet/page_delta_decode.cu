@@ -545,7 +545,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   auto* const db     = &db_state;
 
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
-  // The producer cleared this page from `decode_delta_binary_kernel`'s mask when it claimed it,
+  // The producer cleared this page from `decode_delta_binary_kernel`'s mask when it mapped it,
   // so every page is decoded by one kernel and none by both.
   if (!pages[page_idx].has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
 
@@ -1144,9 +1144,9 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
   dim3 dim_block_nz_map(decode_delta_binary_with_nz_map_block_size, 1);
 
-  // The caller sizes this mask only when the nz map producer has pages to claim, so a non-empty
+  // The caller sizes this mask only when the nz map producer has pages to map, so a non-empty
   // mask is what tells us the producer ran. Its contents are the complement of what the consumer
-  // below decodes: the producer cleared the entry for every page it claimed, leaving the rest for
+  // below decodes: the producer cleared the entry for every page it mapped, leaving the rest for
   // `decode_delta_binary_kernel`.
   auto const use_flat_nz_map = not non_nz_map_page_mask.empty();
   if (use_flat_nz_map) {
@@ -1155,7 +1155,7 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
 
-    // Hand `decode_delta_binary_kernel` everything the consumer above did not claim.
+    // Hand `decode_delta_binary_kernel` every page the consumer above does not decode.
     page_mask = non_nz_map_page_mask;
   }
 

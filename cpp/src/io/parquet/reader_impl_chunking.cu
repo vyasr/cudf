@@ -379,7 +379,7 @@ void reader_impl::setup_next_subpass(read_mode mode)
   }
   subpass.pages.host_to_device_async(_stream);
   // The pages carry device pointers into this array, so it has to be uploaded with them. It is
-  // empty unless the nz map producer claimed at least one page. Nothing may copy it back to the
+  // empty unless some page has an nz map. Nothing may copy it back to the
   // host and re-upload it later in the subpass: the nz map producer kernels write counts into
   // it that the decode kernels read in a subsequent launch.
   if (!subpass.nz_map_buf.empty()) { subpass.nz_map_buf.host_to_device_async(_stream); }

@@ -672,10 +672,10 @@ void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
 {
   if (pages.size() == 0) { return; }
 
-  // Seed the level-decoding kernels' page mask before claiming anything out of it.
+  // Seed the level-decoding kernels' page mask before clearing anything out of it.
   //
   // Note: When a second nz_map producer is added it must move out to the caller, or it would wipe
-  // the claims the first one already made.
+  // the entries the first one already cleared.
   if (not non_nz_map_page_mask.empty()) {
     auto const policy = rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref());
     if (page_mask.empty()) {

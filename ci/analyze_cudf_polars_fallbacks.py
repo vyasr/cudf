@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import html
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -118,26 +117,6 @@ def summary_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_html(report: dict[str, Any], output: Path) -> None:
-    """Include run identity so repeated nodes across configurations stay traceable."""
-    rows = "".join(
-        "<tr>"
-        + "".join(
-            f"<td><code>{html.escape(test[key])}</code></td>"
-            for key in ("nodeid", "engine", "run", "outcome", "fallback")
-        )
-        + "</tr>"
-        for test in report["tests"]
-    )
-    output.write_text(
-        "<!doctype html><meta charset=utf-8><title>cudf-polars fallback diagnostics</title>"
-        f"<pre>{html.escape(summary_markdown(report))}</pre>"
-        "<table><thead><tr><th>Upstream node</th><th>Engine</th><th>Run</th>"
-        "<th>Outcome</th><th>CPU fallback observed</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>"
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports-dir", type=Path, required=True)
@@ -149,7 +128,6 @@ def main() -> None:
     (args.output_dir / "fallback-diagnostics.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n"
     )
-    write_html(report, args.output_dir / "index.html")
     if args.summary_file:
         with args.summary_file.open("a") as summary:
             summary.write(summary_markdown(report))

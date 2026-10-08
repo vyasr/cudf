@@ -4,6 +4,7 @@
  */
 
 #include "sort_radix.hpp"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
@@ -20,6 +21,8 @@
 #include <cuda/stream>
 #include <thrust/sequence.h>
 #include <thrust/transform.h>
+
+#include <type_traits>
 
 namespace cudf {
 namespace detail {
@@ -82,12 +85,19 @@ struct sorted_order_radix_fn {
     // cub radix sort implementation is always stable
     std::size_t tmp_bytes = 0;
     if (ascending) {
-      cub::DeviceRadixSort::SortPairs(
-        nullptr, tmp_bytes, d_in, d_out, dv_in, dv_out, n, 0, end_bit, sv);
+      auto const sort_pairs = [&](void* storage) {
+        if constexpr (std::is_same_v<T, size_type>) {
+          return radix_sort_int_pairs(
+            storage, tmp_bytes, d_in, d_out, dv_in, dv_out, n, 0, end_bit, sv);
+        } else {
+          return cub::DeviceRadixSort::SortPairs(
+            storage, tmp_bytes, d_in, d_out, dv_in, dv_out, n, 0, end_bit, sv);
+        }
+      };
+      sort_pairs(nullptr);
       auto tmp_stg = cuda::device_buffer<std::byte>(
         stream, cudf::get_current_device_resource_ref(), tmp_bytes, cuda::no_init);
-      cub::DeviceRadixSort::SortPairs(
-        tmp_stg.data(), tmp_bytes, d_in, d_out, dv_in, dv_out, n, 0, end_bit, sv);
+      sort_pairs(tmp_stg.data());
     } else {
       cub::DeviceRadixSort::SortPairsDescending(
         nullptr, tmp_bytes, d_in, d_out, dv_in, dv_out, n, 0, end_bit, sv);

@@ -5,6 +5,7 @@
 
 #include "io/utilities/parsing_utils.cuh"
 #include "nested_json.hpp"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/detail/algorithms/copy_if.cuh>
 #include <cudf/detail/algorithms/reduce.cuh>
@@ -1057,11 +1058,11 @@ rmm::device_uvector<size_type> compute_row_offsets(rmm::device_uvector<NodeIndex
   auto const num_list_parent = cuda::std::distance(
     cuda::make_zip_iterator(parent_col_id.begin(), scatter_indices.begin()), list_parent_end);
 
-  thrust::stable_sort_by_key(
-    rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-    parent_col_id.begin(),
-    parent_col_id.begin() + num_list_parent,
-    scatter_indices.begin());
+  cudf::detail::stable_sort_int_pairs(parent_col_id.begin(),
+                                      parent_col_id.begin() + num_list_parent,
+                                      scatter_indices.begin(),
+                                      stream,
+                                      cudf::get_current_device_resource_ref());
 
   rmm::device_uvector<size_type> row_offsets(num_nodes, stream, mr);
   // TODO is it possible to generate list child_offsets too here?

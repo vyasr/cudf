@@ -5,6 +5,7 @@
 
 #include "error.hpp"
 #include "reader_impl_preprocess_utils.cuh"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/detail/algorithms/reduce.cuh>
 #include <cudf/detail/iterator.cuh>
@@ -23,7 +24,6 @@
 #include <thrust/gather.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
-#include <thrust/sort.h>
 #include <thrust/transform.h>
 #include <thrust/transform_scan.h>
 
@@ -395,12 +395,11 @@ cudf::detail::hostdevice_vector<PageInfo> sort_pages(device_span<PageInfo const>
                    sort_indices.begin(),
                    sort_indices.end(),
                    0);
-  thrust::stable_sort_by_key(
-    rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-    page_keys.begin(),
-    page_keys.end(),
-    sort_indices.begin(),
-    cuda::std::less<int>());
+  cudf::detail::stable_sort_int_pairs_less(page_keys.begin(),
+                                           page_keys.end(),
+                                           sort_indices.begin(),
+                                           stream,
+                                           cudf::get_current_device_resource_ref());
   auto pass_pages = cudf::detail::hostdevice_vector<PageInfo>(unsorted_pages.size(), stream);
   thrust::gather(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                  sort_indices.begin(),

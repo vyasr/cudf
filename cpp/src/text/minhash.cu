@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "utilities/radix_sort_pairs.hpp"
+
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/column/column_factories.hpp>
@@ -40,7 +42,6 @@
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
 #include <thrust/sequence.h>
-#include <thrust/sort.h>
 
 namespace nvtext {
 namespace detail {
@@ -409,10 +410,8 @@ std::pair<cudf::size_type, rmm::device_uvector<cudf::size_type>> partition_input
                       sizes.data(),
                       tfn);
     // these 2 are slightly faster than using partition()
-    thrust::sort_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                        sizes.begin(),
-                        sizes.end(),
-                        indices.begin());
+    cudf::detail::sort_int_pairs(
+      sizes.begin(), sizes.end(), indices.begin(), stream, cudf::get_current_device_resource_ref());
     auto const lb =
       thrust::lower_bound(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                           sizes.begin(),

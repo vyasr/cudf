@@ -4,6 +4,7 @@
  */
 
 #include "nested_json.hpp"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/detail/algorithms/reduce.cuh>
 #include <cudf/detail/nvtx/ranges.hpp>
@@ -150,10 +151,11 @@ std::tuple<compressed_sparse_row, column_tree_properties> reduce_to_column_tree(
     thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                      rev_mapped_col_ids.begin(),
                      rev_mapped_col_ids.end());
-    thrust::sort_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                        mapped_col_ids_copy.begin(),
-                        mapped_col_ids_copy.end(),
-                        rev_mapped_col_ids.begin());
+    cudf::detail::sort_int_pairs(mapped_col_ids_copy.begin(),
+                                 mapped_col_ids_copy.end(),
+                                 rev_mapped_col_ids.begin(),
+                                 stream,
+                                 cudf::get_current_device_resource_ref());
   }
 
   rmm::device_uvector<NodeIndexT> parent_col_ids(num_columns, stream);

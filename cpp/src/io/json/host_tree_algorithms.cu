@@ -5,6 +5,7 @@
 
 #include "io/utilities/parsing_utils.cuh"
 #include "nested_json.hpp"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/detail/algorithms/copy_if.cuh>
 #include <cudf/detail/null_mask.hpp>
@@ -366,11 +367,11 @@ void make_device_json_column(device_span<SymbolT const> input,
   thrust::sequence(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
                    node_ids.begin(),
                    node_ids.end());
-  thrust::stable_sort_by_key(
-    rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-    sorted_col_ids.begin(),
-    sorted_col_ids.end(),
-    node_ids.begin());
+  cudf::detail::stable_sort_int_pairs(sorted_col_ids.begin(),
+                                      sorted_col_ids.end(),
+                                      node_ids.begin(),
+                                      stream,
+                                      cudf::get_current_device_resource_ref());
 
   NodeIndexT const row_array_parent_col_id =
     get_row_array_parent_col_id(col_ids, is_enabled_lines, stream);
@@ -1116,11 +1117,11 @@ void scatter_offsets(tree_meta_t const& tree,
       }
     });
 
-  thrust::stable_sort_by_key(
-    rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-    parent_col_ids.begin(),
-    parent_col_ids.begin() + num_list_children,
-    node_ids.begin());
+  cudf::detail::stable_sort_int_pairs(parent_col_ids.begin(),
+                                      parent_col_ids.begin() + num_list_children,
+                                      node_ids.begin(),
+                                      stream,
+                                      cudf::get_current_device_resource_ref());
   thrust::for_each_n(
     rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
     cuda::counting_iterator<size_type>{0},

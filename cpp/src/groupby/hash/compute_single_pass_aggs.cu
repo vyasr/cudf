@@ -6,6 +6,7 @@
 #include "compute_single_pass_aggs.hpp"
 #include "grouped_reductions.cuh"
 #include "single_pass_reductions.hpp"
+#include "utilities/radix_sort_pairs.hpp"
 
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_device_view.cuh>
@@ -39,7 +40,6 @@
 #include <thrust/partition.h>
 #include <thrust/scan.h>
 #include <thrust/sequence.h>
-#include <thrust/sort.h>
 #include <thrust/tabulate.h>
 #include <thrust/transform_reduce.h>
 
@@ -191,8 +191,11 @@ grouped_rows make_grouped_rows(device_span<size_type const> rows,
     stream, mr.get_output_mr(), static_cast<std::size_t>(num_chunks), cuda::no_init};
   thrust::sequence(
     policy, grouped.chunk_order.data(), grouped.chunk_order.data() + grouped.chunk_order.size());
-  thrust::sort_by_key(
-    policy, first_rows.data(), first_rows.data() + first_rows.size(), grouped.chunk_order.data());
+  cudf::detail::sort_int_pairs(first_rows.data(),
+                               first_rows.data() + first_rows.size(),
+                               grouped.chunk_order.data(),
+                               stream,
+                               temp_mr);
   return grouped;
 }
 

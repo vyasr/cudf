@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include "group_argminmax.hpp"
+#include "groupby/common/value_accessor.cuh"
 #include "groupby/sort/group_validity.cuh"
 #include "reductions/nested_types_extrema_utils.cuh"
 
@@ -13,7 +15,6 @@
 #include <cudf/column/column_view.hpp>
 #include <cudf/detail/aggregation/aggregation.cuh>
 #include <cudf/detail/iterator.cuh>
-#include <cudf/detail/utilities/element_argminmax.cuh>
 #include <cudf/detail/valid_if.cuh>
 #include <cudf/dictionary/dictionary_column_view.hpp>
 #include <cudf/types.hpp>
@@ -50,36 +51,6 @@ std::unique_ptr<column> group_argminmax(column_view const& values,
                                         bool is_argmin,
                                         cuda::stream_ref stream,
                                         rmm::device_async_resource_ref mr);
-
-/**
- * @brief Value accessor for column which supports dictionary column too.
- *
- * This is similar to `value_accessor` in `column_device_view.cuh` but with support of dictionary
- * type.
- *
- * @tparam T Type of the underlying column. For dictionary column, type of the key column.
- */
-template <typename T>
-struct value_accessor {
-  column_device_view const col;
-  bool const is_dict;
-
-  value_accessor(column_device_view const& col) : col(col), is_dict(cudf::is_dictionary(col.type()))
-  {
-  }
-
-  __device__ T value(size_type i) const
-  {
-    if (is_dict) {
-      auto keys = col.child(dictionary_column_view::keys_column_index);
-      return keys.element<T>(static_cast<size_type>(col.element<dictionary32>(i)));
-    } else {
-      return col.element<T>(i);
-    }
-  }
-
-  __device__ auto operator()(size_type i) const { return value(i); }
-};
 
 /**
  * @brief Null replaced value accessor for column which supports dictionary column too.
@@ -192,10 +163,13 @@ struct group_reduction_functor<
     auto const result_begin = result->mutable_view().template begin<ResultDType>();
 
     if constexpr (K == aggregation::ARGMAX || K == aggregation::ARGMIN) {
-      auto const count_iter = cuda::counting_iterator<ResultType>{0};
-      auto const binop      = cudf::detail::element_argminmax_fn<T>{
-        *d_values_ptr, values.has_nulls(), K == aggregation::ARGMIN};
-      do_reduction(count_iter, result_begin, binop);
+      launch_argminmax_reduction(group_labels,
+                                 data_type{type_to_id<T>()},
+                                 *d_values_ptr,
+                                 values.has_nulls(),
+                                 K == aggregation::ARGMIN,
+                                 result_begin,
+                                 stream);
     } else {
       using OpType    = cudf::detail::corresponding_operator_t<K>;
       auto init       = OpType::template identity<ResultDType>();
@@ -247,15 +221,13 @@ struct group_argminmax_functor<
     if (values.is_empty()) { return result; }
 
     auto const d_values_ptr = column_device_view::create(values, stream);
-    thrust::reduce_by_key(
-      rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-      group_labels.data(),
-      group_labels.data() + group_labels.size(),
-      cuda::counting_iterator<size_type>{0},
-      cuda::make_discard_iterator(),
-      result->mutable_view().begin<size_type>(),
-      cuda::std::equal_to{},
-      cudf::detail::element_argminmax_fn<T>{*d_values_ptr, values.has_nulls(), is_argmin});
+    launch_argminmax_reduction(group_labels,
+                               data_type{type_to_id<T>()},
+                               *d_values_ptr,
+                               values.has_nulls(),
+                               is_argmin,
+                               result->mutable_view().begin<size_type>(),
+                               stream);
 
     if (values.has_nulls()) {
       rmm::device_uvector<bool> validity(num_groups, stream);

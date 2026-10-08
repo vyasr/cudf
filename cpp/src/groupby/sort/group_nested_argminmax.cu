@@ -20,22 +20,10 @@ std::unique_ptr<column> group_nested_argminmax(column_view const& values,
 
   if (values.is_empty()) { return result; }
 
-  auto const do_reduction = [&](auto const& inp_iter, auto const& out_iter, auto const& binop) {
-    thrust::reduce_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                          group_labels.data(),
-                          group_labels.data() + group_labels.size(),
-                          inp_iter,
-                          cuda::make_discard_iterator(),
-                          out_iter,
-                          cuda::std::equal_to{},
-                          binop);
-  };
-
-  auto const count_iter   = cuda::counting_iterator<size_type>{0};
   auto const result_begin = result->mutable_view().begin<size_type>();
   auto const binop_generator =
     cudf::reduction::detail::arg_minmax_binop_generator::create(values, is_argmin, stream);
-  do_reduction(count_iter, result_begin, binop_generator.binop());
+  launch_argminmax_reduction(group_labels, binop_generator.binop(), result_begin, stream);
 
   if (values.has_nulls()) {
     auto const d_values_ptr = column_device_view::create(values, stream);

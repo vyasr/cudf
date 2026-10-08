@@ -330,8 +330,8 @@ struct column_sorted_order_fn {
       return;
     } else {
       auto keys = column_device_view::create(input, stream);
-      auto comp =
-        simple_comparator<T>{*keys, nullate::DYNAMIC{input.has_nulls()}, ascending, null_precedence};
+      auto comp = simple_comparator<T>{
+        *keys, nullate::DYNAMIC{input.has_nulls()}, ascending, null_precedence};
       merge_sort(indices, comp, stream);
     }
   }

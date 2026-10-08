@@ -667,6 +667,13 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   // condition -- which reads s->progress.nz_count -- when a later write lands on that field.
   block.sync();
 
+  // Values still outstanding means the loop stopped above rather than finishing: the delta stream
+  // held fewer values than the definition levels call for. Those rows are already marked valid, so
+  // without an error the read would return whatever their output slots happened to contain.
+  if (block.thread_rank() == 0 and s->progress.src_pos < s->progress.nz_count) {
+    s->setup.error |= static_cast<kernel_error::value_type>(decode_error::DATA_STREAM_OVERRUN);
+  }
+
   if (block.thread_rank() == 0 and s->setup.error != 0) { set_error(s->setup.error, error_code); }
 }
 

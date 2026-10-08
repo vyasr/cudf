@@ -5,14 +5,12 @@
 
 #include "groupby/sort/group_validity.cuh"
 
+#include <cudf/detail/algorithms/reduce.cuh>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/utilities/error.hpp>
 
-#include <rmm/exec_policy.hpp>
-
 #include <cuda/iterator>
 #include <cuda/std/functional>
-#include <thrust/reduce.h>
 
 namespace cudf::groupby::detail {
 
@@ -26,17 +24,14 @@ void reduce_group_validity(device_span<size_type const> group_labels,
   CUDF_EXPECTS(
     validity.size() <= group_labels.size() && (group_labels.empty() || !validity.empty()),
     "Validity output must contain one entry per group.");
-  auto const result =
-    thrust::reduce_by_key(rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref()),
-                          group_labels.data(),
-                          group_labels.data() + group_labels.size(),
-                          cudf::detail::make_validity_iterator(values),
-                          cuda::make_discard_iterator(),
-                          validity.begin(),
-                          cuda::std::equal_to{},
-                          cuda::std::logical_or{});
-  CUDF_EXPECTS(result.second == validity.end(),
-               "Validity output must contain one entry per group.");
+  // Callers already know the group count; returning it to the host would synchronize the stream.
+  cudf::detail::reduce_by_key_async(group_labels.data(),
+                                    group_labels.data() + group_labels.size(),
+                                    cudf::detail::make_validity_iterator(values),
+                                    cuda::make_discard_iterator(),
+                                    validity.begin(),
+                                    cuda::std::logical_or{},
+                                    stream);
 }
 
 }  // namespace cudf::groupby::detail

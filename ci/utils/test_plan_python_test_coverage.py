@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import json
 import unittest
 from pathlib import Path
 
@@ -57,6 +56,11 @@ class CoverageTests(unittest.TestCase):
             **{"run_pandas": True, "run_polars": True, **overrides},
         )
 
+    def consumer_entries(self, job, outputs):
+        source = JOB_FILTERS[job][0]
+        matrix = self.wheels if source == "wheels" else self.conda
+        return select_existing(matrix, outputs[job])
+
     def test_complement_preserves_oldest_and_arm(self):
         outputs, selected, decisions = self.plan()
         self.assertEqual(selected["CUDA_VER"], "13.3.0")
@@ -80,7 +84,7 @@ class CoverageTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(
-                    json.loads(outputs[job])["include"], decision["retained"]
+                    self.consumer_entries(job, outputs), decision["retained"]
                 )
         self.assertEqual(len(decisions["wheel-tests-cudf"]["retained"]), 2)
 
@@ -97,7 +101,7 @@ class CoverageTests(unittest.TestCase):
                         expression,
                     )
                     self.assertEqual(
-                        json.loads(outputs[job])["include"], original
+                        self.consumer_entries(job, outputs), original
                     )
                     self.assertEqual(decisions[job]["removed"], [])
 
@@ -149,7 +153,7 @@ class CoverageTests(unittest.TestCase):
             self.assertTrue(
                 any(
                     e["ARCH"] == "amd64"
-                    for e in json.loads(outputs[job])["include"]
+                    for e in self.consumer_entries(job, outputs)
                 )
             )
 
@@ -173,6 +177,47 @@ class CoverageTests(unittest.TestCase):
         original = copy.deepcopy((self.wheels, self.conda))
         self.plan()
         self.assertEqual((self.wheels, self.conda), original)
+
+    def test_consumers_apply_policy_to_updated_matrices(self):
+        outputs, _, _ = self.plan()
+        for job, (source, _, expression) in JOB_FILTERS.items():
+            with self.subTest(job=job):
+                matrix = self.wheels if source == "wheels" else self.conda
+                changed = copy.deepcopy(matrix)
+                changed["include"] += [
+                    entry("14.1.0"),
+                    entry("13.10.0"),
+                    entry("13.10.0", arch="arm64"),
+                    entry("13.10.0", deps="oldest", py="3.12"),
+                ]
+                original = select_existing(changed, expression)
+                retained = select_existing(changed, outputs[job])
+                self.assertIn(entry("14.1.0"), retained)
+                for e in original:
+                    if e["ARCH"] != "amd64" or e["DEPENDENCIES"] == "oldest":
+                        self.assertIn(e, retained)
+                    elif e["CUDA_VER"].startswith("13."):
+                        self.assertNotIn(e, retained)
+
+    def test_updated_single_major_matrix_falls_back_at_execution(self):
+        outputs, _, _ = self.plan()
+        changed = {"include": [entry("13.9.0"), entry("13.9.0", arch="arm64")]}
+        for job, (_, _, expression) in JOB_FILTERS.items():
+            with self.subTest(job=job):
+                self.assertEqual(
+                    select_existing(changed, outputs[job]),
+                    select_existing(changed, expression),
+                )
+
+    def test_absent_upstream_suite_keeps_updated_matrix(self):
+        outputs, _, _ = self.plan(run_pandas=False, run_polars=False)
+        changed = {"include": [entry("13.9.0"), entry("14.1.0")]}
+        for job, (_, _, expression) in JOB_FILTERS.items():
+            with self.subTest(job=job):
+                self.assertEqual(
+                    select_existing(changed, outputs[job]),
+                    select_existing(changed, expression),
+                )
 
 
 if __name__ == "__main__":

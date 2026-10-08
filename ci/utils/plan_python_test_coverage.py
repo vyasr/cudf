@@ -53,20 +53,19 @@ def select_existing(matrix, expression):
     return entries
 
 
-def complement(entries, cuda_major, enabled):
+def coverage_filter(expression, cuda_major, enabled):
     if not enabled:
-        return entries, []
-    retained = [
-        entry
-        for entry in entries
-        if entry["ARCH"] != "amd64"
-        or entry["DEPENDENCIES"] == "oldest"
-        or version(entry["CUDA_VER"])[0] != cuda_major
-    ]
-    # A single-major matrix must not eliminate a suite's standalone amd64 run.
-    if not any(entry["ARCH"] == "amd64" for entry in retained):
-        return entries, []
-    return retained, [entry for entry in entries if entry not in retained]
+        return expression
+    # Consumers may resolve newer definitions: enforce safeguards on their matrix,
+    # rather than freezing the entries observed by the planning job.
+    return (
+        f"({expression}) as $original | "
+        '($original | map(select(.ARCH != "amd64" or '
+        '.DEPENDENCIES == "oldest" or '
+        f'(.CUDA_VER|split(".")|map(tonumber)|.[0]) != {cuda_major}))) '
+        'as $retained | if any($retained[]; .ARCH == "amd64") '
+        "then $retained else $original end"
+    )
 
 
 def plan_coverage(wheels, conda, *, run_pandas, run_polars, rapids_version):
@@ -104,10 +103,12 @@ def plan_coverage(wheels, conda, *, run_pandas, run_polars, rapids_version):
     decisions = {}
     for job, (source, suite, expression) in JOB_FILTERS.items():
         entries = select_existing(matrices[source], expression)
-        retained, removed = complement(
-            entries, version(selected["CUDA_VER"])[0], enabled[suite]
+        expression = coverage_filter(
+            expression, version(selected["CUDA_VER"])[0], enabled[suite]
         )
-        outputs[job] = json.dumps({"include": retained}, separators=(",", ":"))
+        retained = select_existing(matrices[source], expression)
+        removed = [entry for entry in entries if entry not in retained]
+        outputs[job] = expression
         decisions[job] = {"retained": retained, "removed": removed}
     return outputs, selected, decisions
 
@@ -125,6 +126,10 @@ def summary(outputs, selected, decisions):
         f"upstream Polars scheduled: {outputs['run-polars']}.",
         "",
         "Oldest-dependency and ARM entries remain internal; nightly is unchanged.",
+        "",
+        "Retained/removed entries below preview the matrices resolved for planning. "
+        "Test jobs independently resolve shared-workflows@main and apply the same "
+        "policy; upstream matrix updates may change their final entries.",
     ]
     for job, decision in decisions.items():
         lines.extend(["", f"### {job}", ""])

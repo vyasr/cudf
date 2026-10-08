@@ -15,7 +15,8 @@ jobs:
       - check-nightly-ci
       - changed-files
       - checks
-      - python-test-matrices
+      - wheel-test-matrix
+      - conda-python-test-matrix
       - python-test-coverage
       - cmake-tests
       - cudf-polars-quent
@@ -269,14 +270,22 @@ jobs:
           - 'python/cudf/**'
           - '!python/cudf/cudf/pandas/**'
           - 'python/dask_cudf/**'
-  python-test-matrices:
+  wheel-test-matrix:
     permissions:
       contents: read
-    uses: rapidsai/shared-workflows/.github/workflows/resolve-python-test-matrices.yaml@main
+    uses: rapidsai/shared-workflows/.github/workflows/compute-matrix.yaml@main
     with:
       build_type: pull-request
+      matrix_name: wheels-test
+  conda-python-test-matrix:
+    permissions:
+      contents: read
+    uses: rapidsai/shared-workflows/.github/workflows/compute-matrix.yaml@main
+    with:
+      build_type: pull-request
+      matrix_name: conda-python-tests
   python-test-coverage:
-    needs: [python-test-matrices, changed-files]
+    needs: [wheel-test-matrix, conda-python-test-matrix, changed-files]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -298,8 +307,8 @@ jobs:
       - name: Plan complementary CUDA coverage
         id: plan
         env:
-          WHEELS_MATRIX: ${{ needs.python-test-matrices.outputs.wheels-test }}
-          CONDA_MATRIX: ${{ needs.python-test-matrices.outputs.conda-python-tests }}
+          WHEELS_MATRIX: ${{ needs.wheel-test-matrix.outputs.matrix }}
+          CONDA_MATRIX: ${{ needs.conda-python-test-matrix.outputs.matrix }}
           RUN_PANDAS: >-
             ${{ fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_all || fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf || fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheels || fromJSON(needs.changed-files.outputs.changed_file_groups).test_cudf_pandas_pandas_tests }}
           RUN_POLARS: >-
@@ -500,7 +509,7 @@ jobs:
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_conda_pylibcudf ||
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_conda_cudf_tests
     with:
-      resolved-matrix: ${{ needs.python-test-coverage.outputs.conda-python-cudf-tests }}
+      matrix_filter: ${{ needs.python-test-coverage.outputs.conda-python-cudf-tests }}
       build_type: pull-request
       script: >-
         env
@@ -526,7 +535,7 @@ jobs:
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_conda_common ||
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf_polars_runner
     with:
-      resolved-matrix: ${{ needs.python-test-coverage.outputs.conda-python-cudf-polars-tests }}
+      matrix_filter: ${{ needs.python-test-coverage.outputs.conda-python-cudf-polars-tests }}
       build_type: pull-request
       # https://github.com/NVIDIA/cudf/pull/22381/changes#r3196736965
       container-options: "--cap-add CAP_SYS_PTRACE --shm-size=8g --ulimit=nofile=1000000:1000000"
@@ -737,7 +746,7 @@ jobs:
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheels ||
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheel_cudf
     with:
-      resolved-matrix: ${{ needs.python-test-coverage.outputs.wheel-tests-cudf }}
+      matrix_filter: ${{ needs.python-test-coverage.outputs.wheel-tests-cudf }}
       build_type: pull-request
       script: >-
         env
@@ -763,7 +772,7 @@ jobs:
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_wheel_cudf_polars ||
       fromJSON(needs.changed-files.outputs.changed_file_groups).test_python_cudf_polars_runner
     with:
-      resolved-matrix: ${{ needs.python-test-coverage.outputs.wheel-tests-cudf-polars }}
+      matrix_filter: ${{ needs.python-test-coverage.outputs.wheel-tests-cudf-polars }}
       build_type: pull-request
       container-options: "--cap-add CAP_SYS_PTRACE --shm-size=8g --ulimit=nofile=1000000:1000000"
       script: "env POLARS_VERSIONS=earliest ci/test_wheel_cudf_polars.sh"
@@ -857,7 +866,7 @@ jobs:
     uses: rapidsai/shared-workflows/.github/workflows/wheels-test.yaml@main
     if: fromJSON(needs.changed-files.outputs.changed_file_groups).unit_tests_cudf_pandas
     with:
-      resolved-matrix: ${{ needs.python-test-coverage.outputs.unit-tests-cudf-pandas }}
+      matrix_filter: ${{ needs.python-test-coverage.outputs.unit-tests-cudf-pandas }}
       build_type: pull-request
       script: ci/cudf_pandas_scripts/run_tests.sh
   third-party-integration-tests-cudf-pandas:

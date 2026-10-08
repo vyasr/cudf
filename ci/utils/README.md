@@ -1,8 +1,10 @@
 # PR Python CUDA coverage
 
-`plan_python_test_coverage.py` consumes wheel and Conda test matrices from one
-shared-workflows resolution. Existing job selectors run before the coverage
-split; cuDF does not maintain a copy of the shared matrix definitions.
+`plan_python_test_coverage.py` consumes wheel and Conda test matrices from the
+existing shared-workflows `compute-matrix.yaml` interface and emits job-specific
+jq expressions for the existing `matrix_filter` inputs. Existing job selectors
+run before the coverage split; cuDF does not maintain a copy of the shared matrix
+definitions or require changes to shared-workflows.
 
 Upstream pandas and Polars use the newest eligible amd64 wheel environment
 (latest driver and dependencies), comparing CUDA and Python versions numerically.
@@ -18,7 +20,10 @@ Absent upstream suites do not change their internal matrices.
 
 This tradeoff applies only to PRs. Nightly matrices and the internal earliest-wheel
 /latest-Conda Polars-version split remain unchanged. The planning job reports the
-selected environment and every retained or removed entry in its workflow summary.
+selected environment and previews every retained or removed entry in its workflow
+summary. Consumers independently resolve `shared-workflows@main`; definitions may
+change after planning. Filters preserve oldest dependencies, ARM entries, and the
+amd64 fallback on the actual consumer matrix, rather than using a fixed allowlist.
 
 Run the policy tests with:
 

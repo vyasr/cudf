@@ -37,6 +37,7 @@ jobs:
       - wheel-tests-cudf
       - wheel-tests-cudf-polars
       - cudf-polars-polars-tests
+      - cudf-polars-fallback-summary
       - wheel-python-build-noarch
       - wheel-tests-dask-cudf
       - devcontainer

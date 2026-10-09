@@ -20,7 +20,7 @@ from cudf_polars.testing.engine_utils import (
     SMALL_MAX_ROWS_PER_PARTITION,
     SMALL_TARGET_PARTITION_SIZE,
 )
-from cudf_polars.testing.fallback import fallback_used
+from cudf_polars.testing.fallback import fallback_used, gpu_attempted, gpu_executed
 from cudf_polars.testing.fallback_report import FallbackReport
 from cudf_polars.utils.config import StreamingFallbackMode
 
@@ -72,7 +72,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--inject-gpu-engine-report",
         metavar="PATH",
-        help="Write per-test fallback diagnostics as JSON on the pytest controller.",
+        help="Write per-test GPU execution and fallback diagnostics as JSON on the pytest controller.",
     )
     group.addoption(
         "--cudf-polars-shard-id",
@@ -189,23 +189,32 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_runtest_protocol(
     item: pytest.Item, nextitem: pytest.Item | None
 ) -> Generator[None, None, None]:
-    """Give each injected-engine pytest item an isolated fallback signal."""
-    token = fallback_used.set(False)
-    yield
-    fallback_used.reset(token)
+    """Give each injected-engine pytest item isolated execution signals."""
+    signals = (fallback_used, gpu_attempted, gpu_executed)
+    tokens = [signal.set(False) for signal in signals]
+    try:
+        yield
+    finally:
+        for signal, token in zip(signals, tokens, strict=True):
+            signal.reset(token)
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
 ) -> Generator[None, Result[pytest.TestReport], None]:
-    """Attach per-test fallback telemetry to each phase's report."""
+    """Attach per-test execution telemetry to each phase's report."""
     outcome = yield
     report = outcome.get_result()
     if item.config.getoption("--inject-gpu-engine-report"):
         # user_properties travel with TestReport across xdist's worker boundary.
-        report.user_properties.append(
-            ("cudf_polars_fallback", str(fallback_used.get()).lower())
+        report.user_properties.extend(
+            (name, str(signal.get()).lower())
+            for name, signal in (
+                ("cudf_polars_fallback", fallback_used),
+                ("cudf_polars_gpu_attempted", gpu_attempted),
+                ("cudf_polars_gpu_executed", gpu_executed),
+            )
         )
 
 

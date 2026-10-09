@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collect upstream Polars fallback diagnostics from pytest reports."""
+"""Collect upstream Polars GPU execution diagnostics from pytest reports."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ OUTCOME_PRIORITY = {
     "failed": 5,
     "error": 6,
 }
-FALLBACK_PRIORITY = {"false": 0, "unknown": 1, "true": 2}
+OBSERVATION_PRIORITY = {"false": 0, "unknown": 1, "true": 2}
 
 
 class FallbackReport:
@@ -35,7 +35,7 @@ class FallbackReport:
         self.tests: dict[str, dict[str, str]] = {}
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
-        """Retain the strongest outcome and every observed fallback per item."""
+        """Retain the strongest outcome and every execution signal per item."""
         outcome = "incomplete"
         if report.failed:
             outcome = "failed" if report.when == "call" else "error"
@@ -44,23 +44,30 @@ class FallbackReport:
         elif report.when == "call" and report.passed:
             outcome = "xpassed" if hasattr(report, "wasxfail") else "passed"
 
-        fallback = dict(report.user_properties).get("cudf_polars_fallback", "unknown")
-        if not isinstance(fallback, str) or fallback not in FALLBACK_PRIORITY:
-            fallback = "unknown"
+        properties = dict(report.user_properties)
+        observations = {}
+        for name in ("fallback", "gpu_attempted", "gpu_executed"):
+            value = properties.get(f"cudf_polars_{name}", "unknown")
+            observations[name] = (
+                value
+                if isinstance(value, str) and value in OBSERVATION_PRIORITY
+                else "unknown"
+            )
         previous = self.tests.get(report.nodeid)
         # Setup, call, and teardown arrive separately; failures in later phases
-        # must not erase earlier fallback or turn one item into several tests.
+        # must not erase earlier observations or turn one item into several tests.
         if previous is not None:
             outcome = max(
                 previous["outcome"], outcome, key=OUTCOME_PRIORITY.__getitem__
             )
-            fallback = max(
-                previous["fallback"], fallback, key=FALLBACK_PRIORITY.__getitem__
-            )
+            for name, value in observations.items():
+                observations[name] = max(
+                    previous[name], value, key=OBSERVATION_PRIORITY.__getitem__
+                )
         self.tests[report.nodeid] = {
             "nodeid": report.nodeid,
             "outcome": outcome,
-            "fallback": fallback,
+            **observations,
         }
 
     def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Summarize JSON fallback diagnostics from upstream Polars CI runs."""
+"""Summarize JSON GPU execution diagnostics from upstream Polars CI runs."""
 
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ def build_report(paths: list[Path]) -> dict[str, Any]:
                     "nodeid": test["nodeid"],
                     "outcome": test["outcome"],
                     "fallback": test["fallback"],
+                    "gpu_attempted": test.get("gpu_attempted", "unknown"),
+                    "gpu_executed": test.get("gpu_executed", "unknown"),
                     "engine": engine,
                     "run": path.name,
                 }
@@ -65,7 +67,22 @@ def build_report(paths: list[Path]) -> dict[str, Any]:
                 test["fallback"] == "false" for test in engine_tests
             ),
             "unknown": sum(
-                test["fallback"] == "unknown" for test in engine_tests
+                "unknown"
+                in (
+                    test["fallback"],
+                    test["gpu_attempted"],
+                    test["gpu_executed"],
+                )
+                for test in engine_tests
+            ),
+            "gpu_attempted": sum(
+                test["gpu_attempted"] == "true" for test in engine_tests
+            ),
+            "gpu_executed": sum(
+                test["gpu_executed"] == "true" for test in engine_tests
+            ),
+            "execution": dict(
+                Counter(execution_category(test) for test in engine_tests)
             ),
             "outcomes": dict(
                 sorted(
@@ -84,23 +101,42 @@ def build_report(paths: list[Path]) -> dict[str, Any]:
     }
 
 
+def execution_category(test: dict[str, str]) -> str:
+    """Distinguish observed GPU success from merely avoiding CPU fallback."""
+    if "unknown" in (
+        test["fallback"],
+        test["gpu_attempted"],
+        test["gpu_executed"],
+    ):
+        return "unknown"
+    if test["gpu_executed"] == "true":
+        return "mixed" if test["fallback"] == "true" else "gpu_only"
+    if test["gpu_attempted"] == "true":
+        return "attempted_without_success"
+    return "not_attempted"
+
+
 def summary_markdown(report: dict[str, Any]) -> str:
     """Describe observed executions, not an assumed complete baseline."""
     lines = [
-        "## Upstream Polars CPU fallback diagnostics",
+        "## Upstream Polars GPU execution diagnostics",
         "",
         "Counts include executions across the available shards and matrix configurations. "
         "Missing jobs are not represented; failed or partial runs are not a complete baseline.",
         "",
-        "No fallback observed does not prove GPU execution: eager-only tests also report false.",
+        "GPU success means the GPU executor returned a result, not merely that translation succeeded. "
+        "Mixed tests observed both GPU success and CPU fallback. Tests with no successful GPU query "
+        "may fall back or raise; per-test signals and outcomes are in the JSON artifact.",
         "",
-        "| Engine | Reports | CPU fallback | No fallback observed | Missing telemetry | Reported / collected | Runs with nonzero exit status |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Engine | Reports | GPU success, no fallback | Mixed GPU / CPU | Attempted, no GPU success | Never attempted | Missing telemetry | Reported / collected | Nonzero runs |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for engine, summary in report["summary"].items():
+        execution = summary["execution"]
         lines.append(
-            f"| {engine} | {summary['runs']} | {summary['fallback']} | "
-            f"{summary['no_fallback_observed']} | {summary['unknown']} | "
+            f"| {engine} | {summary['runs']} | {execution.get('gpu_only', 0)} | "
+            f"{execution.get('mixed', 0)} | {execution.get('attempted_without_success', 0)} | "
+            f"{execution.get('not_attempted', 0)} | {summary['unknown']} | "
             f"{summary['total']} / {summary['collected']} | {summary['nonzero_exitstatus']} |"
         )
     if not report["runs"]:

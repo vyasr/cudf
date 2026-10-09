@@ -37,7 +37,7 @@ jobs:
       - wheel-tests-cudf
       - wheel-tests-cudf-polars
       - cudf-polars-polars-tests
-      - cudf-polars-fallback-summary
+      - cudf-polars-test-summary
       - wheel-python-build-noarch
       - wheel-tests-dask-cudf
       - devcontainer
@@ -794,7 +794,7 @@ jobs:
         --inject-gpu-engine-blocksize default
         --cudf-polars-shard-id ${{ matrix.shard_id }}
         --cudf-polars-num-shards ${{ matrix.num_shards }}
-  cudf-polars-fallback-summary:
+  cudf-polars-test-summary:
     needs: cudf-polars-polars-tests
     if: ${{ !cancelled() && needs.cudf-polars-polars-tests.result != 'skipped' }}
     permissions:

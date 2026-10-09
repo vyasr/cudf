@@ -357,7 +357,7 @@ jobs:
         --cudf-polars-num-shards ${{ matrix.num_shards }}
       # https://github.com/NVIDIA/cudf/issues/23498
       matrix_filter: map(select(.GPU != "gb300" and .GPU != "gh200"))
-  cudf-polars-fallback-summary:
+  cudf-polars-test-summary:
     needs: cudf-polars-polars-tests
     if: ${{ !cancelled() && needs.cudf-polars-polars-tests.result != 'skipped' }}
     permissions:

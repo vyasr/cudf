@@ -71,7 +71,6 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   if (t == 0 && !non_nz_map_page_mask.empty()) { non_nz_map_page_mask[page_idx] = false; }
 
   auto* const s = &state_g;
-  null_count_back_copier _{s, t};
   if (!setup_local_page_info(
         s, pp, chunks, min_row, num_rows, all_types_filter{}, page_processing_stage::DECODE)) {
     return;
@@ -668,7 +667,8 @@ void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
                             size_t min_row,
                             size_t num_rows,
                             int level_type_size,
-                            cuda::stream_ref stream)
+                            cuda::stream_ref stream,
+                            cudf::memory_resources mr)
 {
   if (pages.size() == 0) { return; }
 
@@ -677,7 +677,7 @@ void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
   // Note: When a second nz_map producer is added it must move out to the caller, or it would wipe
   // the entries the first one already cleared.
   if (not non_nz_map_page_mask.empty()) {
-    auto const policy = rmm::exec_policy_nosync(stream, cudf::get_current_device_resource_ref());
+    auto const policy = rmm::exec_policy_nosync(stream, mr.get_temporary_mr());
     if (page_mask.empty()) {
       thrust::fill(policy, non_nz_map_page_mask.begin(), non_nz_map_page_mask.end(), true);
     } else {

@@ -1213,7 +1213,8 @@ void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
                             size_t min_row,
                             size_t num_rows,
                             int level_type_size,
-                            cuda::stream_ref stream);
+                            cuda::stream_ref stream,
+                            cudf::memory_resources mr);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

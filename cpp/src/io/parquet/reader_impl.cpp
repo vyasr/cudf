@@ -236,7 +236,8 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
                            skip_rows,
                            num_rows,
                            level_type_size,
-                           nz_map_stream);
+                           nz_map_stream,
+                           _mr);
     nz_map_done.emplace(nz_map_stream);
   }
 

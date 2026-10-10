@@ -110,11 +110,17 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
     0, [](auto i) { return static_cast<int32_t>(i * 3 - 7); });
   auto const valids =
     cudf::detail::make_counting_transform_iterator(0, [](auto i) { return (i % 7) != 0; });
-  cudf::test::fixed_width_column_wrapper<int32_t> const col{values, values + num_rows, valids};
-  auto const expected = table_view({col});
+  cudf::test::fixed_width_column_wrapper<int32_t> const nullable_col{
+    values, values + num_rows, valids};
+  // A required column takes the consumer's identity-map path: the producer writes no `nz_idx` and
+  // the consumer derives the position from the rank alone.
+  cudf::test::fixed_width_column_wrapper<int32_t> const required_col(values, values + num_rows);
+  auto const expected = table_view({nullable_col, required_col});
 
   auto input_metadata = cudf::io::table_input_metadata{expected};
-  input_metadata.column_metadata[0].set_encoding(cudf::io::column_encoding::DELTA_BINARY_PACKED);
+  for (auto& col_meta : input_metadata.column_metadata) {
+    col_meta.set_encoding(cudf::io::column_encoding::DELTA_BINARY_PACKED);
+  }
 
   std::vector<char> buffer;
   cudf::io::write_parquet(
@@ -122,6 +128,8 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
       .write_v2_headers(true)
       .metadata(input_metadata)
       .dictionary_policy(cudf::io::dictionary_policy::NEVER)
+      .max_page_fragment_size(1000)
+      .max_page_size_rows(1000)
       .build());
 
   auto const read_back = [&] {

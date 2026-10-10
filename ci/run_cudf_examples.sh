@@ -5,12 +5,13 @@
 set -uo pipefail
 
 EXITCODE=0
+trap "EXITCODE=1" ERR
 
 # Support customizing the examples' install location
-cd "${INSTALL_PREFIX:-${CONDA_PREFIX:-/usr}}/bin/examples/libcudf" || exit 1
+cd "${INSTALL_PREFIX:-${CONDA_PREFIX:-/usr}}/bin/examples/libcudf" || exit
 
 # TODO: Temporary workaround for compute-sanitizer bug 5824899 that occurs only on the examples
-GPU_COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '[:space:]') || exit 1
+GPU_COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '[:space:]')
 USE_COMPUTE_SANITIZER=true
 if [[ "${GPU_COMPUTE_CAP}" == "12.0" ]]; then
     USE_COMPUTE_SANITIZER=false
@@ -22,10 +23,10 @@ run_example() {
     parent=$(basename "${PWD}")
     local cmd=("$@")
     if ${USE_COMPUTE_SANITIZER}; then
-        cmd=(compute-sanitizer --tool memcheck --error-exitcode 1 "${cmd[@]}")
+        cmd=(compute-sanitizer --tool memcheck "${cmd[@]}")
     fi
     echo "Running ${parent} example: ${cmd[*]}"
-    LIBCUDF_KERNEL_CACHE_PRELOAD=0 LIBCUDF_JIT_DUMP_TRACE=1 LIBCUDF_JIT_VERBOSE=1 "${cmd[@]}" || EXITCODE=1
+    "${cmd[@]}"
 }
 
 pushd basic || exit

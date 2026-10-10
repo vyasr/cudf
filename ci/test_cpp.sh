@@ -25,7 +25,7 @@ SUITEERROR=0
 
 if [[ "${RUN_LIBCUDF_TESTS}" == "true" ]]; then
     rapids-logger "Run libcudf gtests"
-    timeout 30m ./ci/run_cudf_ctests.sh -j20
+    LIBCUDF_KERNEL_CACHE_PRELOAD=0 timeout 30m ./ci/run_cudf_ctests.sh -j20
     SUITEERROR=$?
 fi
 

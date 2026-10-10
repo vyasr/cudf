@@ -17,6 +17,7 @@
 
 #include <cooperative_groups.h>
 #include <cuda/barrier>
+#include <cuda/std/bit>
 #include <cuda/std/iterator>
 #include <cuda/std/limits>
 #include <thrust/copy.h>
@@ -127,9 +128,11 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
     {
       bool const in_output   = value_pos >= first_row && value_pos < value_limit;
       auto const output_mask = ballot(in_output);
-      int const write_start  = __ffs(output_mask) - 1;
-      if (write_start >= 0 && lane == 0 && valid_map != nullptr) {
-        int const write_end = cudf::detail::warp_size - __clz(output_mask);
+      // `countr_zero` is `warp_size` on an empty mask, which is what rejects a warp with no lane
+      // in range.
+      int const write_start = cuda::std::countr_zero(output_mask);
+      if (write_start < cudf::detail::warp_size && lane == 0 && valid_map != nullptr) {
+        int const write_end = cuda::std::bit_width(output_mask);
         store_validity(valid_map_offset + value_base + (t - lane) + write_start - first_row,
                        valid_map,
                        valid_mask >> write_start,
@@ -139,7 +142,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
 
     // The ballot already carries every rank in the warp, so the block-wide exclusive sum is a
     // popcount plus a four-element scan, with no shuffle chain and no block scan temp storage.
-    if (lane == 0) { warp_valid_counts[warp_id] = __popc(valid_mask); }
+    if (lane == 0) { warp_valid_counts[warp_id] = cuda::std::popcount(valid_mask); }
     block.sync();
     int warp_prefix       = 0;
     int block_valid_count = 0;

@@ -13,15 +13,11 @@
 #include <cudf/hashing/detail/default_hash.cuh>
 #include <cudf/utilities/memory_resource.hpp>
 
-#include <rmm/exec_policy.hpp>
-
 #include <cooperative_groups.h>
 #include <cuda/barrier>
 #include <cuda/std/bit>
 #include <cuda/std/iterator>
 #include <cuda/std/limits>
-#include <thrust/copy.h>
-#include <thrust/fill.h>
 
 namespace cudf::io::parquet::detail {
 
@@ -53,7 +49,6 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   precompute_flat_nz_map_kernel(PageInfo* pages,
                                 device_span<ColumnChunkDesc const> chunks,
                                 cudf::device_span<bool const> page_mask,
-                                cudf::device_span<bool> non_nz_map_page_mask,
                                 size_t min_row,
                                 size_t num_rows)
 {
@@ -66,10 +61,6 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   PageInfo* const pp = &pages[page_idx];
   if (!pp->has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
   if (!page_mask.empty() && !page_mask[page_idx]) { return; }
-
-  // This kernel must mark that it is producing nz map for this page so that
-  // downstream decode kernels can use the boolean buffer to determine whether or not to run.
-  if (t == 0 && !non_nz_map_page_mask.empty()) { non_nz_map_page_mask[page_idx] = false; }
 
   auto* const s = &state_g;
   if (!setup_local_page_info(
@@ -666,36 +657,21 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
 void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
                             cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
                             cudf::device_span<bool const> page_mask,
-                            cudf::device_span<bool> non_nz_map_page_mask,
                             size_t min_row,
                             size_t num_rows,
                             int level_type_size,
-                            cuda::stream_ref stream,
-                            cudf::memory_resources mr)
+                            cuda::stream_ref stream)
 {
   if (pages.size() == 0) { return; }
-
-  // Seed the level-decoding kernels' page mask before clearing anything out of it.
-  //
-  // Note: When a second nz_map producer is added it must move out to the caller, or it would wipe
-  // the entries the first one already cleared.
-  if (not non_nz_map_page_mask.empty()) {
-    auto const policy = rmm::exec_policy_nosync(stream, mr.get_temporary_mr());
-    if (page_mask.empty()) {
-      thrust::fill(policy, non_nz_map_page_mask.begin(), non_nz_map_page_mask.end(), true);
-    } else {
-      thrust::copy(policy, page_mask.begin(), page_mask.end(), non_nz_map_page_mask.begin());
-    }
-  }
 
   dim3 const grid(pages.size(), 1);
   dim3 const block(level_decode_block_size, 1);
   if (level_type_size == 1) {
-    precompute_flat_nz_map_kernel<uint8_t><<<grid, block, 0, stream.get()>>>(
-      pages.device_ptr(), chunks, page_mask, non_nz_map_page_mask, min_row, num_rows);
+    precompute_flat_nz_map_kernel<uint8_t>
+      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
   } else {
-    precompute_flat_nz_map_kernel<uint16_t><<<grid, block, 0, stream.get()>>>(
-      pages.device_ptr(), chunks, page_mask, non_nz_map_page_mask, min_row, num_rows);
+    precompute_flat_nz_map_kernel<uint16_t>
+      <<<grid, block, 0, stream.get()>>>(pages.device_ptr(), chunks, page_mask, min_row, num_rows);
   }
   CUDF_CUDA_TRY(cudaGetLastError());
 }

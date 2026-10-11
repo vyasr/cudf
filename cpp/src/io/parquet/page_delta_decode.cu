@@ -377,6 +377,9 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
+  // A page carrying an nz map is decoded by `decode_delta_binary_kernel_with_nz_map` instead. The
+  // map is what routes, so the two kernels partition the pages without a second rule to agree with.
+  if (pages[page_idx].has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
 
@@ -1140,7 +1143,7 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          size_t min_row,
                          int level_type_size,
                          cudf::device_span<bool const> page_mask,
-                         cudf::device_span<bool const> non_nz_map_page_mask,
+                         bool has_flat_nz_map,
                          kernel_error::pointer error_code,
                          cuda::stream_ref stream)
 {
@@ -1150,19 +1153,13 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
   dim3 dim_block_nz_map(decode_delta_binary_with_nz_map_block_size, 1);
 
-  // The caller sizes this mask only when the nz map producer has pages to map, so a non-empty
-  // mask is what tells us the producer ran. Its contents are the complement of what the consumer
-  // below decodes: the producer cleared the entry for every page it mapped, leaving the rest for
-  // `decode_delta_binary_kernel`.
-  auto const use_flat_nz_map = not non_nz_map_page_mask.empty();
-  if (use_flat_nz_map) {
+  // Both kernels take the caller's page mask and route on the page's own nz map, so this only
+  // decides whether the consumer has anything to do at all.
+  if (has_flat_nz_map) {
     // Not templated on `level_t`: this kernel never reads levels, which is the whole point of it.
     decode_delta_binary_kernel_with_nz_map<<<dim_grid, dim_block_nz_map, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());
-
-    // Hand `decode_delta_binary_kernel` every page the consumer above does not decode.
-    page_mask = non_nz_map_page_mask;
   }
 
   if (level_type_size == 1) {

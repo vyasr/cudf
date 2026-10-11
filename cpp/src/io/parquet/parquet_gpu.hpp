@@ -1075,7 +1075,7 @@ void write_final_offsets(host_span<size_type const> offsets,
  * @param[in] min_row Minimum number of rows to read
  * @param[in] level_type_size Size in bytes of the type for level decoding
  * @param[in] page_mask Boolean vector indicating which pages need to be decoded
- * @param[in] non_nz_map_page_mask Pages with no nz map, empty when no page has one
+ * @param[in] has_flat_nz_map Whether any page of this subpass carries a flat nz map
  * @param[out] error_code Error code for kernel failures
  * @param[in] stream CUDA stream to use
  */
@@ -1085,7 +1085,7 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
                          size_t min_row,
                          int level_type_size,
                          cudf::device_span<bool const> page_mask,
-                         cudf::device_span<bool const> non_nz_map_page_mask,
+                         bool has_flat_nz_map,
                          kernel_error::pointer error_code,
                          cuda::stream_ref stream);
 
@@ -1199,8 +1199,6 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
  * @param[in,out] pages All pages to be processed
  * @param[in] chunks All chunks to be processed
  * @param[in] page_mask Boolean vector indicating which pages need to be processed
- * @param[out] non_nz_map_page_mask Page mask for the level-decoding kernels. Seeded here from
- *             @p page_mask (all true when that is empty), then cleared for every page mapped
  * @param[in] min_row Minimum row index to read
  * @param[in] num_rows Number of rows to read starting from min_row
  * @param[in] level_type_size Size in bytes of the type for level decoding (1 or 2)
@@ -1209,12 +1207,10 @@ void preprocess_levels(cudf::detail::hostdevice_span<PageInfo> pages,
 void precompute_flat_nz_map(cudf::detail::hostdevice_span<PageInfo> pages,
                             cudf::detail::hostdevice_span<ColumnChunkDesc const> chunks,
                             cudf::device_span<bool const> page_mask,
-                            cudf::device_span<bool> non_nz_map_page_mask,
                             size_t min_row,
                             size_t num_rows,
                             int level_type_size,
-                            cuda::stream_ref stream,
-                            cudf::memory_resources mr);
+                            cuda::stream_ref stream);
 
 /**
  * @brief Fills output offset entries for pruned string and list pages

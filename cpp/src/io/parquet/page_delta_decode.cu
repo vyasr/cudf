@@ -608,7 +608,13 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   // `next_pass_start_idx()` only at the barrier keeps the concurrent region free of any access to
   // the decoder's mutable scalars. `value_at()` touches `value[]` and `first_value`, and the
   // producer writes neither below that index.
-  uint32_t produced = db->next_pass_start_idx();
+  //
+  // `data_out` and the two scalars are hoisted because the store below writes through `data_out`,
+  // which the compiler cannot prove does not alias `ni`; left in place they reload once per value.
+  auto* const data_out = ni.data_out;
+  auto const dtype_len = s->output_cvt.dtype_len;
+  auto const first_row = s->setup.first_row;
+  uint32_t produced    = db->next_pass_start_idx();
   while (s->setup.error == 0 && s->progress.src_pos < s->progress.nz_count) {
     uint32_t const src_pos = s->progress.src_pos;
     // Capped at one batch so the writer trails the producer by exactly one, never more: the
@@ -626,11 +632,11 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
     } else if (warp.meta_group_rank() == 1 && src_pos < target_pos) {
       for (uint32_t sp = src_pos + warp.thread_rank(); sp < target_pos; sp += warp.size()) {
         auto dst_pos = process_nulls ? static_cast<int32_t>(nz_idx[sp]) : static_cast<int32_t>(sp);
-        dst_pos -= s->setup.first_row;
+        dst_pos -= first_row;
         if (dst_pos >= 0) {
-          void* const dst = ni.data_out + dst_pos * s->output_cvt.dtype_len;
+          void* const dst = data_out + dst_pos * dtype_len;
           auto const val  = db->value_at(sp);
-          switch (s->output_cvt.dtype_len) {
+          switch (dtype_len) {
             case 1: *static_cast<int8_t*>(dst) = val; break;
             case 2: *static_cast<int16_t*>(dst) = val; break;
             case 4: *static_cast<int32_t*>(dst) = val; break;

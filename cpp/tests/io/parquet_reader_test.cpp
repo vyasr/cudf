@@ -90,11 +90,11 @@ TEST_F(ParquetReaderTest, ManyTinyStringPages)
 
 // TODO: delete this test once the nz map is on by default.
 //
-// This test enables usage of the nz map producer and the corresponding delta binary kernels that
-// consume the nz map producer to validate them. Currently those kernels are gated by an environment
-// variable that will be removed once the full set of kernels has been merged and the end result
-// benchmarked. Once the default flips, the rest of the suite covers those paths and this has
-// nothing left to add.
+// This test reads one file twice, with the nz map producer and its delta binary consumer off and
+// then on, and requires the two to agree. Those kernels are gated by an environment variable that
+// will be removed once the full set of kernels has been merged and the end result benchmarked.
+// Once the default flips, the rest of the suite covers those paths and this has nothing left to
+// add.
 TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
 {
   // The nz map is a second decode path selected by an env var: the same file must read
@@ -115,12 +115,34 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
   // A required column takes the consumer's identity-map path: the producer writes no `nz_idx` and
   // the consumer derives the position from the rank alone.
   cudf::test::fixed_width_column_wrapper<int32_t> const required_col(values, values + num_rows);
-  auto const expected = table_view({nullable_col, required_col});
+  // Optional but with no null in it. `maybe_has_nulls` short-circuits, so the producer returns
+  // early with `nz_idx` allocated and the null mask left to the all-valid fill.
+  auto const all_valid =
+    cudf::detail::make_counting_transform_iterator(0, [](auto) { return true; });
+  cudf::test::fixed_width_column_wrapper<int32_t> const no_nulls_col{
+    values, values + num_rows, all_valid};
+  // A nested column the classifier declines, so its pages stay on the level-decoding kernel while
+  // the flat ones above go to the consumer. The two must partition the pages between them.
+  auto const list_offsets = cudf::detail::make_counting_transform_iterator(
+    cudf::size_type{0}, [](auto row) { return static_cast<cudf::size_type>(2 * row); });
+  auto const nested_col = cudf::make_lists_column(
+    num_rows,
+    cudf::test::fixed_width_column_wrapper<cudf::size_type>(list_offsets,
+                                                            list_offsets + num_rows + 1)
+      .release(),
+    cudf::test::fixed_width_column_wrapper<int32_t>(values, values + (2 * num_rows)).release(),
+    0,
+    cudf::create_null_mask(0, cudf::mask_state::UNALLOCATED));
+
+  auto const expected = table_view({nullable_col, required_col, no_nulls_col, nested_col->view()});
 
   auto input_metadata = cudf::io::table_input_metadata{expected};
   for (auto& col_meta : input_metadata.column_metadata) {
     col_meta.set_encoding(cudf::io::column_encoding::DELTA_BINARY_PACKED);
   }
+  // The list's leaf carries the encoding; the list column itself is not a leaf.
+  input_metadata.column_metadata[3].child(1).set_encoding(
+    cudf::io::column_encoding::DELTA_BINARY_PACKED);
 
   std::vector<char> buffer;
   cudf::io::write_parquet(
@@ -140,11 +162,10 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
         .build());
   };
 
-  // Unset is the shipping configuration while the feature is opt-in.
   {
     tmp_env_var const env{nz_map_env_var, "0"};
-    auto const legacy = read_back();
-    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, legacy.tbl->view());
+    auto const level_decoded = read_back();
+    CUDF_TEST_EXPECT_TABLES_EQUAL(expected, level_decoded.tbl->view());
   }
   {
     tmp_env_var const env{nz_map_env_var, "1"};
@@ -158,11 +179,13 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
         cudf::io::parquet_reader_options::builder(
           cudf::io::source_info{cudf::host_span<std::byte const>{
             reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
-          .skip_rows(1001)
+          .skip_rows(1500)
           .num_rows(4321)
           .build());
     };
-    auto const sliced = cudf::slice(expected, {1001, 1001 + 4321});
+    // 1500 lands mid-page against 1000-row pages, so the consumer's prefix search has 500 values
+    // below `first_row` to skip rather than one.
+    auto const sliced = cudf::slice(expected, {1500, 1500 + 4321});
     {
       tmp_env_var const env{nz_map_env_var, "0"};
       CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
@@ -170,6 +193,39 @@ TEST_F(ParquetReaderTest, NzMapMatchesLevelDecoder)
     {
       tmp_env_var const env{nz_map_env_var, "1"};
       CUDF_TEST_EXPECT_TABLES_EQUAL(sliced, trimmed().tbl->view());
+    }
+  }
+
+  // A chunked read runs the producer once per output chunk over the same scratch, each time with
+  // that chunk's row range rather than the pass's.
+  {
+    auto const read_chunked = [&] {
+      auto reader = cudf::io::chunked_parquet_reader(
+        240'000,
+        cudf::io::parquet_reader_options::builder(
+          cudf::io::source_info{cudf::host_span<std::byte const>{
+            reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()}})
+          .build());
+      std::vector<std::unique_ptr<cudf::table>> chunks;
+      while (reader.has_next()) {
+        chunks.push_back(reader.read_chunk().tbl);
+      }
+      std::vector<cudf::table_view> views;
+      views.reserve(chunks.size());
+      for (auto const& c : chunks) {
+        views.push_back(c->view());
+      }
+      return std::pair{cudf::concatenate(views), std::move(chunks)};
+    };
+    {
+      tmp_env_var const env{nz_map_env_var, "0"};
+      auto const [joined, keep] = read_chunked();
+      CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected, joined->view());
+    }
+    {
+      tmp_env_var const env{nz_map_env_var, "1"};
+      auto const [joined, keep] = read_chunked();
+      CUDF_TEST_EXPECT_TABLES_EQUIVALENT(expected, joined->view());
     }
   }
 }

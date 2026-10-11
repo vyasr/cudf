@@ -100,7 +100,8 @@ struct subpass_intermediate_data {
 
   cuda::device_buffer<std::byte> level_decode_data;
   // Backing store for the flat nz maps. `allocate_level_decode_space`
-  // sub-allocates one slice of this per mapped page. Empty unless some page has an nz map.
+  // sub-allocates one slice of this per mapped page that has definition levels. Empty unless some
+  // page has an nz map.
   cuda::device_buffer<std::byte> flat_nz_map_data;
   // Out-of-line nz map scratch, one entry per page. Empty unless some page of this subpass has
   // an nz map. See page_nz_map.

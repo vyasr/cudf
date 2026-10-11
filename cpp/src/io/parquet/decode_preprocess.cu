@@ -11,7 +11,6 @@
 
 #include <cudf/detail/nvtx/ranges.hpp>
 #include <cudf/hashing/detail/default_hash.cuh>
-#include <cudf/utilities/memory_resource.hpp>
 
 #include <cooperative_groups.h>
 #include <cuda/barrier>
@@ -30,7 +29,7 @@ constexpr int preprocess_block_size   = 512;
 constexpr int level_decode_block_size = 128;
 
 /**
- * @brief Computes the nz map for one page.
+ * @brief Computes the nz map for each page, one block per page.
  *
  * Walks the page's already-decoded definition levels once, writing
  *  - the output column's null mask for the rows this page contributes
@@ -60,7 +59,7 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const t        = block.thread_rank();
   PageInfo* const pp = &pages[page_idx];
   if (!pp->has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
-  if (!page_mask.empty() && !page_mask[page_idx]) { return; }
+  if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
 
   auto* const s = &state_g;
   if (!setup_local_page_info(
@@ -81,20 +80,18 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const first_row   = min(s->setup.first_row, decoded_value_limit);
   int const value_limit = min(decoded_value_limit, first_row + s->setup.num_rows);
 
-  // A required page's rank map is the identity, so there is nothing to materialize; the consumer
-  // synthesizes it. `nz_idx` stays null, which is what tells the consumer to do that.
+  // A required page's rank map is the identity, so there is nothing to materialize. The consumer
+  // treats a null `nz_idx` as the identity map.
   if (!should_process_nulls(s)) {
     if (t == 0) { pp->nz_map->nz_count = value_limit; }
-    block.sync();
     return;
   }
 
-  // The other way to reach `num_decoded_level_values == 0`: an optional page that contributes no
-  // rows to this read gets no level buffer, and there is nothing to map.
+  // An optional page that contributes no rows to this read gets no level buffer; there is nothing
+  // to map.
   auto const* def = reinterpret_cast<level_t const*>(pp->lvl_decode_buf[level_type::DEFINITION]);
   if (def == nullptr) {
     if (t == 0) { pp->nz_map->nz_count = 0; }
-    block.sync();
     return;
   }
 
@@ -103,9 +100,9 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
   int const warp_id  = t / cudf::detail::warp_size;
   int valid_count    = 0;
 
-  // Hoisted for the same reason as `nz_idx` above: `store_validity` writes through a global
-  // `bitmask_type*`, which the compiler cannot prove does not alias the shared decode state, so it
-  // re-reads these from shared memory on every iteration otherwise.
+  // `store_validity` writes through a global `bitmask_type*` that the compiler cannot prove does
+  // not alias the shared decode state, so these reload from shared memory every iteration unless
+  // hoisted. Same for `nz_idx` above.
   auto* const valid_map       = ni.valid_map;
   auto const valid_map_offset = ni.valid_map_offset;
 
@@ -141,7 +138,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
       if (w < warp_id) { warp_prefix += warp_valid_counts[w]; }
       block_valid_count += warp_valid_counts[w];
     }
-    int const thread_valid_count = warp_prefix + __popc(valid_mask & ((1u << lane) - 1));
+    int const thread_valid_count =
+      warp_prefix + cuda::std::popcount(valid_mask & ((1u << lane) - 1));
 
     if (is_valid) { nz_idx[valid_count + thread_valid_count] = value_pos; }
     valid_count += block_valid_count;
@@ -151,10 +149,8 @@ CUDF_KERNEL void __launch_bounds__(level_decode_block_size)
     block.sync();
   }
 
-  // The consumer recomputes the null count for the rows this page contributes, so the producer
-  // writes only the rank map and its size.
+  // The page's valid count.
   if (t == 0) { pp->nz_map->nz_count = valid_count; }
-  block.sync();
 }
 
 using unused_state_buf = page_state_buffers_s<0, 0, 0>;

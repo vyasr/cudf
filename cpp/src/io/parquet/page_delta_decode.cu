@@ -32,7 +32,7 @@ constexpr int decode_delta_binary_block_size = 96;
 constexpr int delta_nz_buf_size = 4 * delta_max_batch_size;
 
 // One producer warp and one writer warp
-constexpr int decode_delta_binary_with_nz_map_block_size = 64;  // producer + writer
+constexpr int decode_delta_binary_with_nz_map_block_size = 64;
 
 // DELTA_BYTE_ARRAY encoding (incremental encoding or front compression), is used for BYTE_ARRAY
 // columns. For each element in a sequence of strings, a prefix length from the preceding string
@@ -377,8 +377,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
 
   // Exit early if the page is pruned
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
-  // A page carrying an nz map is decoded by `decode_delta_binary_kernel_with_nz_map` instead. The
-  // map is what routes, so the two kernels partition the pages without a second rule to agree with.
+  // A page carrying an nz map is decoded by `decode_delta_binary_kernel_with_nz_map` instead.
   if (pages[page_idx].has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
@@ -526,9 +525,6 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_block_size)
 
 // Decodes flat DELTA_BINARY_PACKED pages, like `decode_delta_binary_kernel`, but places values
 // using the nz map's rank map instead of decoding definition levels itself.
-//
-// A separate kernel rather than a branch inside that one, so the level-decoding path stays
-// untouched while the nz map is opt-in.
 CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   decode_delta_binary_kernel_with_nz_map(PageInfo* pages,
                                          device_span<ColumnChunkDesc const> chunks,
@@ -547,8 +543,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   auto* const db     = &db_state;
 
   if (page_mask.size() > 0 and not page_mask[page_idx]) { return; }
-  // The producer cleared this page from `decode_delta_binary_kernel`'s mask when it mapped it,
-  // so every page is decoded by one kernel and none by both.
+  // Pages with a map are decoded here; the level-decoding kernel takes the rest.
   if (!pages[page_idx].has_nz_map(nz_map_kind::DELTA_FLAT)) { return; }
 
   [[maybe_unused]] null_count_back_copier _{s, static_cast<int>(block.thread_rank())};
@@ -567,8 +562,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   auto const* const nz_idx = pp->nz_map->nz_idx;
   int const nz_count_in    = pp->nz_map->nz_count;
 
-  // This check failing indicates that we somehow failed to write out the null map for a page with
-  // nulls entering this kernel.
+  // A page with nulls reaching this kernel must have had its nz map produced.
   cudf_assert(nz_count_in >= 0 && (not process_nulls || nz_idx != nullptr));
 
   auto& ni = s->nesting.nesting_info[s->setup.col.max_nesting_depth - 1];
@@ -599,33 +593,29 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
     return;
   }
 
-  uint32_t const skipped_leaf_values = s->setup.page.skipped_leaf_values;
-  bool const is_skip_resume          = skipped_leaf_values > 0;
-  uint32_t const batch_size =
-    is_skip_resume ? cudf::detail::warp_size
-                   : min(db->values_per_mb, static_cast<uint32_t>(delta_max_batch_size));
+  // `setup_local_page_info` zeroes `skipped_leaf_values` for a page without repetition, and the
+  // classifier selects only such pages, so there is no resume to handle here. The decode index is
+  // the rank itself: `nz_count` counts from page position 0, so it already spans any prefix below
+  // `first_row`.
+  uint32_t const batch_size = min(db->values_per_mb, static_cast<uint32_t>(delta_max_batch_size));
   uint32_t const passes_per_batch = batch_size / cudf::detail::warp_size;
-  if (is_skip_resume) { db->skip_values(skipped_leaf_values, block, warp); }
 
   // This is a two-warp version of delta binary decoding using a delta producer warp and a value
   // writer warp. The writer trails the producer by one batch to allow the two to run concurrently
   // in a single phase. `next_pass_start_idx()` is the first stream index the producer has not
   // decoded yet. Every index below it is decoded, and is still resident because
-  // `delta_rolling_buf_size` holds two batches, the one in flight plus the one trailing. Reading it
-  // only at the barrier keeps the concurrent region free of any access to the decoder's mutable
-  // scalars. `value_at()` touches `value[]` and `first_value`, and the producer writes neither
-  // below that index.
+  // `delta_rolling_buf_size` holds two batches, the one in flight plus the one trailing. Reading
+  // `next_pass_start_idx()` only at the barrier keeps the concurrent region free of any access to
+  // the decoder's mutable scalars. `value_at()` touches `value[]` and `first_value`, and the
+  // producer writes neither below that index.
   uint32_t produced = db->next_pass_start_idx();
   while (s->setup.error == 0 && s->progress.src_pos < s->progress.nz_count) {
     uint32_t const src_pos = s->progress.src_pos;
-    // Decoder indices run ahead of output positions by `skipped_leaf_values` on a resume page.
     // Capped at one batch so the writer trails the producer by exactly one, never more: the
     // rolling buffer holds two batches, so a writer that fell two behind would read values the
     // producer had already overwritten.
     uint32_t const target_pos =
-      min(s->progress.nz_count,
-          min(produced > skipped_leaf_values ? produced - skipped_leaf_values : 0,
-              src_pos + batch_size));
+      min(static_cast<uint32_t>(s->progress.nz_count), min(produced, src_pos + batch_size));
     block.sync();
 
     if (warp.meta_group_rank() == 0) {
@@ -639,7 +629,7 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
         dst_pos -= s->setup.first_row;
         if (dst_pos >= 0) {
           void* const dst = ni.data_out + dst_pos * s->output_cvt.dtype_len;
-          auto const val  = db->value_at(sp + skipped_leaf_values);
+          auto const val  = db->value_at(sp);
           switch (s->output_cvt.dtype_len) {
             case 1: *static_cast<int8_t*>(dst) = val; break;
             case 2: *static_cast<int16_t*>(dst) = val; break;
@@ -652,9 +642,8 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
     }
     block.sync();
 
-    // Bounding the writer by the producer means a malformed page whose delta stream holds fewer
-    // values than its definition levels imply would leave `nz_count` permanently out of reach, and
-    // the loop would spin forever. To avoid that, we must stop once neither warp can advance.
+    // Stop once neither warp advances: a malformed page whose delta stream is shorter than its
+    // definition levels imply never reaches `nz_count`.
     //
     // Both halves of that test are needed. The producer finishes first on a well-formed page, and
     // we need to wait for the writer to drain the trailing batch -- breaking on the producer alone
@@ -673,7 +662,8 @@ CUDF_KERNEL void __launch_bounds__(decode_delta_binary_with_nz_map_block_size)
   // Values still outstanding means the loop stopped above rather than finishing: the delta stream
   // held fewer values than the definition levels call for. Those rows are already marked valid, so
   // without an error the read would return whatever their output slots happened to contain.
-  if (block.thread_rank() == 0 and s->progress.src_pos < s->progress.nz_count) {
+  if (block.thread_rank() == 0 and s->setup.error == 0 and
+      s->progress.src_pos < s->progress.nz_count) {
     s->setup.error |= static_cast<kernel_error::value_type>(decode_error::DATA_STREAM_OVERRUN);
   }
 
@@ -1153,10 +1143,10 @@ void decode_delta_binary(cudf::detail::hostdevice_span<PageInfo> pages,
   dim3 dim_grid(pages.size(), 1);  // 1 threadblock per page
   dim3 dim_block_nz_map(decode_delta_binary_with_nz_map_block_size, 1);
 
-  // Both kernels take the caller's page mask and route on the page's own nz map, so this only
-  // decides whether the consumer has anything to do at all.
+  // Both kernels route on the page's own nz map, so `has_flat_nz_map` only skips a launch that
+  // would find no work.
   if (has_flat_nz_map) {
-    // Not templated on `level_t`: this kernel never reads levels, which is the whole point of it.
+    // Not templated on `level_t`: this kernel never reads levels.
     decode_delta_binary_kernel_with_nz_map<<<dim_grid, dim_block_nz_map, 0, stream.get()>>>(
       pages.device_ptr(), chunks, min_row, num_rows, page_mask, error_code);
     CUDF_CUDA_TRY(cudaGetLastError());

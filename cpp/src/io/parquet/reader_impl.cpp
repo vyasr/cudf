@@ -316,8 +316,7 @@ void reader_impl::decode_page_data(read_mode mode, size_t skip_rows, size_t num_
   // launch delta binary decoder
   if (BitAnd(kernel_mask, decode_kernel_mask::DELTA_BINARY) != 0) {
     auto const delta_stream = streams[s_idx++];
-    // The only kernel that reads the nz map. The others overlap with the producer rather than
-    // queueing behind it, which is why the producer does not ride `fork_streams`' shared event.
+    // The only kernel that reads the nz map.
     if (has_flat_nz_map) { delta_stream.wait(*nz_map_done); }
     decode_delta_binary(subpass.pages,
                         pass.chunks,

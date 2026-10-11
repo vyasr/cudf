@@ -397,13 +397,13 @@ void reader_impl::allocate_level_decode_space()
   // needed on the host. On device, a non-null `PageInfo::nz_map` always indicates that state
   // exists.
   std::vector<size_t> nz_map_slot(num_pages, std::numeric_limits<size_t>::max());
-  size_t num_claimed = 0;
+  size_t num_mapped = 0;
   for (size_t idx = 0; idx < num_pages; ++idx) {
-    if (pages[idx].map_kind != nz_map_kind::NONE) { nz_map_slot[idx] = num_claimed++; }
+    if (pages[idx].map_kind != nz_map_kind::NONE) { nz_map_slot[idx] = num_mapped++; }
   }
-  if (num_claimed == 0) { return; }
+  if (num_mapped == 0) { return; }
 
-  subpass.nz_map_buf = cudf::detail::hostdevice_vector<page_nz_map>(num_claimed, _stream);
+  subpass.nz_map_buf = cudf::detail::hostdevice_vector<page_nz_map>(num_mapped, _stream);
 
   auto host_state = [&](size_t idx) -> page_nz_map* {
     return nz_map_slot[idx] != std::numeric_limits<size_t>::max()

@@ -192,6 +192,42 @@ def test_read_parquet_filters_metadata(tmp_path, if_prune_rowgroup, result):
     assert plc_table_w_meta.num_row_groups_after_stats_filter == result
 
 
+@pytest.mark.parametrize("chunked", [True, False])
+@pytest.mark.parametrize("use_builder", [True, False])
+def test_read_parquet_filter_outlives_expression_reference(
+    tmp_path, use_builder, chunked
+):
+    tbl = pa.Table.from_pydict({"a": list(range(10))})
+    path = tmp_path / "tbl.parquet"
+    write_table(tbl, path)
+
+    def make_filter():
+        return Operation(
+            ASTOperator.GREATER_EQUAL,
+            ColumnNameReference("a"),
+            Literal(plc.Scalar.from_arrow(pa.scalar(5))),
+        )
+
+    builder = plc.io.parquet.ParquetReaderOptions.builder(
+        plc.io.SourceInfo([path])
+    )
+    # The filter is a temporary, so only pylibcudf objects can keep it alive
+    if use_builder:
+        options = builder.filter(make_filter()).build()
+    else:
+        options = builder.build()
+        options.set_filter(make_filter())
+    del builder
+
+    if chunked:
+        reader = plc.io.parquet.ChunkedParquetReader(options)
+        del options
+        result = reader.read_chunk()
+    else:
+        result = plc.io.parquet.read_parquet(options)
+    assert_table_and_meta_eq(tbl.filter(pc.field("a") >= 5), result)
+
+
 @pytest.mark.parametrize(
     "pa_filters,plc_filters",
     [
@@ -1686,3 +1722,32 @@ def test_read_parquet_prepend_source_index_column_with_filter(
         plc.io.parquet.read_parquet(options),
         check_field_nullability=False,
     )
+
+
+@pytest.mark.parametrize("use_builder", [True, False])
+def test_read_parquet_output_dict_columns(tmp_path, use_builder):
+    path = tmp_path / "strings.parquet"
+    pq.write_table(
+        pa.table({"a": ["x", None, "y", "x"], "b": [1, 2, 3, 4]}), path
+    )
+    builder = plc.io.parquet.ParquetReaderOptions.builder(
+        plc.io.SourceInfo([str(path)])
+    )
+    if use_builder:
+        options = builder.output_dict_columns(True).build()
+    else:
+        options = builder.build()
+        options.enable_output_dict_columns(True)
+
+    result = plc.io.parquet.read_parquet(options)
+
+    assert options.is_enabled_output_dict_columns()
+    strings, ints = result.tbl.columns()
+    assert strings.type().id() == plc.TypeId.DICTIONARY32
+    assert ints.type().id() == plc.TypeId.INT64
+    assert strings.to_arrow().dictionary_decode().to_pylist() == [
+        "x",
+        None,
+        "y",
+        "x",
+    ]

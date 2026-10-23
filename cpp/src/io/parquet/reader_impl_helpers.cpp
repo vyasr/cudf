@@ -1509,10 +1509,9 @@ std::unique_ptr<table> aggregate_reader_metadata::read_column_chunk_bounds(
       schema_indices_per_source[src_idx] = schema_idx;
     }
 
-    auto [min_col, max_col, _] = cudf::type_dispatcher<dispatch_storage_type>(
-      dtype, stats_col, schema_indices_per_source, dtype, stream, mr);
-    columns.push_back(std::move(min_col));
-    columns.push_back(std::move(max_col));
+    std::ranges::move(cudf::type_dispatcher<dispatch_storage_type>(
+                        dtype, stats_col, schema_indices_per_source, dtype, stream, mr),
+                      std::back_inserter(columns));
   }
 
   return std::make_unique<table>(std::move(columns));
@@ -2421,23 +2420,11 @@ aggregate_reader_metadata::select_columns(
 }
 
 std::vector<Type> aggregate_reader_metadata::get_parquet_types(
-  host_span<std::vector<size_type> const> row_group_indices,
-  host_span<int const> column_schemas) const
+  std::span<int const> column_schemas) const
 {
   std::vector<Type> parquet_types(column_schemas.size());
-  // Find a source with at least one row group
-  auto const src_iter =
-    std::ranges::find_if(row_group_indices, [](auto const& rg) { return rg.size() > 0; });
-  CUDF_EXPECTS(src_iter != row_group_indices.end(),
-               "Cannot determine Parquet types as no source has any selected row groups.",
-               std::invalid_argument);
-
-  // Source index
-  auto const src_index = std::distance(row_group_indices.begin(), src_iter);
-  // Use the first row group in this source
-  auto const first_row_group_index = row_group_indices[src_index].front();
   std::ranges::transform(column_schemas, parquet_types.begin(), [&](auto const schema_idx) {
-    return get_column_metadata(first_row_group_index, src_index, schema_idx).type;
+    return get_schema(schema_idx).type;
   });
 
   return parquet_types;

@@ -38,7 +38,7 @@ Use this only when no nightly telemetry exists yet.
 
 1. Use a development environment containing the branch's built `cudf-polars`
    and the exact supported Polars version.
-2. Check out the matching `py-<version>` tag in `polars/`. Record its revision.
+2. Shallow clone https://github.com/pola-rs/polars to a temporary directory with the matching `py-<version>` tag. Record its revision.
 3. Unset `CUDF_POLARS_GPU_RUN_LIST`; discovery must run the full suite.
 4. Run `ci/run_cudf_polars_polars_tests.sh` with:
    - `--engine spmd`

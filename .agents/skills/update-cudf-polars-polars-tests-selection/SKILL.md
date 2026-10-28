@@ -7,7 +7,8 @@ description: Regenerates the versioned GPU-executing test selection for the upst
 
 Update `ci/cudf_polars/gpu_test_run_list.json` only from complete default-blocksize
 SPMD telemetry. Never rename an old version key or infer membership from
-translation attempts: a selected node must have completed a GPU query.
+translation attempts: a selected node must have completed a GPU query in its
+test body. Telemetry ignores queries run during fixture setup and teardown.
 
 ## Preferred process: use nightly evidence
 

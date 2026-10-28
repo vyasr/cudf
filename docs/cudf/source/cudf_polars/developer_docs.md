@@ -568,10 +568,12 @@ This test will fail if translation does not raise.
 
 PR CI selects upstream nodes from `ci/cudf_polars/gpu_test_run_list.json`, keyed
 by the exact Polars version, engine, and blocksize. A test is added to the list
-only after it has executed on the GPU; a translation attempt alone is
-insufficient. Tests that use both GPU and CPU are included. Passing selected
-items must still execute on the GPU, including during setup or teardown.
-Existing skips and failures retain their normal behavior.
+only after its body has executed on the GPU; a translation attempt alone is
+insufficient. Queries run during fixture setup or teardown are ignored, because
+a shared fixture's queries run during whichever test first requests it. Tests
+that use both GPU and CPU are included. Passing selected items must still
+execute on the GPU during the test body. Existing skips and failures retain
+their normal behavior.
 
 Nightlies run the full suite with telemetry for in-memory, default-blocksize
 SPMD, and small-blocksize SPMD. Only default-blocksize SPMD has a maintained

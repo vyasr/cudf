@@ -278,6 +278,17 @@ def pytest_runtest_protocol(
             signal.reset(token)
 
 
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
+    """Attribute execution signals only to the test body."""
+    observation = item.stash[OBSERVATION]
+    observation.set_in_call(True)
+    try:
+        yield
+    finally:
+        observation.set_in_call(False)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]

@@ -29,13 +29,22 @@ class Observation:
         )
     )
     active: bool = True
+    in_call: bool = False
     lock: Lock = field(default_factory=Lock)
     context_token: Token[Observation | None | bool] | None = None
 
-    def record(self, name: str) -> bool:
-        """Ignore callbacks belonging to a completed item."""
+    def set_in_call(self, in_call: bool) -> None:  # noqa: FBT001
+        """Mark whether the item's call phase is running."""
         with self.lock:
-            if not self.active:
+            self.in_call = in_call
+
+    def record(self, name: str) -> bool:
+        """Ignore callbacks from setup, teardown, or a completed item."""
+        # Session- and module-scoped fixtures run their queries during the
+        # setup of whichever item requests them first, so only the call phase
+        # reflects the item's own GPU usage.
+        with self.lock:
+            if not self.active or not self.in_call:
                 return False
             self.signals[name] = True
             return True

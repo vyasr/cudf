@@ -13,14 +13,43 @@ test body. Telemetry ignores queries run during fixture setup and teardown.
 ## Preferred process: use nightly evidence
 
 1. Find a nightly run for the target cuDF revision in which every
-   `cudf-polars-polars-tests` producer and shard completed.
-2. Download its `cudf-polars-fallback-diagnostics-<attempt>` artifact with
-   `gh run download`.
+   `cudf-polars-polars-tests` producer and shard completed. Nightlies are
+   `workflow_dispatch` runs of `test.yaml` on `main`. List recent ones, or pass
+   `--commit <sha>` for a specific revision:
+
+   ```bash
+   gh run list --repo NVIDIA/cudf --workflow test.yaml --branch main \
+       --event workflow_dispatch --limit 10 \
+       --json databaseId,attempt,headSha,createdAt,conclusion
+   ```
+
+   The run's own `conclusion` often reflects unrelated jobs, so check the
+   cudf-polars producers directly. This prints any `cudf-polars-polars-tests`
+   job that did not succeed in the run's latest attempt; no output means they
+   all completed. Keep `per_page` small: larger pages of a nightly's jobs fail
+   with HTTP 502.
+
+   ```bash
+   gh api --paginate \
+       "repos/NVIDIA/cudf/actions/runs/<run-id>/jobs?filter=latest&per_page=25" \
+       --jq '.jobs[] | select(.name | startswith("cudf-polars-polars-tests"))
+             | select(.conclusion != "success") | "\(.conclusion)\t\(.name)"'
+   ```
+2. Download its `cudf-polars-fallback-diagnostics-<attempt>` artifact, where
+   `<attempt>` is the `attempt` printed by `gh run list`:
+
+   ```bash
+   gh run download <run-id> --repo NVIDIA/cudf \
+       --name cudf-polars-fallback-diagnostics-<attempt> --dir nightly
+   jq .status nightly/run-list-drift.json
+   ```
+
+   Do not use the artifact if the published status is `incomplete`.
 3. Generate a candidate:
 
    ```bash
    python ci/analyze_cudf_polars_fallbacks.py \
-       --diagnostics-file fallback-diagnostics.json \
+       --diagnostics-file nightly/fallback-diagnostics.json \
        --output-dir diagnostics \
        --audit-run-list ci/cudf_polars/gpu_test_run_list.json \
        --generate-run-list gpu-test-run-list-candidate.json

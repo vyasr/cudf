@@ -384,7 +384,6 @@ def audit_report(
                 {
                     name: run.get(name)
                     for name in (
-                        "cudf_sha",
                         "upstream_sha",
                         "run",
                         "source_artifact",

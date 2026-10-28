@@ -14,13 +14,14 @@ test body. Telemetry ignores queries run during fixture setup and teardown.
 
 1. Find a nightly run for the target cuDF revision in which every
    `cudf-polars-polars-tests` producer and shard completed. Nightlies are
-   `workflow_dispatch` runs of `test.yaml` on `main`. List recent ones, or pass
-   `--commit <sha>` for a specific revision:
+   `workflow_dispatch` runs of `test.yaml` on `main`. They test their `sha`
+   input, not the run's `headSha`, so don't filter with `--commit`; list recent
+   runs and confirm the tested revision after downloading in step 2:
 
    ```bash
    gh run list --repo NVIDIA/cudf --workflow test.yaml --branch main \
        --event workflow_dispatch --limit 10 \
-       --json databaseId,attempt,headSha,createdAt,conclusion
+       --json databaseId,attempt,createdAt,conclusion
    ```
 
    The run's own `conclusion` often reflects unrelated jobs, so check the
@@ -42,9 +43,11 @@ test body. Telemetry ignores queries run during fixture setup and teardown.
    gh run download <run-id> --repo NVIDIA/cudf \
        --name cudf-polars-fallback-diagnostics-<attempt> --dir nightly
    jq .status nightly/run-list-drift.json
+   jq -r '[.runs[].cudf_sha] | unique[]' nightly/fallback-diagnostics.json
    ```
 
-   Do not use the artifact if the published status is `incomplete`.
+   Do not use the artifact if the published status is `incomplete`, or if the
+   printed cuDF SHA is not the target revision.
 3. Generate a candidate:
 
    ```bash
@@ -69,7 +72,9 @@ Use this only when no nightly telemetry exists yet.
    and the exact supported Polars version.
 2. Shallow clone https://github.com/pola-rs/polars to a temporary directory with the matching `py-<version>` tag. Record its revision.
 3. Unset `CUDF_POLARS_GPU_RUN_LIST`; discovery must run the full suite.
-4. Run `ci/run_cudf_polars_polars_tests.sh` with:
+4. Run `ci/run_cudf_polars_polars_tests.sh` with `POLARS_DIR` set to the
+   checkout root from step 2; otherwise it uses the repository's `polars/`
+   directory. Pass:
    - `--engine spmd`
    - `--inject-gpu-engine-blocksize default`
    - `--run-slow`

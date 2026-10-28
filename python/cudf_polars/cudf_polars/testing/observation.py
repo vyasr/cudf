@@ -31,7 +31,7 @@ class Observation:
     active: bool = True
     in_call: bool = False
     lock: Lock = field(default_factory=Lock)
-    context_token: Token[Observation | None | bool] | None = None
+    context_token: Token[Observation | bool | None] | None = None
 
     def set_in_call(self, in_call: bool) -> None:  # noqa: FBT001
         """Mark whether the item's call phase is running."""

@@ -588,7 +588,11 @@ Each candidate entry records the source report path and SHA-256. CI reports
 also record their workflow run so a reviewed update can be traced to its
 telemetry artifact.
 
-To regenerate candidates from the downloaded nightly diagnostic artifact:
+A local regeneration cannot verify that every nightly producer job finished and
+reported. Use an artifact only if its published `run-list-drift.json` does not
+have status `incomplete`, or pass the run's producer-job inventory with
+`--expected-jobs`. To regenerate candidates from the downloaded nightly
+diagnostic artifact:
 
 ```bash
 python ci/analyze_cudf_polars_fallbacks.py --diagnostics-file fallback-diagnostics.json \

@@ -1,6 +1,6 @@
 ---
 name: update-cudf-polars-polars-tests-selection
-description: Regenerates the versioned GPU-executing test selection for the upstream Polars suite. Use after a Polars upgrade or when the nightly cudf-polars run-list audit reports drift.
+description: Regenerates the versioned GPU-executing test selection for the upstream Polars suite. Use after a Polars upgrade, when the minimum supported Polars version is raised, or when the nightly cudf-polars run-list audit reports drift.
 ---
 
 # Update the upstream Polars GPU test selection
@@ -63,6 +63,26 @@ Use this only when no nightly telemetry exists yet.
 The analyzer verifies full-suite mode, zero exit statuses, complete per-test
 telemetry, identical collection inventories, all shards, one cuDF revision, and
 one upstream revision per Polars version. Do not bypass these checks.
+
+## Remove entries for unsupported Polars versions
+
+The analyzer retains every existing `<polars>|spmd|default` entry, so entries
+for old versions remain after cudf-polars raises its minimum supported Polars
+version. Remove them in the same PR that raises the lower bound of the `polars`
+requirement in `python/cudf_polars/pyproject.toml`:
+
+```bash
+python .agents/skills/update-cudf-polars-polars-tests-selection/prune-run-list.py
+```
+
+The script reads the minimum supported version from the `polars` requirement
+and rewrites `ci/cudf_polars/gpu_test_run_list.json` in place. Without `uv`, run
+it with any Python 3.11+ environment that has `packaging` installed.
+
+Entries are only removed for versions below the minimum. Entries for newer
+versions than the upper bound are kept. Every version that PR CI can install
+must still have an entry, so bootstrap any missing version before removing old
+ones.
 
 ## Verify the update
 

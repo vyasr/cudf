@@ -32,8 +32,13 @@ template <bool has_nested_columns>
   cudf::memory_resources mr = cudf::get_current_device_resource_ref();
   auto const comparator =
     detail::row::equality::two_table_comparator{left, right, stream, mr.get_temporary_mr()};
+  // The entry point rejects unequal recursive types, including decimal scales.
+  using physical_comparator = detail::row::equality::equal_scale_physical_equality_comparator<
+    detail::row::equality::nan_equal_physical_equality_comparator>;
   auto const rows_equal = comparator.equal_to<has_nested_columns>(
-    nullate::DYNAMIC{has_nested_nulls(left) or has_nested_nulls(right)}, nulls_equal);
+    nullate::DYNAMIC{has_nested_nulls(left) or has_nested_nulls(right)},
+    nulls_equal,
+    physical_comparator{});
   cuda::device_buffer<bool> eq_rows(
     stream, mr.get_temporary_mr(), static_cast<std::size_t>(left.num_rows()), cuda::no_init);
   CUDF_CUDA_TRY(cub::DeviceTransform::Transform(

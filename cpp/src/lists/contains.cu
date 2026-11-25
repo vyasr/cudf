@@ -213,8 +213,12 @@ std::unique_ptr<column> dispatch_index_of(lists_column_view const& lists,
   auto const has_nulls   = has_nested_nulls(child_tview) || has_nested_nulls(keys_tview);
   auto const comparator  = cudf::detail::row::equality::two_table_comparator(
     child_tview, keys_tview, stream, cudf::get_current_device_resource_ref());
+  // The existing type check includes decimal scales, even within nested keys.
+  using physical_comparator = cudf::detail::row::equality::equal_scale_physical_equality_comparator<
+    cudf::detail::row::equality::nan_equal_physical_equality_comparator>;
   if (cudf::is_nested(search_keys.type())) {
-    auto const d_comp = comparator.equal_to<true>(nullate::DYNAMIC{has_nulls});
+    auto const d_comp = comparator.equal_to<true>(
+      nullate::DYNAMIC{has_nulls}, null_equality::EQUAL, physical_comparator{});
     index_of(input_it,
              num_rows,
              output_it,
@@ -225,7 +229,8 @@ std::unique_ptr<column> dispatch_index_of(lists_column_view const& lists,
              stream,
              cudf::get_current_device_resource_ref());
   } else {
-    auto const d_comp = comparator.equal_to<false>(nullate::DYNAMIC{has_nulls});
+    auto const d_comp = comparator.equal_to<false>(
+      nullate::DYNAMIC{has_nulls}, null_equality::EQUAL, physical_comparator{});
     index_of(input_it,
              num_rows,
              output_it,

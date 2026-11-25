@@ -35,7 +35,7 @@ struct corresponding_row_equality {
 };
 
 template <typename T>
-struct EqualScaleTypeValidationTest : cudf::test::BaseFixture {};
+struct EqualScaleTypeValidationTest : cudf::test::BaseFixtureWithHarness {};
 
 TYPED_TEST_SUITE(EqualScaleTypeValidationTest, cudf::test::FixedPointTypes);
 

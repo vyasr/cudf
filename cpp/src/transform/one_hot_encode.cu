@@ -74,9 +74,6 @@ std::pair<std::unique_ptr<column>, table_view> one_hot_encode(column_view const&
   auto const t_rhs   = table_view{{categories}};
   auto const comparator =
     cudf::detail::row::equality::two_table_comparator{t_lhs, t_rhs, stream, temp_mr};
-  // The existing exact-type check rules out different decimal scales.
-  using physical_comparator = cudf::detail::row::equality::equal_scale_physical_equality_comparator<
-    cudf::detail::row::equality::nan_equal_physical_equality_comparator>;
 
   auto const comparator_helper = [&](auto const fn) {
     thrust::transform(rmm::exec_policy_nosync(stream, temp_mr),
@@ -88,15 +85,11 @@ std::pair<std::unique_ptr<column>, table_view> one_hot_encode(column_view const&
 
   if (cudf::detail::has_nested_columns(t_lhs) or cudf::detail::has_nested_columns(t_rhs)) {
     auto const d_equal = comparator.equal_to<true>(
-      nullate::DYNAMIC{has_nested_nulls(t_lhs) || has_nested_nulls(t_rhs)},
-      null_equality::EQUAL,
-      physical_comparator{});
+      nullate::DYNAMIC{has_nested_nulls(t_lhs) || has_nested_nulls(t_rhs)});
     comparator_helper(ohe_equality_functor<decltype(d_equal)>(input.size(), d_equal));
   } else {
     auto const d_equal = comparator.equal_to<false>(
-      nullate::DYNAMIC{has_nested_nulls(t_lhs) || has_nested_nulls(t_rhs)},
-      null_equality::EQUAL,
-      physical_comparator{});
+      nullate::DYNAMIC{has_nested_nulls(t_lhs) || has_nested_nulls(t_rhs)});
     // the non-nested comparator is cheap and uniform per row
     comparator_helper(cuda::proclaim_copyable_arguments(
       ohe_equality_functor<decltype(d_equal)>(input.size(), d_equal)));

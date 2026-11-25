@@ -55,7 +55,7 @@ TEST_F(GatherTestStr, CopyStrategiesWithBoundsPolicy)
         expected_validity[row] = valid;
       }
       cudf::test::fixed_width_column_wrapper<cudf::size_type> map(
-        indices.begin(), indices.end(), stream);
+        indices.begin(), indices.end(), cuda::stream_ref{stream.value()});
       cudf::test::strings_column_wrapper expected(
         expected_words.begin(), expected_words.end(), expected_validity.begin(), stream);
       auto const result = cudf::gather(
@@ -70,7 +70,7 @@ TEST_F(GatherTestStr, CopyStrategiesWithBoundsPolicy)
       std::vector<cudf::size_type> identity(rows);
       std::iota(identity.begin(), identity.end(), 0);
       cudf::test::fixed_width_column_wrapper<cudf::size_type> identity_map(
-        identity.begin(), identity.end(), stream);
+        identity.begin(), identity.end(), cuda::stream_ref{stream.value()});
       auto const copied =
         cudf::gather(result->view(), identity_map, cudf::out_of_bounds_policy::DONT_CHECK, stream);
       CUDF_TEST_EXPECT_COLUMNS_EQUAL(

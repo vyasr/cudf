@@ -93,12 +93,14 @@ struct stored_batch_comparator {
  *
  * Cross-comparators are pre-built as device_row_comparator(batch, compacted[k])
  * and stored in a device array.  Self-comparisons use batch_self_eq.
+ * Keep their types independent so self comparisons can preserve their same-scale guarantee.
  */
-template <typename RowEqT>
+template <typename SelfRowEqT, typename CrossRowEqT>
 struct n_table_comparator {
-  RowEqT batch_self_eq;                              ///< Self-comparator on the current batch table
-  stored_batch_comparator<RowEqT> const* cross_eqs;  ///< Batch vs compacted[k], with dense-ID base
-  size_type const* key_batch_ids;                    ///< Compacted batch ID per dense ID
+  SelfRowEqT batch_self_eq;  ///< Self-comparator on the current batch table
+  stored_batch_comparator<CrossRowEqT> const*
+    cross_eqs;                     ///< Batch vs compacted[k], with dense-ID base
+  size_type const* key_batch_ids;  ///< Compacted batch ID per dense ID
   size_type max_distinct_keys;  ///< Threshold: idx >= max_distinct_keys is a transient batch value
 
   __attribute__((noinline)) __device__ bool operator()(size_type lhs, size_type rhs) const noexcept

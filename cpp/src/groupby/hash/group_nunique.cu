@@ -25,7 +25,7 @@ namespace {
 template <bool has_nested_columns, typename Nullate>
 struct is_unique_iterator_fn {
   using comparator_type =
-    typename cudf::detail::row::equality::device_row_comparator<has_nested_columns, Nullate>;
+    typename cudf::detail::row::equality::self_device_row_comparator<has_nested_columns, Nullate>;
 
   Nullate nulls;
   column_device_view const v;

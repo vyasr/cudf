@@ -23,6 +23,7 @@
 #include <cuda/iterator>
 #include <cuda/std/concepts>
 #include <cuda/std/functional>
+#include <cuda/std/type_traits>
 #include <thrust/equal.h>
 #include <thrust/execution_policy.h>
 #include <thrust/logical.h>
@@ -87,6 +88,31 @@ struct nan_equal_physical_equality_comparator {
     return isnan(lhs) and isnan(rhs) ? true : lhs == rhs;
   }
 };
+
+// Corresponding decimal values in a self comparison have identical scales, so
+// general rescaling cannot affect their equality. Keep other value semantics intact.
+template <typename PhysicalEqualityComparator>
+struct equal_scale_physical_equality_comparator {
+  template <typename Element>
+  __device__ constexpr bool operator()(Element const lhs, Element const rhs) const noexcept
+  {
+    if constexpr (cudf::is_fixed_point<Element>()) {
+      return comparator(lhs.value(), rhs.value());
+    } else {
+      return comparator(lhs, rhs);
+    }
+  }
+
+  PhysicalEqualityComparator comparator;
+};
+
+// Custom comparators may observe decimal types or scales rather than just values.
+template <typename PhysicalEqualityComparator>
+using self_physical_equality_comparator = cuda::std::conditional_t<
+  cuda::std::is_same_v<PhysicalEqualityComparator, physical_equality_comparator> or
+    cuda::std::is_same_v<PhysicalEqualityComparator, nan_equal_physical_equality_comparator>,
+  equal_scale_physical_equality_comparator<PhysicalEqualityComparator>,
+  PhysicalEqualityComparator>;
 
 /**
  * @brief Computes the equality comparison between 2 rows.
@@ -390,6 +416,14 @@ class device_row_comparator {
   PhysicalEqualityComparator comparator;
 };
 
+template <bool has_nested_columns,
+          typename Nullate,
+          typename PhysicalEqualityComparator = nan_equal_physical_equality_comparator>
+using self_device_row_comparator =
+  device_row_comparator<has_nested_columns,
+                        Nullate,
+                        self_physical_equality_comparator<PhysicalEqualityComparator>>;
+
 /**
  * @brief Comparator for performing equality comparisons between two rows of the same table.
  *
@@ -455,8 +489,12 @@ class self_comparator {
                 null_equality nulls_are_equal         = null_equality::EQUAL,
                 PhysicalEqualityComparator comparator = {}) const noexcept
   {
-    return device_row_comparator<has_nested_columns, Nullate, PhysicalEqualityComparator>{
-      nullate, *d_t, *d_t, nulls_are_equal, comparator};
+    return self_device_row_comparator<has_nested_columns, Nullate, PhysicalEqualityComparator>{
+      nullate,
+      *d_t,
+      *d_t,
+      nulls_are_equal,
+      self_physical_equality_comparator<PhysicalEqualityComparator>{comparator}};
   }
 
  private:

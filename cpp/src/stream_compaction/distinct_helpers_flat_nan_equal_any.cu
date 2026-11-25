@@ -18,7 +18,7 @@
 namespace cudf::detail {
 
 template rmm::device_uvector<size_type> reduce_by_row_keep_any(
-  distinct_set_t<cudf::detail::row::equality::device_row_comparator<
+  distinct_set_t<cudf::detail::row::equality::self_device_row_comparator<
     false,
     cudf::nullate::DYNAMIC,
     cudf::detail::row::equality::nan_equal_physical_equality_comparator>>& set,

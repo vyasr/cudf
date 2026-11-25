@@ -1,0 +1,22 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "rolling_runtime.cuh"
+
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::timestamp_D)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::timestamp_s)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::timestamp_ms)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::timestamp_us)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::timestamp_ns)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::duration_D)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::duration_s)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::duration_ms)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::duration_us)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(cudf::duration_ns)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(numeric::decimal32)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(numeric::decimal64)
+CUDF_INSTANTIATE_RUNTIME_ROLLING(numeric::decimal128)
+
+#undef CUDF_INSTANTIATE_RUNTIME_ROLLING

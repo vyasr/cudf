@@ -36,14 +36,13 @@ std::unique_ptr<column> rolling_window(column_view const& input,
 
   auto defaults_col =
     cudf::is_dictionary(input.type()) ? dictionary_column_view(input).indices() : input;
-  return cudf::detail::rolling_window(input,
-                                      empty_like(defaults_col)->view(),
-                                      preceding_window.begin<size_type>(),
-                                      following_window.begin<size_type>(),
-                                      min_periods,
-                                      agg,
-                                      stream,
-                                      mr);
+  namespace utils = cudf::detail::rolling;
+  auto preceding  = utils::make_variable_window_bounds<utils::direction::PRECEDING>(
+    preceding_window.begin<size_type>());
+  auto following = utils::make_variable_window_bounds<utils::direction::FOLLOWING>(
+    following_window.begin<size_type>());
+  return cudf::detail::rolling_window(
+    input, empty_like(defaults_col)->view(), preceding, following, min_periods, agg, stream, mr);
 }
 
 }  // namespace cudf::detail

@@ -9,8 +9,11 @@
 #include <cudf_test/cudf_gtest.hpp>
 
 #include <cudf/binaryop.hpp>
+#include <cudf/copying.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/utilities/error.hpp>
+
+#include <rmm/cuda_stream.hpp>
 
 #include <cmath>
 #include <limits>
@@ -169,6 +172,47 @@ TEST_F(BinaryOperatorParityTest, CheckedArithmeticScalarOperands)
                                              divisor.type(),
                                              cudf::error_policy::NULLIFY);
   CUDF_TEST_EXPECT_COLUMNS_EQUAL(mod_expected, right_result->view());
+}
+
+TEST_F(BinaryOperatorParityTest, CheckedScalarIndexingWithSlicedNulls)
+{
+  using wrapper = cudf::test::fixed_width_column_wrapper<int32_t>;
+  wrapper values{{99, 10, 20, 30, 99}, {true, true, false, true, true}};
+  cudf::numeric_scalar<int32_t> scalar{3};
+  cudf::numeric_scalar<int32_t> null_scalar{3, false};
+  rmm::cuda_stream stream;
+  cudf::get_default_stream().sync();
+  auto const sliced = cudf::slice(values, {1, 4}, stream).front();
+  auto const op     = cudf::binary_operator::SUB_OVERFLOW;
+  auto const policy = cudf::error_policy::PROPAGATE;
+  auto left         = cudf::binary_operation(scalar, sliced, op, sliced.type(), policy, stream);
+  auto right        = cudf::binary_operation(sliced, scalar, op, sliced.type(), policy, stream);
+  auto null_left  = cudf::binary_operation(null_scalar, sliced, op, sliced.type(), policy, stream);
+  auto null_right = cudf::binary_operation(sliced, null_scalar, op, sliced.type(), policy, stream);
+  stream.synchronize();
+  wrapper expected_left{{-7, 0, -27}, {true, false, true}};
+  wrapper expected_right{{7, 0, 27}, {true, false, true}};
+  wrapper expected_null{{0, 0, 0}, {false, false, false}};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_left, left->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_right, right->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_null, null_left->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_null, null_right->view());
+}
+
+TEST_F(BinaryOperatorParityTest, CheckedSingletonAndEmptyInputs)
+{
+  using wrapper     = cudf::test::fixed_width_column_wrapper<int32_t>;
+  auto const op     = cudf::binary_operator::SUB_OVERFLOW;
+  auto const policy = cudf::error_policy::PROPAGATE;
+  cudf::numeric_scalar<int32_t> scalar{3};
+  wrapper singleton{7};
+  wrapper expected{{0}, {true}};
+  auto result = cudf::binary_operation(singleton, singleton, op, scalar.type(), policy);
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected, result->view());
+  wrapper empty{};
+  EXPECT_EQ(cudf::binary_operation(empty, empty, op, scalar.type(), policy)->size(), 0);
+  EXPECT_EQ(cudf::binary_operation(scalar, empty, op, scalar.type(), policy)->size(), 0);
+  EXPECT_EQ(cudf::binary_operation(empty, scalar, op, scalar.type(), policy)->size(), 0);
 }
 
 TEST_F(BinaryOperatorParityTest, CheckedDecimalScaleRules)

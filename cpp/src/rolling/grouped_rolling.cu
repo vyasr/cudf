@@ -97,9 +97,9 @@ std::unique_ptr<column> grouped_rolling_window(table_view const& group_keys,
   namespace utils = cudf::detail::rolling;
   auto groups     = utils::grouped{group_labels.data(), group_offsets.data()};
   auto preceding =
-    utils::make_clamped_window_iterator<utils::direction::PRECEDING>(preceding_window, groups);
+    utils::make_fixed_window_bounds<utils::direction::PRECEDING>(preceding_window, groups);
   auto following =
-    utils::make_clamped_window_iterator<utils::direction::FOLLOWING>(following_window, groups);
+    utils::make_fixed_window_bounds<utils::direction::FOLLOWING>(following_window, groups);
   return cudf::detail::rolling_window(
     input, default_outputs, preceding, following, min_periods, aggr, stream, mr);
 }

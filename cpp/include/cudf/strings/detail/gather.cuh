@@ -202,24 +202,25 @@ CUDF_KERNEL void gather_chars_fn_char_parallel(StringIterator strings_begin,
  * ```
  * s1 = ["a", "b", "c", "d", "e", "f"]
  * map = [0, 2]
- * s2 = gather<true>( s1, map.begin(), map.end() )
+ * s2 = gather( s1, map.begin(), map.end(), true )
  * s2 is ["a", "c"]
  * ```
  *
- * @tparam NullifyOutOfBounds If true, indices outside the column's range are nullified.
  * @tparam MapIterator Iterator for retrieving integer indices of the column.
  *
  * @param strings Strings instance for this operation.
  * @param begin Start of index iterator.
  * @param end End of index iterator.
+ * @param nullify_out_of_bounds If true, indices outside the column's range are nullified.
  * @param stream CUDA stream used for device memory operations and kernel launches.
  * @param mr Memory resources used for temporary allocations and the returned column.
  * @return New strings column containing the gathered strings.
  */
-template <bool NullifyOutOfBounds, typename MapIterator>
+template <typename MapIterator>
 std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
                                      MapIterator begin,
                                      MapIterator end,
+                                     bool nullify_out_of_bounds,
                                      cuda::stream_ref stream,
                                      cudf::memory_resources mr)
 {
@@ -238,8 +239,8 @@ std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
   auto sizes_itr = cuda::transform_iterator(
     begin,
     cuda::proclaim_return_type<size_type>(
-      [d_strings = *d_strings, d_in_offsets] __device__(size_type idx) {
-        if (NullifyOutOfBounds && (idx < 0 || idx >= d_strings.size())) { return 0; }
+      [d_strings = *d_strings, d_in_offsets, nullify_out_of_bounds] __device__(size_type idx) {
+        if (nullify_out_of_bounds && (idx < 0 || idx >= d_strings.size())) { return 0; }
         if (not d_strings.is_valid(idx)) { return 0; }
         return static_cast<size_type>(d_in_offsets[idx + 1] - d_in_offsets[idx]);
       }));
@@ -292,13 +293,14 @@ std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
       // Iterator over the character column of input strings to gather
       auto in_chars_itr = cuda::transform_iterator(
         begin,
-        cuda::proclaim_return_type<char const*>([d_strings = *d_strings] __device__(size_type idx) {
-          if (NullifyOutOfBounds && (idx < 0 || idx >= d_strings.size())) {
-            return static_cast<char const*>(nullptr);
-          }
-          if (not d_strings.is_valid(idx)) { return static_cast<char const*>(nullptr); }
-          return d_strings.element<string_view>(idx).data();
-        }));
+        cuda::proclaim_return_type<char const*>(
+          [d_strings = *d_strings, nullify_out_of_bounds] __device__(size_type idx) {
+            if (nullify_out_of_bounds && (idx < 0 || idx >= d_strings.size())) {
+              return static_cast<char const*>(nullptr);
+            }
+            if (not d_strings.is_valid(idx)) { return static_cast<char const*>(nullptr); }
+            return d_strings.element<string_view>(idx).data();
+          }));
 
       // Iterator over the output locations to write the output
       auto out_chars_itr = cudf::detail::make_counting_transform_iterator(
@@ -332,30 +334,29 @@ std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
  * ```
  * s1 = ["a", "b", "c", "d", "e", "f"]
  * map = [0, 2]
- * s2 = gather( s1, map.begin(), map.end(), true )
+ * s2 = gather<true>( s1, map.begin(), map.end() )
  * s2 is ["a", "c"]
  * ```
  *
+ * @tparam NullifyOutOfBounds If true, indices outside the column's range are nullified.
  * @tparam MapIterator Iterator for retrieving integer indices of the column.
  *
  * @param strings Strings instance for this operation.
  * @param begin Start of index iterator.
  * @param end End of index iterator.
- * @param nullify_out_of_bounds If true, indices outside the column's range are nullified.
  * @param stream CUDA stream used for device memory operations and kernel launches.
  * @param mr Memory resources used for temporary allocations and the returned column.
  * @return New strings column containing the gathered strings.
  */
-template <typename MapIterator>
+template <bool NullifyOutOfBounds, typename MapIterator>
 std::unique_ptr<cudf::column> gather(strings_column_view const& strings,
                                      MapIterator begin,
                                      MapIterator end,
-                                     bool nullify_out_of_bounds,
                                      cuda::stream_ref stream,
                                      cudf::memory_resources mr)
 {
-  if (nullify_out_of_bounds) return gather<true>(strings, begin, end, stream, mr);
-  return gather<false>(strings, begin, end, stream, mr);
+  // Preserve compile-time call sites without multiplying the scan and batch-copy functor types.
+  return gather(strings, begin, end, NullifyOutOfBounds, stream, mr);
 }
 
 }  // namespace detail

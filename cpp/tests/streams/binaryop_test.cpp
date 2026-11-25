@@ -49,6 +49,18 @@ TEST_F(BinaryopTest, ScalarColumn)
                          cudf::test::get_default_stream());
 }
 
+TEST_F(BinaryopTest, CheckedOperandArrangements)
+{
+  auto const stream = cudf::test::get_default_stream();
+  cudf::test::fixed_width_column_wrapper<int32_t> values{10, 20, 30};
+  cudf::numeric_scalar<int32_t> scalar{2, true, stream};
+  auto const op     = cudf::binary_operator::SUB_OVERFLOW;
+  auto const policy = cudf::error_policy::NULLIFY;
+  cudf::binary_operation(values, values, op, scalar.type(), policy, stream);
+  cudf::binary_operation(scalar, values, op, scalar.type(), policy, stream);
+  cudf::binary_operation(values, scalar, op, scalar.type(), policy, stream);
+}
+
 class BinaryopPTXTest : public BinaryopTest {};
 
 // Exercise the deprecated PTX API until its removal.

@@ -10,12 +10,15 @@
 
 #include <cudf/aggregation.hpp>
 #include <cudf/column/column_factories.hpp>
+#include <cudf/copying.hpp>
 #include <cudf/detail/iterator.cuh>
 #include <cudf/dictionary/dictionary_factories.hpp>
 #include <cudf/dictionary/encode.hpp>
 #include <cudf/rolling.hpp>
 #include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/utilities/error.hpp>
+
+#include <rmm/cuda_stream.hpp>
 
 #include <cuda/iterator>
 
@@ -24,6 +27,34 @@
 #include <string>
 
 struct LeadLagWindowTest : public cudf::test::BaseFixture {};
+
+TEST_F(LeadLagWindowTest, VariableBoundsWithSlicedNulls)
+{
+  using wrapper = cudf::test::fixed_width_column_wrapper<int32_t>;
+  wrapper input{{9, 10, 20, 30, 40, 50, 60, 9}, {1, 1, 1, 0, 1, 1, 0, 1}};
+  wrapper preceding{1, 2, 1, 3, 2, 1};
+  wrapper following{1, 0, 2, 1, 0, 0};
+  rmm::cuda_stream stream;
+  cudf::get_default_stream().sync();
+  auto const sliced = cudf::slice(input, {1, 7}, stream).front();
+  auto const lead   = cudf::rolling_window(sliced,
+                                         preceding,
+                                         following,
+                                         1,
+                                         *cudf::make_lead_aggregation<cudf::rolling_aggregation>(1),
+                                         stream);
+  auto const lag    = cudf::rolling_window(sliced,
+                                        preceding,
+                                        following,
+                                        1,
+                                        *cudf::make_lag_aggregation<cudf::rolling_aggregation>(1),
+                                        stream);
+  stream.synchronize();
+  wrapper expected_lead{{20, 0, 40, 50, 0, 0}, {1, 0, 1, 1, 0, 0}};
+  wrapper expected_lag{{0, 10, 0, 0, 40, 0}, {0, 1, 0, 0, 1, 0}};
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_lead, lead->view());
+  CUDF_TEST_EXPECT_COLUMNS_EQUAL(expected_lag, lag->view());
+}
 
 template <typename T>
 struct TypedLeadLagWindowTest : public cudf::test::BaseFixture {};

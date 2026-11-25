@@ -11,6 +11,7 @@
 #include "rolling.hpp"
 #include "rolling_collect_list.cuh"
 #include "rolling_operators.cuh"
+#include "rolling_runtime.hpp"
 
 #include <cudf/aggregation.hpp>
 #include <cudf/column/column_device_view.cuh>
@@ -519,31 +520,48 @@ struct dispatch_rolling {
     CUDF_EXPECTS(preprocessed_aggs.size() <= 1,
                  "Encountered a non-trivial rolling aggregation result");
 
+    constexpr bool shared_bounds = rolling::is_runtime_window_input<PrecedingWindowIterator> &&
+                                   rolling::is_runtime_window_input<FollowingWindowIterator>;
+
     // perform the rolling window if we produced an aggregation to use
-    auto intermediate = preprocessed_aggs.size() > 0
-                          ? aggregation_dispatcher(
-                              dynamic_cast<rolling_aggregation const&>(*preprocessed_aggs[0]).kind,
-                              rolling_window_launcher<InputType>{},
-                              input,
-                              default_outputs,
-                              preceding_window_begin,
-                              following_window_begin,
-                              min_periods,
-                              dynamic_cast<rolling_aggregation const&>(*preprocessed_aggs[0]),
-                              stream,
-                              mr)
-                          : nullptr;
+    auto intermediate = [&]() -> std::unique_ptr<column> {
+      if (preprocessed_aggs.empty()) { return nullptr; }
+      auto const& operation = dynamic_cast<rolling_aggregation const&>(*preprocessed_aggs[0]);
+      if constexpr (shared_bounds) {
+        return dispatch_runtime_rolling{}.template operator()<InputType>(
+          input,
+          default_outputs,
+          preceding_window_begin.bounds,
+          following_window_begin.bounds,
+          min_periods,
+          operation,
+          stream,
+          mr);
+      } else {
+        return aggregation_dispatcher(operation.kind,
+                                      rolling_window_launcher<InputType>{},
+                                      input,
+                                      default_outputs,
+                                      preceding_window_begin,
+                                      following_window_begin,
+                                      min_periods,
+                                      operation,
+                                      stream,
+                                      mr);
+      }
+    }();
 
     // finalize.
-    auto const result_type   = target_type(input.type(), agg.kind);
-    auto const postprocessor = rolling_postprocessor{input,
-                                                     default_outputs,
-                                                     result_type,
-                                                     preceding_window_begin,
-                                                     following_window_begin,
-                                                     min_periods,
-                                                     stream,
-                                                     mr};
+    auto const result_type = target_type(input.type(), agg.kind);
+    auto const postprocessor =
+      rolling_postprocessor{input,
+                            default_outputs,
+                            result_type,
+                            rolling::postprocess_window_iterator(preceding_window_begin),
+                            rolling::postprocess_window_iterator(following_window_begin),
+                            min_periods,
+                            stream,
+                            mr};
     return cudf::detail::aggregation_dispatcher(agg.kind, postprocessor, agg, intermediate);
   }
 };

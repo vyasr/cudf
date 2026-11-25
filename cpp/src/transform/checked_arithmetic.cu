@@ -109,7 +109,20 @@ struct checked_unary_row_operation {
   }
 };
 
-template <typename T, bool LhsIsScalar, bool RhsIsScalar>
+template <int32_t Index, typename T>
+struct checked_binary_input_accessor {
+  using element_type = T;
+
+  static __device__ auto nullable_element(auto const* __restrict__ columns, size_type row)
+  {
+    // Scalars are already materialized as singleton columns. A singleton column/column call
+    // also reads row zero, so the view size shares all three operand arrangements safely.
+    auto const& column = columns[Index];
+    return column.template nullable_element<T>(column.size() == 1 ? 0 : row);
+  }
+};
+
+template <typename T>
 CUDF_KERNEL void checked_binary_kernel(size_type row_size,
                                        column_device_view lhs,
                                        column_device_view rhs,
@@ -117,8 +130,8 @@ CUDF_KERNEL void checked_binary_kernel(size_type row_size,
                                        binary_operator op,
                                        int32_t* max_error)
 {
-  using input_accessors  = jit::type_list<jit::column_accessor<0, T, LhsIsScalar, 0>,
-                                          jit::column_accessor<1, T, RhsIsScalar, 0>>;
+  using input_accessors =
+    jit::type_list<checked_binary_input_accessor<0, T>, checked_binary_input_accessor<1, T>>;
   using output_accessors = jit::type_list<jit::column_accessor<0, T, false, 0>>;
 
   column_device_view_core const inputs[]          = {lhs, rhs};
@@ -151,7 +164,6 @@ void throw_if_error(errc error, error_policy policy)
     std::string{"Checked arithmetic evaluation failed with error `"} + to_string(error) + "`");
 }
 
-template <bool LhsIsScalar, bool RhsIsScalar>
 struct binary_launcher {
   template <typename T>
   void operator()(column_view const& lhs,
@@ -171,7 +183,7 @@ struct binary_launcher {
         static_cast<int32_t>(errc::SUCCESS), stream, temp_mr};
 
       cudf::detail::grid_1d config(out.size(), 256);
-      checked_binary_kernel<T, LhsIsScalar, RhsIsScalar>
+      checked_binary_kernel<T>
         <<<config.num_blocks, config.num_threads_per_block, 0, stream.get()>>>(
           out.size(), *lhs_device, *rhs_device, *out_device, op, max_error.data());
       CUDF_CHECK_CUDA(stream.get());
@@ -241,7 +253,6 @@ void validate_binary(column_view const& lhs,
   }
 }
 
-template <bool LhsIsScalar, bool RhsIsScalar>
 std::unique_ptr<column> binary_operation_impl(column_view const& lhs,
                                               column_view const& rhs,
                                               size_type size,
@@ -257,15 +268,8 @@ std::unique_ptr<column> binary_operation_impl(column_view const& lhs,
   if (size == 0) { return result; }
 
   auto result_view = result->mutable_view();
-  cudf::type_dispatcher(lhs.type(),
-                        binary_launcher<LhsIsScalar, RhsIsScalar>{},
-                        lhs,
-                        rhs,
-                        result_view,
-                        op,
-                        policy,
-                        stream,
-                        mr);
+  cudf::type_dispatcher(
+    lhs.type(), binary_launcher{}, lhs, rhs, result_view, op, policy, stream, mr);
   result->set_null_count(
     cudf::detail::null_count(result_view.null_mask(), 0, result_view.size(), stream));
   return result;
@@ -284,7 +288,7 @@ std::unique_ptr<column> binary_operation(scalar const& lhs,
   auto const temp_mr = mr.get_temporary_mr();
   auto lhs_column =
     make_column_from_scalar(lhs, 1, stream, cudf::memory_resources{temp_mr, temp_mr});
-  return binary_operation_impl<true, false>(
+  return binary_operation_impl(
     lhs_column->view(), rhs, rhs.size(), op, output_type, policy, stream, mr);
 }
 
@@ -299,7 +303,7 @@ std::unique_ptr<column> binary_operation(column_view const& lhs,
   auto const temp_mr = mr.get_temporary_mr();
   auto rhs_column =
     make_column_from_scalar(rhs, 1, stream, cudf::memory_resources{temp_mr, temp_mr});
-  return binary_operation_impl<false, true>(
+  return binary_operation_impl(
     lhs, rhs_column->view(), lhs.size(), op, output_type, policy, stream, mr);
 }
 
@@ -312,8 +316,7 @@ std::unique_ptr<column> binary_operation(column_view const& lhs,
                                          cudf::memory_resources mr)
 {
   CUDF_EXPECTS(lhs.size() == rhs.size(), "Column sizes do not match", std::invalid_argument);
-  return binary_operation_impl<false, false>(
-    lhs, rhs, lhs.size(), op, output_type, policy, stream, mr);
+  return binary_operation_impl(lhs, rhs, lhs.size(), op, output_type, policy, stream, mr);
 }
 
 std::unique_ptr<column> unary_operation(column_view const& input,

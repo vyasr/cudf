@@ -524,91 +524,30 @@ struct agg_specific_empty_output {
 };
 
 /**
- * @brief Operator for applying a LEAD rolling aggregation on a single window.
+ * @brief Operator for applying a LEAD or LAG rolling aggregation on a single window.
  */
 template <typename InputType>
-struct DeviceRollingLead {
+struct DeviceRollingLeadLag {
   size_type row_offset;
+  bool is_lead;
 
   // what operations do we support
-  template <typename T = InputType, aggregation::Kind O = aggregation::LEAD>
+  template <typename T = InputType>
   static constexpr bool is_supported()
   {
     return cudf::is_fixed_width<T>() || cudf::is_dictionary<T>();
   }
 
   template <typename T = InputType>
-  DeviceRollingLead(size_type _row_offset)
+  DeviceRollingLeadLag(size_type _row_offset, bool _is_lead)
     requires(is_supported<T>())
-    : row_offset(_row_offset)
+    : row_offset(_row_offset), is_lead(_is_lead)
   {
   }
 
   template <typename T = InputType>
-  DeviceRollingLead(size_type _row_offset) : row_offset(_row_offset)
-  {
-    CUDF_FAIL("Invalid aggregation/type pair");
-  }
-
-  template <typename OutputType>
-  bool __device__ operator()(column_device_view const& input,
-                             bool has_nulls,
-                             column_device_view const& default_outputs,
-                             mutable_column_device_view& output,
-                             size_type,
-                             size_type end_index,
-                             size_type current_index)
-  {
-    // Offsets have already been normalized.
-
-    // Check if row is invalid.
-    if (row_offset > (end_index - current_index - 1)) {
-      // Invalid row marked. Use default value, if available.
-      if (default_outputs.size() == 0 || default_outputs.is_null(current_index)) { return false; }
-
-      output.element<OutputType>(current_index) =
-        default_outputs.element<OutputType>(current_index);
-      return true;
-    }
-
-    // Not an invalid row.
-    auto index   = current_index + row_offset;
-    auto is_null = has_nulls && input.is_null_nocheck(index);
-    if (!is_null) {
-      if constexpr (cudf::is_dictionary<InputType>()) {
-        output.element<OutputType>(current_index) = input.element<dictionary32>(index).value();
-      } else {
-        output.element<OutputType>(current_index) =
-          input.element<device_storage_type_t<InputType>>(index);
-      }
-    }
-    return !is_null;
-  }
-};
-
-/**
- * @brief Operator for applying a LAG rolling aggregation on a single window.
- */
-template <typename InputType>
-struct DeviceRollingLag {
-  size_type row_offset;
-
-  // what operations do we support
-  template <typename T = InputType, aggregation::Kind O = aggregation::LAG>
-  static constexpr bool is_supported()
-  {
-    return cudf::is_fixed_width<T>() || cudf::is_dictionary<T>();
-  }
-
-  template <typename T = InputType>
-  DeviceRollingLag(size_type _row_offset)
-    requires(is_supported<T>())
-    : row_offset(_row_offset)
-  {
-  }
-
-  template <typename T = InputType>
-  DeviceRollingLag(size_type _row_offset) : row_offset(_row_offset)
+  DeviceRollingLeadLag(size_type _row_offset, bool _is_lead)
+    : row_offset(_row_offset), is_lead(_is_lead)
   {
     CUDF_FAIL("Invalid aggregation/type pair");
   }
@@ -619,13 +558,14 @@ struct DeviceRollingLag {
                              column_device_view const& default_outputs,
                              mutable_column_device_view& output,
                              size_type start_index,
-                             size_type,
+                             size_type end_index,
                              size_type current_index)
   {
     // Offsets have already been normalized.
 
-    // Check if row is invalid.
-    if (row_offset > (current_index - start_index)) {
+    // Keeping direction in state shares the surrounding rolling kernel across LEAD and LAG.
+    auto const available = is_lead ? end_index - current_index - 1 : current_index - start_index;
+    if (row_offset > available) {
       // Invalid row marked. Use default value, if available.
       if (default_outputs.size() == 0 || default_outputs.is_null(current_index)) { return false; }
 
@@ -635,7 +575,7 @@ struct DeviceRollingLag {
     }
 
     // Not an invalid row.
-    auto index   = current_index - row_offset;
+    auto index   = is_lead ? current_index + row_offset : current_index - row_offset;
     auto is_null = has_nulls && input.is_null_nocheck(index);
     if (!is_null) {
       if constexpr (cudf::is_dictionary<InputType>()) {
@@ -698,12 +638,12 @@ struct corresponding_rolling_operator<InputType, aggregation::Kind::STD> {
 
 template <typename InputType>
 struct corresponding_rolling_operator<InputType, aggregation::Kind::LEAD> {
-  using type = DeviceRollingLead<InputType>;
+  using type = DeviceRollingLeadLag<InputType>;
 };
 
 template <typename InputType>
 struct corresponding_rolling_operator<InputType, aggregation::Kind::LAG> {
-  using type = DeviceRollingLag<InputType>;
+  using type = DeviceRollingLeadLag<InputType>;
 };
 
 /**
@@ -740,8 +680,8 @@ template <typename InputType>
 struct create_rolling_operator<InputType, aggregation::Kind::LEAD> {
   auto operator()(size_type, rolling_aggregation const& agg)
   {
-    return DeviceRollingLead<InputType>{
-      dynamic_cast<cudf::detail::lead_lag_aggregation const&>(agg).row_offset};
+    return DeviceRollingLeadLag<InputType>{
+      dynamic_cast<cudf::detail::lead_lag_aggregation const&>(agg).row_offset, true};
   }
 };
 
@@ -749,8 +689,8 @@ template <typename InputType>
 struct create_rolling_operator<InputType, aggregation::Kind::LAG> {
   auto operator()(size_type, rolling_aggregation const& agg)
   {
-    return DeviceRollingLag<InputType>{
-      dynamic_cast<cudf::detail::lead_lag_aggregation const&>(agg).row_offset};
+    return DeviceRollingLeadLag<InputType>{
+      dynamic_cast<cudf::detail::lead_lag_aggregation const&>(agg).row_offset, false};
   }
 };
 

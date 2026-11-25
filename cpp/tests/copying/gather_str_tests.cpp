@@ -13,9 +13,71 @@
 #include <cudf/table/table_view.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <rmm/cuda_stream.hpp>
+
+#include <numeric>
 #include <random>
+#include <string>
+#include <utility>
+#include <vector>
 
 class GatherTestStr : public cudf::test::BaseFixture {};
+
+TEST_F(GatherTestStr, CopyStrategiesWithBoundsPolicy)
+{
+  rmm::cuda_stream stream;
+  // Cover both custom character-copy strategies and both sides of the CUB
+  // batch-copy threshold.
+  constexpr cudf::size_type batch_threshold = 1 << 19;
+  for (auto const [rows, string_length] :
+       {std::pair{257, 128}, std::pair{batch_threshold - 1, 3}, std::pair{batch_threshold, 3}}) {
+    std::vector<std::string> const words{"skip",
+                                         std::string(string_length, 'a'),
+                                         "",
+                                         std::string(string_length, 'b'),
+                                         "é" + std::string(string_length, 'c'),
+                                         "null",
+                                         "skip"};
+    std::vector<bool> const validity{true, true, true, true, true, false, true};
+    cudf::test::strings_column_wrapper input(words.begin(), words.end(), validity.begin(), stream);
+    auto const sliced = cudf::slice(input, {1, 6}, stream).front();
+    for (auto const nullify : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "rows=" << rows << ", length=" << string_length << ", nullify=" << nullify);
+      std::vector<cudf::size_type> indices(rows);
+      std::vector<char const*> expected_words(rows);
+      std::vector<bool> expected_validity(rows);
+      for (cudf::size_type row = 0; row < rows; ++row) {
+        auto const index       = nullify ? row % 7 - 1 : row % 5;
+        auto const valid       = index >= 0 && index < 4;
+        indices[row]           = index;
+        expected_words[row]    = valid ? words[index + 1].c_str() : "";
+        expected_validity[row] = valid;
+      }
+      cudf::test::fixed_width_column_wrapper<cudf::size_type> map(
+        indices.begin(), indices.end(), stream);
+      cudf::test::strings_column_wrapper expected(
+        expected_words.begin(), expected_words.end(), expected_validity.begin(), stream);
+      auto const result = cudf::gather(
+        cudf::table_view{{sliced}},
+        map,
+        nullify ? cudf::out_of_bounds_policy::NULLIFY : cudf::out_of_bounds_policy::DONT_CHECK,
+        cudf::negative_index_policy::NOT_ALLOWED,
+        stream);
+      CUDF_TEST_EXPECT_COLUMNS_EQUAL(
+        expected, result->view().column(0), cudf::test::debug_output_level::FIRST_ERROR, stream);
+      // Reuse promoted offsets when the large-string threshold is lowered for this test.
+      std::vector<cudf::size_type> identity(rows);
+      std::iota(identity.begin(), identity.end(), 0);
+      cudf::test::fixed_width_column_wrapper<cudf::size_type> identity_map(
+        identity.begin(), identity.end(), stream);
+      auto const copied =
+        cudf::gather(result->view(), identity_map, cudf::out_of_bounds_policy::DONT_CHECK, stream);
+      CUDF_TEST_EXPECT_COLUMNS_EQUAL(
+        expected, copied->view().column(0), cudf::test::debug_output_level::FIRST_ERROR, stream);
+    }
+  }
+}
 
 TEST_F(GatherTestStr, StringColumn)
 {

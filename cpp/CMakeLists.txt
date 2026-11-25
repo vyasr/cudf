@@ -1030,6 +1030,9 @@ add_library(
   src/rolling/detail/optimized_unbounded_window.cpp
   src/rolling/detail/rolling_collect_list.cu
   src/rolling/detail/rolling_fixed_window.cu
+  src/rolling/detail/rolling_runtime_chrono_decimal.cu
+  src/rolling/detail/rolling_runtime_nested.cu
+  src/rolling/detail/rolling_runtime_numeric.cu
   src/rolling/detail/rolling_utils.cu
   src/rolling/detail/rolling_variable_window.cu
   src/rolling/grouped_rolling.cu
